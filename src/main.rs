@@ -33,22 +33,17 @@ struct View {
     files: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
 struct App {
-    file: String,
     files: Vec<String>,
     exit: bool,
 }
 
 impl App {
     pub fn new(files: Vec<String>) -> App {
-        App {
-            file: String::from(""),
-            files,
-            exit: false,
-        }
+        App { files, exit: false }
     }
     pub fn run(&mut self, terminal: &mut Tui) -> anyhow::Result<()> {
-        println!("what do we have {:?}", self.files);
         while !self.exit {
             terminal.draw(|frame| self.render_frame(frame))?;
             self.handle_events()?;
@@ -57,10 +52,14 @@ impl App {
     }
 
     fn render_frame(&mut self, frame: &mut Frame) {
-        frame.render_widget(
-            Paragraph::new("Hello workdd").block(Block::bordered().title("testing")),
-            frame.size(),
-        );
+        let list = List::new(self.files.clone())
+            .block(Block::default().title("list").borders(Borders::ALL))
+            .style(Style::default().fg(Color::White))
+            .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+            .highlight_symbol(">>>")
+            .repeat_highlight_symbol(true)
+            .direction(ListDirection::BottomToTop);
+        frame.render_widget(list, frame.size());
     }
 
     fn handle_events(&mut self) -> anyhow::Result<()> {
