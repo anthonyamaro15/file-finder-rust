@@ -539,7 +539,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Input field
             let input_block = Paragraph::new(app.input.clone())
-                .block(Block::default().borders(Borders::ALL).title("Input"));
+                .block(Block::default().borders(Borders::ALL).title("Input"))
+                .style(match app.input_mode {
+                    InputMode::Editing => Style::default().fg(Color::Yellow),
+                    InputMode::Normal => Style::default().fg(Color::White),
+                });
 
             // List of filtered items
             let list_block = List::new(filtered_items.clone())
@@ -554,7 +558,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol(">>");
+                .highlight_symbol(">>")
+                .style(match app.input_mode {
+                    InputMode::Normal => Style::default().fg(Color::Yellow),
+                    InputMode::Editing => Style::default().fg(Color::White),
+                });
 
             f.render_widget(input_block, chunks[0]);
             //f.render_widget(list_block, chunks[1]);
@@ -563,7 +571,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Handle input
         if let Event::Key(key) = event::read()? {
-            match key.code {
+            match app.input_mode {
+                InputMode::Normal => match key.code {
+                    KeyCode::Char('i') => {
+                        app.input_mode = InputMode::Editing;
+                    }
+                    KeyCode::Char('q') => {
+                        break;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let i = match state.selected() {
+                            Some(i) => {
+                                if i >= app.files.len() - 1 {
+                                    0
+                                } else {
+                                    i + 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        state.select(Some(i));
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let i = match state.selected() {
+                            Some(i) => {
+                                if i == 0 {
+                                    app.files.len() - 1
+                                } else {
+                                    i - 1
+                                }
+                            }
+                            None => 0,
+                        };
+                        state.select(Some(i));
+                    }
+                    _ => {}
+                },
+
+                InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Enter => app.submit_message(),
+                    KeyCode::Char(to_insert) => {
+                        app.enter_char(to_insert);
+                    }
+                    KeyCode::Backspace => {
+                        app.delete_char();
+                    }
+                    KeyCode::Left => {
+                        app.move_cursor_left();
+                    }
+                    KeyCode::Right => {
+                        app.move_cursor_right();
+                    }
+                    KeyCode::Esc => {
+                        app.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                },
+                InputMode::Editing => {}
+            }
+
+            /* match key.code {
                 KeyCode::Char(c) => {
                     app.input.push(c);
                 }
@@ -598,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 KeyCode::Esc => break,
                 _ => {}
-            }
+            } */
         }
     }
 
