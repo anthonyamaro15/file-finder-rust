@@ -534,12 +534,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(2)
-                .constraints([Constraint::Length(3), Constraint::Min(1)].as_ref())
+                .constraints(
+                    [
+                        Constraint::Length(2),
+                        Constraint::Length(3),
+                        Constraint::Min(1),
+                    ]
+                    .as_ref(),
+                )
                 .split(f.size());
+
+            let (msg, style) = match app.input_mode {
+                InputMode::Normal => (
+                    vec![
+                        "Exit (q)".bold(),
+                        " find (i)".bold(),
+                        app.input.clone().bold(),
+                        " Enter to select file (enter)".bold(),
+                    ],
+                    Style::default().add_modifier(Modifier::RAPID_BLINK),
+                ),
+                InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
+            };
 
             // Input field
             let input_block = Paragraph::new(app.input.clone())
-                .block(Block::default().borders(Borders::ALL).title("Input"))
+                .block(Block::default().borders(Borders::ALL).title("Find"))
                 .style(match app.input_mode {
                     InputMode::Editing => Style::default().fg(Color::Yellow),
                     InputMode::Normal => Style::default().fg(Color::White),
@@ -563,10 +583,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Normal => Style::default().fg(Color::Yellow),
                     InputMode::Editing => Style::default().fg(Color::White),
                 });
+            let text = Text::from(Line::from(msg)).patch_style(style);
+            let help_message = Paragraph::new(text);
+            f.render_widget(help_message, chunks[0]);
 
-            f.render_widget(input_block, chunks[0]);
+            f.render_widget(input_block, chunks[1]);
             //f.render_widget(list_block, chunks[1]);
-            f.render_stateful_widget(list_block, chunks[1], &mut state);
+            f.render_stateful_widget(list_block, chunks[2], &mut state);
         })?;
 
         // Handle input
@@ -605,6 +628,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         state.select(Some(i));
                     }
+                    KeyCode::Enter => {
+                        //TODO: handle file selection
+                        let selected = &app.files[state.selected().unwrap()];
+
+                        app.input = selected.clone();
+                    }
                     _ => {}
                 },
 
@@ -625,47 +654,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Esc => {
                         app.input_mode = InputMode::Normal;
                     }
+
                     _ => {}
                 },
                 InputMode::Editing => {}
             }
-
-            /* match key.code {
-                KeyCode::Char(c) => {
-                    app.input.push(c);
-                }
-                KeyCode::Backspace => {
-                    app.input.pop();
-                }
-                KeyCode::Down => {
-                    let i = match state.selected() {
-                        Some(i) => {
-                            if i >= app.files.len() - 1 {
-                                0
-                            } else {
-                                i + 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    state.select(Some(i));
-                }
-                KeyCode::Up => {
-                    let i = match state.selected() {
-                        Some(i) => {
-                            if i == 0 {
-                                app.files.len() - 1
-                            } else {
-                                i - 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    state.select(Some(i));
-                }
-                KeyCode::Esc => break,
-                _ => {}
-            } */
         }
     }
 
