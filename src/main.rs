@@ -2,6 +2,7 @@ use crossterm::event::EnableMouseCapture;
 use std::{
     fs,
     io::{self, Stdout},
+    path::PathBuf,
     process::Command,
 };
 
@@ -34,6 +35,7 @@ struct App {
     message: Vec<String>,
     files: Vec<String>,
     read_only_files: Vec<String>,
+    count_previous_navigation: usize,
 }
 
 impl App {
@@ -46,6 +48,7 @@ impl App {
             files,
             read_only_files: files_clone,
             character_index: 0,
+            count_previous_navigation: 0,
         }
     }
 
@@ -224,6 +227,17 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
     }
 }
 
+fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
+    let mut file_strings: Vec<String> = Vec::new();
+
+    for value in entries.iter() {
+        let val = value.clone().into_os_string().to_str().unwrap().to_string();
+
+        file_strings.push(val.clone());
+    }
+
+    file_strings
+}
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -240,20 +254,33 @@ fn handle_file_selection(
     println!("Selected file: {}", file);
     Ok(())
 }
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Setup terminal
-    let entries = fs::read_dir("./")?
+
+fn generate_path_based_on_navegation_count(count: usize) -> String {
+    let mut path = String::new();
+
+    for _ in 0..count {
+        path.push_str("../");
+    }
+
+    path
+}
+
+fn get_inner_files_info(file: String) -> anyhow::Result<Vec<String>> {
+    let entries = fs::read_dir(file)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
-    let mut file_strings: Vec<String> = Vec::new();
+    let file_strings = convert_file_path_to_string(entries);
+    Ok(file_strings)
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup terminal
+    let entries = fs::read_dir(".")?
+        //let entries = fs::read_dir("./")?
+        .map(|res| res.map(|e| e.path()))
+        .collect::<Result<Vec<_>, io::Error>>()?;
 
-    for value in entries.iter() {
-        let val = value.clone().into_os_string().to_str().unwrap().to_string();
-
-        file_strings.push(val.clone());
-    }
-
+    let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -372,6 +399,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None => 0,
                         };
                         state.select(Some(i));
+                    }
+                    KeyCode::Char('h') => {
+                        app.count_previous_navigation += 1;
+
+                        let current_path =
+                            generate_path_based_on_navegation_count(app.count_previous_navigation);
+
+                        let files_strings = get_inner_files_info(current_path).unwrap();
+                        app.read_only_files = files_strings.clone();
+                        app.files = files_strings;
+                    }
+                    KeyCode::Char('l') => {
+                        app.count_previous_navigation -= 1;
+                        let selected = &app.files[state.selected().unwrap()];
+                        let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
+                        app.read_only_files = files_strings.clone();
+                        app.files = files_strings;
                     }
                     KeyCode::Enter => {
                         let selected = &app.files[state.selected().unwrap()];
