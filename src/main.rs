@@ -4,7 +4,9 @@ use std::{
     io::{self, Stdout},
     path::PathBuf,
     process::Command,
+    result,
 };
+use walkdir::WalkDir;
 
 use ratatui::prelude::*;
 
@@ -68,7 +70,24 @@ impl App {
         self.filter_files(self.input.clone());
         self.move_cursor_right();
     }
+    // TODO: research if there is a way to implement a faster solution to this
+    fn traverse_directory(&mut self, dir: &str, query: &str) -> Vec<String> {
+        let mut results = Vec::new();
 
+        for entry in WalkDir::new(dir) {
+            if let Ok(entry) = entry {
+                if entry.file_type().is_file() {
+                    if let Some(file_name) = entry.path().file_name() {
+                        if file_name.to_string_lossy().contains(query) {
+                            results.push(entry.path().display().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
     fn filter_files(&mut self, input: String) {
         let mut new_files: Vec<String> = Vec::new();
 
@@ -411,11 +430,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.files = files_strings;
                     }
                     KeyCode::Char('l') => {
-                        app.count_previous_navigation -= 1;
-                        let selected = &app.files[state.selected().unwrap()];
-                        let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
-                        app.read_only_files = files_strings.clone();
-                        app.files = files_strings;
+                        if !app.count_previous_navigation == 0 {
+                            app.count_previous_navigation -= 1;
+                            let selected = &app.files[state.selected().unwrap()];
+                            let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
+                            app.read_only_files = files_strings.clone();
+                            app.files = files_strings;
+                        }
                     }
                     KeyCode::Enter => {
                         let selected = &app.files[state.selected().unwrap()];
@@ -438,6 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Left => {
                         app.move_cursor_left();
                     }
+
                     KeyCode::Right => {
                         app.move_cursor_right();
                     }
