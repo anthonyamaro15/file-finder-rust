@@ -1,10 +1,9 @@
-use crossterm::event::EnableMouseCapture;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use std::{
     fs,
     io::{self, Stdout},
     path::PathBuf,
     process::Command,
-    result,
 };
 use walkdir::WalkDir;
 
@@ -138,114 +137,6 @@ impl App {
     }
 }
 
-fn ui(f: &mut Frame, app: &App) {
-    let vertical = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(3),
-        Constraint::Min(1),
-    ]);
-
-    let [help_area, input_area, message_area] = vertical.areas(f.size());
-
-    let (msg, style) = match app.input_mode {
-        InputMode::Normal => (
-            vec![
-                "Press ".into(),
-                "q".bold(),
-                " to exit".into(),
-                "e".bold(),
-                " to start editing".bold(),
-            ],
-            Style::default().add_modifier(Modifier::RAPID_BLINK),
-        ),
-        InputMode::Editing => (
-            vec![
-                "Press ".into(),
-                "Esc".bold(),
-                " to stop editing".into(),
-                "Enter".bold(),
-                " to record the message".into(),
-            ],
-            Style::default(),
-        ),
-    };
-
-    let text = Text::from(Line::from(msg)).patch_style(style);
-    let help_message = Paragraph::new(text);
-    f.render_widget(help_message, help_area);
-
-    let input = Paragraph::new(app.input.as_str())
-        .style(match app.input_mode {
-            InputMode::Normal => Style::default(),
-            InputMode::Editing => Style::default().fg(Color::Yellow),
-        })
-        .block(Block::bordered().title("Input"));
-    f.render_widget(input, input_area);
-
-    match app.input_mode {
-        InputMode::Normal => {}
-        InputMode::Editing => {
-            #[allow(clippy::cast_possible_truncation)]
-            f.set_cursor(
-                input_area.x + app.character_index as u16 + 1,
-                input_area.y + 1,
-            );
-        }
-    }
-
-    let list = List::new(app.files.clone())
-        .block(Block::bordered().title("files"))
-        .style(match app.input_mode {
-            InputMode::Normal => Style::default().fg(Color::Yellow),
-            InputMode::Editing => Style::default().fg(Color::White),
-        })
-        .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-        .highlight_symbol(">>")
-        .repeat_highlight_symbol(true);
-
-    f.render_widget(list, message_area);
-}
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
-    loop {
-        terminal.draw(|f| ui(f, &app))?;
-
-        if let Event::Key(key) = event::read()? {
-            match app.input_mode {
-                InputMode::Normal => match key.code {
-                    KeyCode::Char('e') => {
-                        app.input_mode = InputMode::Editing;
-                    }
-                    KeyCode::Char('q') => {
-                        return Ok(());
-                    }
-                    _ => {}
-                },
-
-                InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Enter => app.submit_message(),
-                    KeyCode::Char(to_insert) => {
-                        app.enter_char(to_insert);
-                    }
-                    KeyCode::Backspace => {
-                        app.delete_char();
-                    }
-                    KeyCode::Left => {
-                        app.move_cursor_left();
-                    }
-                    KeyCode::Right => {
-                        app.move_cursor_right();
-                    }
-                    KeyCode::Esc => {
-                        app.input_mode = InputMode::Normal;
-                    }
-                    _ => {}
-                },
-                InputMode::Editing => {}
-            }
-        }
-    }
-}
-
 fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
 
@@ -267,10 +158,15 @@ fn handle_file_selection(
         .arg(file)
         .status()
         .expect("Failed to open file");
-    enable_raw_mode()?;
-    execute!(terminal.backend_mut(), EnterAlternateScreen)?;
 
-    println!("Selected file: {}", file);
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    terminal.clear()?;
     Ok(())
 }
 
@@ -284,13 +180,32 @@ fn generate_path_based_on_navegation_count(count: usize) -> String {
     path
 }
 
-fn get_inner_files_info(file: String) -> anyhow::Result<Vec<String>> {
-    let entries = fs::read_dir(file)?
-        .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, io::Error>>()?;
+fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
+    let entries = match fs::read_dir(file) {
+        //let entries = match fs::read_dir(file) {
+        Ok(en) => {
+            let val = en.map(|res| res.map(|e| e.path())).collect();
+            match val {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("Error: {}", e);
+                    return Ok(None);
+                }
+            }
+        }
+        Err(e) => {
+            println!("Error: {}", e);
+            return Ok(None);
+        }
+    };
 
+    /* let entries = fs::read_dir(file)?
+           .map(|res| res.map(|e| e.path()))
+           .collect::<Result<Vec<_>, io::Error>>()?;
+    */
     let file_strings = convert_file_path_to_string(entries);
-    Ok(file_strings)
+    Ok(Some(file_strings))
+    //  Ok(file_strings)
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
@@ -426,16 +341,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             generate_path_based_on_navegation_count(app.count_previous_navigation);
 
                         let files_strings = get_inner_files_info(current_path).unwrap();
-                        app.read_only_files = files_strings.clone();
-                        app.files = files_strings;
+
+                        if let Some(f_s) = files_strings {
+                            app.read_only_files = f_s.clone();
+                            app.files = f_s;
+                        }
                     }
                     KeyCode::Char('l') => {
-                        if !app.count_previous_navigation == 0 {
-                            app.count_previous_navigation -= 1;
-                            let selected = &app.files[state.selected().unwrap()];
-                            let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
-                            app.read_only_files = files_strings.clone();
-                            app.files = files_strings;
+                        app.count_previous_navigation -= 1;
+                        let selected = &app.files[state.selected().unwrap()];
+                        let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
+                        if let Some(files_strs) = files_strings {
+                            app.read_only_files = files_strs.clone();
+                            app.files = files_strs;
                         }
                     }
                     KeyCode::Enter => {
