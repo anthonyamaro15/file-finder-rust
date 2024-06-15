@@ -141,9 +141,10 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
 
     for value in entries.iter() {
-        let val = value.clone().into_os_string().to_str().unwrap().to_string();
-
-        file_strings.push(val.clone());
+        if value.is_dir() {
+            let val = value.clone().into_os_string().to_str().unwrap().to_string();
+            file_strings.push(val.clone());
+        }
     }
 
     file_strings
@@ -182,7 +183,6 @@ fn generate_path_based_on_navegation_count(count: usize) -> String {
 
 fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
     let entries = match fs::read_dir(file) {
-        //let entries = match fs::read_dir(file) {
         Ok(en) => {
             let val = en.map(|res| res.map(|e| e.path())).collect();
             match val {
@@ -199,18 +199,12 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
         }
     };
 
-    /* let entries = fs::read_dir(file)?
-           .map(|res| res.map(|e| e.path()))
-           .collect::<Result<Vec<_>, io::Error>>()?;
-    */
     let file_strings = convert_file_path_to_string(entries);
     Ok(Some(file_strings))
-    //  Ok(file_strings)
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     let entries = fs::read_dir(".")?
-        //let entries = fs::read_dir("./")?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
@@ -267,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let input_block = Paragraph::new(app.input.clone())
                 .block(Block::default().borders(Borders::ALL).title("Find"))
                 .style(match app.input_mode {
-                    InputMode::Editing => Style::default().fg(Color::Yellow),
+                    InputMode::Editing => Style::default().fg(Color::Green),
                     InputMode::Normal => Style::default().fg(Color::White),
                 });
 
@@ -280,13 +274,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Blue)
+                        .bg(Color::Rgb(50, 105, 168))
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol(">>")
                 .style(match app.input_mode {
-                    InputMode::Normal => Style::default().fg(Color::Yellow),
+                    InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
                 });
             let text = Text::from(Line::from(msg)).patch_style(style);
@@ -348,9 +342,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('l') => {
-                        app.count_previous_navigation -= 1;
+                        if app.count_previous_navigation > 0 {
+                            app.count_previous_navigation -= 1;
+                        }
                         let selected = &app.files[state.selected().unwrap()];
                         let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
+
                         if let Some(files_strs) = files_strings {
                             app.read_only_files = files_strs.clone();
                             app.files = files_strs;
@@ -362,6 +359,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.input = selected.clone();
 
                         let _ = handle_file_selection(selected, &mut terminal);
+                        break;
                     }
                     _ => {}
                 },
