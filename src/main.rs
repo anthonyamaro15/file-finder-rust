@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use walkdir::WalkDir;
 
 use ratatui::prelude::*;
 
@@ -75,24 +74,7 @@ impl App {
         self.filter_files(self.input.clone(), store);
         self.move_cursor_right();
     }
-    // TODO: research if there is a way to implement a faster solution to this
-    fn traverse_directory(&mut self, dir: &str, query: &str) -> Vec<String> {
-        let mut results = Vec::new();
 
-        for entry in WalkDir::new(dir) {
-            if let Ok(entry) = entry {
-                if entry.file_type().is_file() {
-                    if let Some(file_name) = entry.path().file_name() {
-                        if file_name.to_string_lossy().contains(query) {
-                            results.push(entry.path().display().to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        results
-    }
     fn filter_files(&mut self, input: String, store: DirectoryStore) {
         let mut new_files: Vec<String> = Vec::new();
 
@@ -261,6 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Constraint::Length(2),
                         Constraint::Length(3),
                         Constraint::Min(1),
+                        Constraint::Length(3),
                     ]
                     .as_ref(),
                 )
@@ -274,7 +257,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.input.clone().bold(),
                         " Enter to select file (enter)".bold(),
                     ],
-                    Style::default().add_modifier(Modifier::RAPID_BLINK),
+                    Style::default(),
                 ),
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
             };
@@ -296,7 +279,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .highlight_style(
                     Style::default()
-                        .bg(Color::Rgb(50, 105, 168))
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
@@ -305,12 +287,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
                 });
+
+            let bottom_instructions = Span::styled(
+                "Use (j,k) to navigate, use(h,l) to navigate directory, 'Enter' to open",
+                Style::default(),
+            );
+
+            let instructions = Text::from(Line::from(bottom_instructions));
+            let parsed_instructions = Paragraph::new(instructions)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
+
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
             f.render_widget(help_message, chunks[0]);
-
+            f.render_widget(parsed_instructions, chunks[3]);
             f.render_widget(input_block, chunks[1]);
-            //f.render_widget(list_block, chunks[1]);
             f.render_stateful_widget(list_block, chunks[2], &mut state);
         })?;
 

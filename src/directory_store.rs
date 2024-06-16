@@ -1,7 +1,4 @@
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter};
 use walkdir::WalkDir;
@@ -23,24 +20,6 @@ impl DirectoryStore {
     }
 
     pub fn search(&self, prefix: &str) -> Vec<String> {
-        /* let matcher = SkimMatcherV2::default();
-
-        let mut results = self
-            .directories
-            .iter()
-            .filter_map(|dir| matcher.fuzzy_match(dir, prefix).map(|score| (dir, score)))
-            .collect::<Vec<_>>();
-
-        results.sort_by(|a, b| b.1.cmp(&a.1));
-        //results.into_iter().map(|(_, dir)| dir.clone()).collect();
-
-        let mut new_files: Vec<String> = Vec::new();
-
-        for file in results.iter() {
-            new_files.push(file.0.clone());
-        }
-
-        new_files */
         let mut new_files: Vec<String> = Vec::new();
         for file in self.directories.iter() {
             if file.contains(&prefix) {
