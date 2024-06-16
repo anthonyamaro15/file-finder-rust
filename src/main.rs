@@ -15,7 +15,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::CrosstermBackend,
     style::{Color, Modifier, Style},
     text::Text,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -194,19 +194,18 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
     Ok(Some(file_strings))
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root_dir = "../../../../";
-    let cache_file = "trie_cache.json";
+    let root_dir = "./Desktop";
+    let cache_file = "./Desktop/directory_cache.json";
     // Setup terminal
     let entries = fs::read_dir(root_dir)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
     let store = if Path::new(cache_file).exists() {
-        println!("Loading trie from cache file");
         let res = load_directory_from_file(cache_file).unwrap();
         res
     } else {
-        println!("Building trie from directories");
+        println!("Building directory cache, Please wait...");
         let new_store = build_directory_from_store(root_dir);
         save_directory_to_file(&new_store, cache_file)?;
         new_store
