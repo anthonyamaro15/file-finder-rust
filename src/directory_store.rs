@@ -37,13 +37,18 @@ pub fn build_directory_from_store(root_dir: &str) -> DirectoryStore {
         if let Ok(entry) = entry {
             if entry.file_type().is_dir() {
                 let path = entry.path().to_string_lossy();
+                // TODO: This are the files to ignore, we should make this configurable in the future
                 if !path.contains("target")
                     && !path.contains(".git")
                     && !path.contains("node_modules")
                     && !path.contains("cdn")
-                   // && !path.contains("src")
+                    && !path.contains("src")
                     && !path.contains("dist-prod")
-                //&& !path.contains("cypress")
+                    && !path.contains("/.sauce")
+                    && !path.contains("/.husky")
+                    && !path.contains("/.vscode")
+                    && !path.contains("/.zed")
+                    && !path.contains("cypress")
                 // && !path.contains("build")
                 {
                     store.insert(entry.path().to_str().unwrap());
