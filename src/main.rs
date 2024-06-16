@@ -348,8 +348,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let current_path =
                             generate_path_based_on_navegation_count(app.count_previous_navigation);
 
-                        let files_strings = get_inner_files_info(current_path).unwrap();
+                        let files_strings = get_inner_files_info(current_path.clone()).unwrap();
 
+                        app.input = current_path.clone();
                         if let Some(f_s) = files_strings {
                             app.read_only_files = f_s.clone();
                             app.files = f_s;
