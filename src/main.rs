@@ -1,8 +1,9 @@
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use directory_store::DirectoryStore;
 use std::{
     fs,
     io::{self, Stdout},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
 };
 use walkdir::WalkDir;
@@ -21,6 +22,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
 };
+
+use crate::directory_store::{
+    build_directory_from_store, load_directory_from_file, save_directory_to_file,
+};
+mod directory_store;
 
 #[derive(Debug, Clone)]
 enum InputMode {
@@ -63,10 +69,10 @@ impl App {
         self.character_index = self.clamp_cursor(cursor_moved_right);
     }
 
-    fn enter_char(&mut self, new_char: char) {
+    fn enter_char(&mut self, new_char: char, store: DirectoryStore) {
         let index = self.byte_index();
         self.input.insert(index, new_char);
-        self.filter_files(self.input.clone());
+        self.filter_files(self.input.clone(), store);
         self.move_cursor_right();
     }
     // TODO: research if there is a way to implement a faster solution to this
@@ -87,15 +93,18 @@ impl App {
 
         results
     }
-    fn filter_files(&mut self, input: String) {
+    fn filter_files(&mut self, input: String, store: DirectoryStore) {
         let mut new_files: Vec<String> = Vec::new();
 
+        let r = store.search(&input);
         for file in self.read_only_files.iter() {
             if file.contains(&input) {
                 new_files.push(file.clone());
             }
         }
-        self.files = new_files;
+
+        //self.files = new_files;
+        self.files = r;
     }
 
     fn byte_index(&mut self) -> usize {
@@ -106,7 +115,7 @@ impl App {
             .unwrap_or(self.input.len())
     }
 
-    fn delete_char(&mut self) {
+    fn delete_char(&mut self, store: DirectoryStore) {
         let is_not_cursor_leftmost = self.character_index != 0;
         if is_not_cursor_leftmost {
             let current_index = self.character_index;
@@ -117,7 +126,7 @@ impl App {
             let after_char_to_delete = self.input.chars().skip(current_index);
 
             self.input = before_char_to_delete.chain(after_char_to_delete).collect();
-            self.filter_files(self.input.clone());
+            self.filter_files(self.input.clone(), store);
             self.move_cursor_left();
         }
     }
@@ -203,10 +212,23 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
     Ok(Some(file_strings))
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let root_dir = "../../../../";
+    let cache_file = "trie_cache.json";
     // Setup terminal
-    let entries = fs::read_dir(".")?
+    let entries = fs::read_dir(root_dir)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
+
+    let store = if Path::new(cache_file).exists() {
+        println!("Loading trie from cache file");
+        let res = load_directory_from_file(cache_file).unwrap();
+        res
+    } else {
+        println!("Building trie from directories");
+        let new_store = build_directory_from_store(root_dir);
+        save_directory_to_file(&new_store, cache_file)?;
+        new_store
+    };
 
     let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
@@ -367,10 +389,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => app.submit_message(),
                     KeyCode::Char(to_insert) => {
-                        app.enter_char(to_insert);
+                        app.enter_char(to_insert, store.clone());
                     }
                     KeyCode::Backspace => {
-                        app.delete_char();
+                        app.delete_char(store.clone());
                     }
                     KeyCode::Left => {
                         app.move_cursor_left();
