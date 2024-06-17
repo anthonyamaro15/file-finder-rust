@@ -1,7 +1,7 @@
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use directory_store::DirectoryStore;
 use std::{
-    fs,
+    env, fs,
     io::{self, Stdout},
     path::{Path, PathBuf},
     process::Command,
@@ -146,10 +146,6 @@ fn handle_file_selection(
 ) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    Command::new("nvim")
-        .arg(file)
-        .status()
-        .expect("Failed to open file");
 
     disable_raw_mode()?;
     execute!(
@@ -159,6 +155,16 @@ fn handle_file_selection(
     )?;
     terminal.show_cursor()?;
     terminal.clear()?;
+
+    if let Err(e) = env::set_current_dir(file) {
+        eprintln!("Error: {}", e);
+    } else {
+        Command::new("nvim")
+            .arg(".")
+            .status()
+            .expect("Failed to open file");
+    }
+    println!("Opening file: {}", file);
     Ok(())
 }
 
@@ -349,7 +355,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         let files_strings = get_inner_files_info(current_path.clone()).unwrap();
 
-                        app.input = current_path.clone();
                         if let Some(f_s) = files_strings {
                             app.read_only_files = f_s.clone();
                             app.files = f_s;
@@ -406,8 +411,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
 
+    terminal.show_cursor()?;
+    terminal.clear()?;
     Ok(())
 }
