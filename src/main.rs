@@ -28,6 +28,13 @@ use crate::directory_store::{
 mod directory_store;
 
 #[derive(Debug, Clone)]
+enum IDE {
+    NVIM,
+    VSCODE,
+    ZED,
+}
+
+#[derive(Debug, Clone)]
 enum InputMode {
     Normal,
     Editing,
@@ -42,6 +49,7 @@ struct App {
     files: Vec<String>,
     read_only_files: Vec<String>,
     count_previous_navigation: usize,
+    selected_id: Option<IDE>,
 }
 
 impl App {
@@ -55,6 +63,7 @@ impl App {
             read_only_files: files_clone,
             character_index: 0,
             count_previous_navigation: 0,
+            selected_id: None,
         }
     }
 
@@ -126,6 +135,44 @@ impl App {
         self.input.clear();
         self.reset_cursor();
     }
+
+    fn validate_user_input(&self, input: &str) -> Option<IDE> {
+        match input {
+            "nvim" => Some(IDE::NVIM),
+            "vscode" => Some(IDE::VSCODE),
+            "zed" => Some(IDE::ZED),
+            _ => None,
+        }
+    }
+
+    fn handle_arguments(&mut self, args: Vec<String>) {
+        if args.len() > 1 {
+            let ide = &args[1];
+
+            let validated_ide = self.validate_user_input(ide);
+
+            if let Some(selection) = validated_ide {
+                //
+                self.selected_id = Some(selection);
+            } else {
+                panic!(
+                    "Invalid IDE selection, Please select from the following: nvim, vscode, zed"
+                );
+            }
+        }
+    }
+
+    fn get_selected_ide(&self) -> Option<String> {
+        if let Some(selection) = &self.selected_id {
+            match selection {
+                IDE::NVIM => Some("nvim".to_string()),
+                IDE::VSCODE => Some("vscode".to_string()),
+                IDE::ZED => Some("zed".to_string()),
+            }
+        } else {
+            None
+        }
+    }
 }
 
 fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
@@ -140,9 +187,11 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
 
     file_strings
 }
+
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    mut app: App,
 ) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -159,12 +208,16 @@ fn handle_file_selection(
     if let Err(e) = env::set_current_dir(file) {
         eprintln!("Error: {}", e);
     } else {
-        Command::new("nvim")
-            .arg(".")
-            .status()
-            .expect("Failed to open file");
+        let ide = app.get_selected_ide();
+        if ide.is_some() {
+            let selected_ide = ide.unwrap();
+            app.input = selected_ide.clone();
+            Command::new(selected_ide)
+                .arg(".")
+                .status()
+                .expect("Failed to open file");
+        }
     }
-    println!("Opening file: {}", file);
     Ok(())
 }
 
@@ -199,13 +252,22 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
     let file_strings = convert_file_path_to_string(entries);
     Ok(Some(file_strings))
 }
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let input_arguments: Vec<String> = env::args().collect();
+
     let root_dir = "./Desktop";
     let cache_file = "./Desktop/directory_cache.json";
     // Setup terminal
     let entries = fs::read_dir(root_dir)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
+
+    let file_strings = convert_file_path_to_string(entries);
+    let mut app = App::new(file_strings.clone());
+
+    // handle ide selection from arguments
+    app.handle_arguments(input_arguments);
 
     let store = if Path::new(cache_file).exists() {
         let res = load_directory_from_file(cache_file).unwrap();
@@ -217,8 +279,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         new_store
     };
 
-    let file_strings = convert_file_path_to_string(entries);
-    let mut app = App::new(file_strings.clone());
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -294,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
 
             let bottom_instructions = Span::styled(
-                "Use (j,k) to navigate, use(h,l) to navigate directory, 'Enter' to open",
+                "Use (j,k) to navigate, use(h,l) to navigate directory, 'Enter' to open with selected IDE",
                 Style::default(),
             );
 
@@ -373,11 +433,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Enter => {
-                        let selected = &app.files[state.selected().unwrap()];
+                        let app_files = app.files.clone();
+                        let selected = &app_files[state.selected().unwrap()];
 
-                        app.input = selected.clone();
-
-                        let _ = handle_file_selection(selected, &mut terminal);
+                        let _ = handle_file_selection(&selected, &mut terminal, app.clone());
                         break;
                     }
                     _ => {}
