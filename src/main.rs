@@ -25,6 +25,7 @@ use ratatui::{
 use crate::directory_store::{
     build_directory_from_store, load_directory_from_file, save_directory_to_file,
 };
+mod configuration;
 mod directory_store;
 
 #[derive(Debug, Clone)]
@@ -205,19 +206,21 @@ fn handle_file_selection(
     terminal.show_cursor()?;
     terminal.clear()?;
 
-    if let Err(e) = env::set_current_dir(file) {
-        eprintln!("Error: {}", e);
+    let ide = app.get_selected_ide();
+    if ide.is_some() {
+        let selected_ide = ide.unwrap();
+        app.input = selected_ide.clone();
+        Command::new(selected_ide)
+            .arg(".")
+            .status()
+            .expect("Failed to open file");
     } else {
-        let ide = app.get_selected_ide();
-        if ide.is_some() {
-            let selected_ide = ide.unwrap();
-            app.input = selected_ide.clone();
-            Command::new(selected_ide)
-                .arg(".")
-                .status()
-                .expect("Failed to open file");
-        }
+        env::set_current_dir(file)?;
     }
+
+    /* if let Err(e) = env::set_current_dir(file) {
+        eprintln!("Error: {}", e);
+    } */
     Ok(())
 }
 
@@ -256,10 +259,15 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
-    let root_dir = "./Desktop";
-    let cache_file = "./Desktop/directory_cache.json";
+    let config = configuration::Configuration::new();
+
+    config.handle_settings_configuration();
+    //let root_dir = ".";
+    //let root_dir = "./Desktop";
+    //let cache_file = "directory_cache.json";
+    //let cache_file = "./Desktop/directory_cache.json";
     // Setup terminal
-    let entries = fs::read_dir(root_dir)?
+    let entries = fs::read_dir(config.root_dir.to_owned())?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
@@ -269,13 +277,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // handle ide selection from arguments
     app.handle_arguments(input_arguments);
 
-    let store = if Path::new(cache_file).exists() {
-        let res = load_directory_from_file(cache_file).unwrap();
+    let store = if Path::new(&config.cache_directory).exists() {
+        let res = load_directory_from_file(&config.cache_directory.to_owned()).unwrap();
         res
     } else {
         println!("Building directory cache, Please wait...");
-        let new_store = build_directory_from_store(root_dir);
-        save_directory_to_file(&new_store, cache_file)?;
+        let new_store = build_directory_from_store(&config.root_dir.clone());
+        save_directory_to_file(&new_store, &config.cache_directory.to_owned())?;
         new_store
     };
 
