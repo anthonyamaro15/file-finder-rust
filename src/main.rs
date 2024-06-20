@@ -218,9 +218,6 @@ fn handle_file_selection(
         env::set_current_dir(file)?;
     }
 
-    /* if let Err(e) = env::set_current_dir(file) {
-        eprintln!("Error: {}", e);
-    } */
     Ok(())
 }
 
@@ -259,15 +256,12 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
-    let config = configuration::Configuration::new();
+    let mut config = configuration::Configuration::new();
 
     config.handle_settings_configuration();
-    //let root_dir = ".";
-    //let root_dir = "./Desktop";
-    //let cache_file = "directory_cache.json";
-    //let cache_file = "./Desktop/directory_cache.json";
     // Setup terminal
-    let entries = fs::read_dir(config.root_dir.to_owned())?
+
+    let entries = fs::read_dir(config.start_path.to_owned())?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
@@ -279,10 +273,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = if Path::new(&config.cache_directory).exists() {
         let res = load_directory_from_file(&config.cache_directory.to_owned()).unwrap();
+        println!("Loading directory cache from file");
         res
     } else {
         println!("Building directory cache, Please wait...");
-        let new_store = build_directory_from_store(&config.root_dir.clone());
+        let new_store =
+            build_directory_from_store(&config.start_path.to_owned(), config.ignore_directories);
         save_directory_to_file(&new_store, &config.cache_directory.to_owned())?;
         new_store
     };
