@@ -54,7 +54,6 @@ struct App {
     message: Vec<String>,
     files: Vec<String>,
     read_only_files: Vec<String>,
-    count_previous_navigation: usize,
     selected_id: Option<IDE>,
 }
 
@@ -68,7 +67,6 @@ impl App {
             files,
             read_only_files: files_clone,
             character_index: 0,
-            count_previous_navigation: 0,
             selected_id: None,
         }
     }
@@ -233,16 +231,6 @@ fn handle_file_selection(
     }
 
     Ok(())
-}
-
-fn generate_path_based_on_navegation_count(count: usize) -> String {
-    let mut path = String::new();
-
-    for _ in 0..count {
-        path.push_str("../");
-    }
-
-    path
 }
 
 fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
@@ -426,22 +414,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         state.select(Some(i));
                     }
                     KeyCode::Char('h') => {
-                        app.count_previous_navigation += 1;
+                        let selected = &app.files[state.selected().unwrap()];
+                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
 
-                        let current_path =
-                            generate_path_based_on_navegation_count(app.count_previous_navigation);
+                        // TODO: refactor this to be more idiomatic
+                        if split_path.len() > 4 {
+                            split_path.pop();
+                            split_path.pop();
 
-                        let files_strings = get_inner_files_info(current_path.clone()).unwrap();
+                            let new_path = split_path.join("/");
+                            app.input = new_path.clone();
+                            let files_strings = get_inner_files_info(new_path.clone()).unwrap();
 
-                        if let Some(f_s) = files_strings {
-                            app.read_only_files = f_s.clone();
-                            app.files = f_s;
+                            if let Some(f_s) = files_strings {
+                                app.read_only_files = f_s.clone();
+                                app.files = f_s;
+                            }
                         }
                     }
                     KeyCode::Char('l') => {
-                        if app.count_previous_navigation > 0 {
-                            app.count_previous_navigation -= 1;
-                        }
                         let selected = &app.files[state.selected().unwrap()];
                         let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
 
