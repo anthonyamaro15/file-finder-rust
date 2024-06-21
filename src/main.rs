@@ -440,8 +440,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
 
+                        app.input = selected.clone();
+
                         let _ = handle_file_selection(&selected, &mut terminal, app.clone());
-                        break;
+                        //break;
                     }
                     _ => {}
                 },

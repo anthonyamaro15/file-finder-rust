@@ -41,14 +41,16 @@ impl Configuration {
         config
     }
 
+    // TODO: should we cache all directories when first loading the app? or is there a better way to do this?
     fn set_default_ignore_directories(&mut self) {
         let default_ignore_dirs = vec![
             "node_modules",
             "bower_components",
-            "dist",
-            "build",
-            "public",
+            "obj",
+            "maui",
             "target",
+            ".venv",
+            "src",
             "cdn",
             ".git",
             ".sauce",
@@ -57,9 +59,6 @@ impl Configuration {
             ".zed",
             "cypress",
             "dist-prod",
-            "cache",
-            "logs",
-            "log",
         ];
 
         self.ignore_directories = default_ignore_dirs.iter().map(|s| s.to_string()).collect();
