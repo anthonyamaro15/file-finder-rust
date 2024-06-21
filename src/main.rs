@@ -1,4 +1,5 @@
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+
 use directory_store::DirectoryStore;
 use std::{
     env, fs,
@@ -25,6 +26,10 @@ use ratatui::{
 use crate::directory_store::{
     build_directory_from_store, load_directory_from_file, save_directory_to_file,
 };
+
+extern crate copypasta;
+use copypasta::{ClipboardContext, ClipboardProvider};
+
 mod configuration;
 mod directory_store;
 
@@ -223,7 +228,8 @@ fn handle_file_selection(
             }
         }
     } else {
-        env::set_current_dir(file)?;
+        let mut ctx = ClipboardContext::new().unwrap();
+        ctx.set_contents(file.to_owned()).unwrap();
     }
 
     Ok(())
