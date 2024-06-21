@@ -423,7 +423,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             split_path.pop();
 
                             let new_path = split_path.join("/");
-                            app.input = new_path.clone();
                             let files_strings = get_inner_files_info(new_path.clone()).unwrap();
 
                             if let Some(f_s) = files_strings {
