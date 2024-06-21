@@ -1,4 +1,5 @@
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+
 use directory_store::DirectoryStore;
 use std::{
     env, fs,
@@ -25,6 +26,11 @@ use ratatui::{
 use crate::directory_store::{
     build_directory_from_store, load_directory_from_file, save_directory_to_file,
 };
+
+extern crate copypasta;
+use copypasta::{ClipboardContext, ClipboardProvider};
+
+mod configuration;
 mod directory_store;
 
 #[derive(Debug, Clone)]
@@ -191,7 +197,7 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    mut app: App,
+    app: App,
 ) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -205,19 +211,27 @@ fn handle_file_selection(
     terminal.show_cursor()?;
     terminal.clear()?;
 
-    if let Err(e) = env::set_current_dir(file) {
-        eprintln!("Error: {}", e);
-    } else {
-        let ide = app.get_selected_ide();
-        if ide.is_some() {
-            let selected_ide = ide.unwrap();
-            app.input = selected_ide.clone();
-            Command::new(selected_ide)
-                .arg(".")
+    let ide = app.get_selected_ide();
+    if ide.is_some() {
+        let selected_ide = ide.unwrap();
+
+        if Path::new(file).exists() {
+            let output = Command::new(selected_ide.to_owned())
+                .arg(file.to_owned())
                 .status()
                 .expect("Failed to open file");
+
+            if output.success() {
+                println!("Successfully opened file with {}", selected_ide);
+            } else {
+                println!("Failed to open file with {}", selected_ide);
+            }
         }
+    } else {
+        let mut ctx = ClipboardContext::new().unwrap();
+        ctx.set_contents(file.to_owned()).unwrap();
     }
+
     Ok(())
 }
 
@@ -256,10 +270,12 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
-    let root_dir = "./Desktop";
-    let cache_file = "./Desktop/directory_cache.json";
+    let mut config = configuration::Configuration::new();
+
+    config.handle_settings_configuration();
     // Setup terminal
-    let entries = fs::read_dir(root_dir)?
+
+    let entries = fs::read_dir(config.start_path.to_owned())?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
@@ -269,13 +285,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // handle ide selection from arguments
     app.handle_arguments(input_arguments);
 
-    let store = if Path::new(cache_file).exists() {
-        let res = load_directory_from_file(cache_file).unwrap();
+    let store = if Path::new(&config.cache_directory).exists() {
+        let res = load_directory_from_file(&config.cache_directory.to_owned()).unwrap();
+        println!("Loading directory cache from file");
         res
     } else {
         println!("Building directory cache, Please wait...");
-        let new_store = build_directory_from_store(root_dir);
-        save_directory_to_file(&new_store, cache_file)?;
+        let new_store =
+            build_directory_from_store(&config.start_path.to_owned(), config.ignore_directories);
+        save_directory_to_file(&new_store, &config.cache_directory.to_owned())?;
         new_store
     };
 
@@ -435,6 +453,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
+
+                        app.input = selected.clone();
 
                         let _ = handle_file_selection(&selected, &mut terminal, app.clone());
                         break;

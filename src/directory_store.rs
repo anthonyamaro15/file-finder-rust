@@ -30,27 +30,33 @@ impl DirectoryStore {
     }
 }
 
-pub fn build_directory_from_store(root_dir: &str) -> DirectoryStore {
+pub fn build_directory_from_store(
+    root_dir: &str,
+    ignore_directories: Vec<String>,
+) -> DirectoryStore {
     let mut store = DirectoryStore::new();
 
     for entry in WalkDir::new(root_dir).min_depth(1) {
         if let Ok(entry) = entry {
             if entry.file_type().is_dir() {
                 let path = entry.path().to_string_lossy();
-                // TODO: This are the files to ignore, we should make this configurable in the future
-                if !path.contains("target")
-                    && !path.contains(".git")
-                    && !path.contains("node_modules")
-                    && !path.contains("cdn")
-                    && !path.contains("src")
-                    && !path.contains("dist-prod")
-                    && !path.contains("/.sauce")
-                    && !path.contains("/.husky")
-                    && !path.contains("/.vscode")
-                    && !path.contains("/.zed")
-                    && !path.contains("cypress")
-                // && !path.contains("build")
-                {
+                let mut should_ignore = false;
+
+                if ignore_directories.len() > 0 {
+                    for ignore in ignore_directories.iter() {
+                        let t = ignore.to_owned();
+                        let update_type = t.as_str();
+                        if path.contains(update_type) {
+                            should_ignore = true;
+                            break;
+                        }
+                    }
+                }
+
+                if !should_ignore {
+                    //TODO:should we display All file path dir/dir2/Desktop/  OR
+                    // ../../Desktop OR
+                    // Desktop
                     store.insert(entry.path().to_str().unwrap());
                 }
             }
