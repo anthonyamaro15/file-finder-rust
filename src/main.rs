@@ -192,7 +192,7 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    mut app: App,
+    app: App,
 ) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -209,11 +209,19 @@ fn handle_file_selection(
     let ide = app.get_selected_ide();
     if ide.is_some() {
         let selected_ide = ide.unwrap();
-        app.input = selected_ide.clone();
-        Command::new(selected_ide)
-            .arg(".")
-            .status()
-            .expect("Failed to open file");
+
+        if Path::new(file).exists() {
+            let output = Command::new(selected_ide.to_owned())
+                .arg(file.to_owned())
+                .status()
+                .expect("Failed to open file");
+
+            if output.success() {
+                println!("Successfully opened file with {}", selected_ide);
+            } else {
+                println!("Failed to open file with {}", selected_ide);
+            }
+        }
     } else {
         env::set_current_dir(file)?;
     }
@@ -443,7 +451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.input = selected.clone();
 
                         let _ = handle_file_selection(&selected, &mut terminal, app.clone());
-                        //break;
+                        break;
                     }
                     _ => {}
                 },
