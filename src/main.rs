@@ -1,6 +1,6 @@
+use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
-use directory_store::DirectoryStore;
 use std::{
     env, fs,
     io::{self, Stdout},
@@ -30,154 +30,9 @@ use crate::directory_store::{
 extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
 
+mod app;
 mod configuration;
 mod directory_store;
-
-#[derive(Debug, Clone)]
-enum IDE {
-    NVIM,
-    VSCODE,
-    ZED,
-}
-
-#[derive(Debug, Clone)]
-enum InputMode {
-    Normal,
-    Editing,
-}
-
-#[derive(Debug, Clone)]
-struct App {
-    input: String,
-    character_index: usize,
-    input_mode: InputMode,
-    message: Vec<String>,
-    files: Vec<String>,
-    read_only_files: Vec<String>,
-    selected_id: Option<IDE>,
-}
-
-impl App {
-    fn new(files: Vec<String>) -> Self {
-        let files_clone = files.clone();
-        Self {
-            input: String::new(),
-            input_mode: InputMode::Normal,
-            message: Vec::new(),
-            files,
-            read_only_files: files_clone,
-            character_index: 0,
-            selected_id: None,
-        }
-    }
-
-    fn move_cursor_left(&mut self) {
-        let cursor_moved_left = self.character_index.saturating_sub(1);
-        self.character_index = self.clamp_cursor(cursor_moved_left);
-    }
-
-    fn move_cursor_right(&mut self) {
-        let cursor_moved_right = self.character_index.saturating_add(1);
-        self.character_index = self.clamp_cursor(cursor_moved_right);
-    }
-
-    fn enter_char(&mut self, new_char: char, store: DirectoryStore) {
-        let index = self.byte_index();
-        self.input.insert(index, new_char);
-        self.filter_files(self.input.clone(), store);
-        self.move_cursor_right();
-    }
-
-    fn filter_files(&mut self, input: String, store: DirectoryStore) {
-        let mut new_files: Vec<String> = Vec::new();
-
-        let r = store.search(&input);
-        for file in self.read_only_files.iter() {
-            if file.contains(&input) {
-                new_files.push(file.clone());
-            }
-        }
-
-        //self.files = new_files;
-        self.files = r;
-    }
-
-    fn byte_index(&mut self) -> usize {
-        self.input
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.character_index)
-            .unwrap_or(self.input.len())
-    }
-
-    fn delete_char(&mut self, store: DirectoryStore) {
-        let is_not_cursor_leftmost = self.character_index != 0;
-        if is_not_cursor_leftmost {
-            let current_index = self.character_index;
-            let from_left_to_current_index = current_index - 1;
-
-            let before_char_to_delete = self.input.chars().take(from_left_to_current_index);
-
-            let after_char_to_delete = self.input.chars().skip(current_index);
-
-            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
-            self.filter_files(self.input.clone(), store);
-            self.move_cursor_left();
-        }
-    }
-
-    fn clamp_cursor(&mut self, new_cursor_pos: usize) -> usize {
-        new_cursor_pos.clamp(0, self.input.chars().count())
-    }
-
-    fn reset_cursor(&mut self) {
-        self.character_index = 0;
-    }
-
-    fn submit_message(&mut self) {
-        self.message.push(self.input.clone());
-        self.input.clear();
-        self.reset_cursor();
-    }
-
-    fn validate_user_input(&self, input: &str) -> Option<IDE> {
-        match input {
-            "nvim" => Some(IDE::NVIM),
-            "vscode" => Some(IDE::VSCODE),
-            "zed" => Some(IDE::ZED),
-            _ => None,
-        }
-    }
-
-    fn handle_arguments(&mut self, args: Vec<String>) {
-        if args.len() > 1 {
-            let ide = &args[1];
-
-            let validated_ide = self.validate_user_input(ide);
-
-            if let Some(selection) = validated_ide {
-                //
-                self.selected_id = Some(selection);
-            } else {
-                panic!(
-                    "Invalid IDE selection, Please select from the following: nvim, vscode, zed"
-                );
-            }
-        }
-    }
-
-    fn get_selected_ide(&self) -> Option<String> {
-        if let Some(selection) = &self.selected_id {
-            match selection {
-                IDE::NVIM => Some("nvim".to_string()),
-                IDE::VSCODE => Some("vscode".to_string()),
-                IDE::ZED => Some("zed".to_string()),
-            }
-        } else {
-            None
-        }
-    }
-}
 
 fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
@@ -432,12 +287,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('l') => {
-                        let selected = &app.files[state.selected().unwrap()];
-                        let files_strings = get_inner_files_info(selected.to_owned()).unwrap();
+                        let selected_index = state.selected();
+                        if let Some(selected_indx) = selected_index {
+                            let selected = &app.files[selected_indx];
 
-                        if let Some(files_strs) = files_strings {
-                            app.read_only_files = files_strs.clone();
-                            app.files = files_strs;
+                            match get_inner_files_info(selected.to_string()) {
+                                Ok(files_strings) => {
+                                    if let Some(files_strs) = files_strings {
+                                        app.read_only_files = files_strs.clone();
+                                        app.files = files_strs;
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("Error: {}", e);
+                                }
+                            }
                         }
                     }
                     KeyCode::Enter => {
