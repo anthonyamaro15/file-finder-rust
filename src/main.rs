@@ -226,6 +226,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
+
+            let input_area = chunks[1];
+            match app.input_mode {
+                InputMode::Normal => {},
+                InputMode::Editing => {
+                    f.set_cursor(
+                      input_area.x + app.character_index as u16 + 1,
+                       input_area.y  + 1, 
+                    )
+                }
+            }
             f.render_widget(help_message, chunks[0]);
             f.render_widget(parsed_instructions, chunks[3]);
             f.render_widget(input_block, chunks[1]);
