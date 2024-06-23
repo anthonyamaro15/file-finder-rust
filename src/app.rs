@@ -24,6 +24,7 @@ pub struct App {
     pub files: Vec<String>,
     pub read_only_files: Vec<String>,
     pub selected_id: Option<IDE>,
+    pub render_popup: bool,
 }
 
 impl App {
@@ -37,6 +38,7 @@ impl App {
             read_only_files: files_clone,
             character_index: 0,
             selected_id: None,
+            render_popup: false,
         }
     }
 
