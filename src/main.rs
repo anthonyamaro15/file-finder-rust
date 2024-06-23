@@ -188,8 +188,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
             };
 
+
+            let inner_layout= Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![
+                    //Constraint::Percentage(50),
+                    Constraint::Percentage(100),
+                ])
+                    .split(chunks[2]);
+
             // Input field
-            let input_block = Paragraph::new(app.input.clone())
+                       let input_block = Paragraph::new(app.input.clone())
                 .block(Block::default().borders(Borders::ALL).title("Find"))
                 .style(match app.input_mode {
                     InputMode::Editing => Style::default().fg(Color::Green),
@@ -218,12 +227,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Use (j,k) to navigate, use(h,l) to navigate directory, 'Enter' to open with selected IDE",
                 Style::default(),
             );
+            let default_empty_label = Span::styled("",Style::default());
 
             let instructions = Text::from(Line::from(bottom_instructions));
             let parsed_instructions = Paragraph::new(instructions)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
-
+            let default_label = Paragraph::new(default_empty_label)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
@@ -238,16 +250,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             f.render_widget(help_message, chunks[0]);
-            f.render_widget(parsed_instructions, chunks[3]);
+            f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_widget(input_block, chunks[1]);
-            f.render_stateful_widget(list_block, chunks[2], &mut state);
+            f.render_widget(default_label, chunks[2]);
+            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+           // f.render_widget(list_block, inner_layout[1]);
+            //f.render_stateful_widget(list_block, chunks[2], &mut state);
         })?;
 
         // Handle input
-        if let Event::Key(key) = event::read()? {
-            match app.input_mode {
-                InputMode::Normal => match key.code {
-                    KeyCode::Char('i') => {
+        if let Event::Key(key) = event::read()? { match app.input_mode { InputMode::Normal => match key.code { KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
                     }
                     KeyCode::Char('q') => {
@@ -315,11 +327,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    KeyCode::Char('d') => {
+                        app.render_popup = !app.render_popup;
+                    }
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
 
                         app.input = selected.clone();
+                
 
                         let _ = handle_file_selection(&selected, &mut terminal, app.clone());
                         break;
