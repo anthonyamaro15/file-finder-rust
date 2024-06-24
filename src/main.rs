@@ -1,5 +1,4 @@
 use app::{App, InputMode};
-use configuration::Configuration;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
@@ -244,6 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Style::default(),
                 ),
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
+                InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
             };
 
 
@@ -261,6 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .style(match app.input_mode {
                     InputMode::Editing => Style::default().fg(Color::Green),
                     InputMode::Normal => Style::default().fg(Color::White),
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
                 });
 
             // List of filtered items
@@ -279,6 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .style(match app.input_mode {
                     InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray)
                 });
 
             let bottom_instructions = Span::styled(
@@ -300,6 +302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let input_area = chunks[1];
             match app.input_mode {
                 InputMode::Normal => {},
+                InputMode::WatchDelete => {},
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
@@ -329,14 +332,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
         // Handle input
-        if let Event::Key(key) = event::read()? { match app.input_mode { InputMode::Normal => match key.code { KeyCode::Char('i') => {
+        if let Event::Key(key) = event::read()? { match app.input_mode { 
+            InputMode::Normal => match key.code { KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
                     }
                     KeyCode::Char('q') => {
                         break;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if !app.render_popup {
 
                             let i = match state.selected() {
                             Some(i) => {
@@ -350,10 +353,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         state.select(Some(i));
 
-                }
                                             }
                     KeyCode::Up | KeyCode::Char('k') => {
-                if !app.render_popup {
 
                             let i = match state.selected() {
                             Some(i) => {
@@ -367,11 +368,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         state.select(Some(i));
 
-
-                }
                                             }
                     KeyCode::Char('h') => {
-                if !app.render_popup { 
                         let selected = &app.files[state.selected().unwrap()];
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
 
@@ -389,10 +387,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
-                }
                                             }
                     KeyCode::Char('l') => {
-                if !app.render_popup {
                         let selected_index = state.selected();
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
@@ -410,34 +406,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
 
-
-                }
                                             }
                     KeyCode::Char('d') => {
-                        app.render_popup = !app.render_popup;
+                        app.render_popup = true;
+                        app.input_mode = InputMode::WatchDelete;
                     }
-                    KeyCode::Char('n') => {
-                // if delete popup is open then track what user wants to do, if not then close it
-                        if app.render_popup {
-                            app.render_popup = false;
-                }
-            }
-            KeyCode::Char('y') => {
-                if app.render_popup {
-                    let selected_index = state.selected();
-
-                    if let Some(selected_indx) = selected_index {
-                        let selected  = &app.files[selected_indx];
-
-                        handle_delete_based_on_type(selected).unwrap();
-
-                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
-                        app.render_popup = false;
-                        app.files = file_path_list.clone();
-                        app.read_only_files = file_path_list.clone();
-                    }
-                }
-            }
+                    
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
@@ -472,7 +446,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     _ => {}
                 },
-                InputMode::Editing => {}
+                InputMode::WatchDelete => match key.code {
+                KeyCode::Char('q') => {
+                    app.render_popup = false;
+                    app.input_mode = InputMode::Normal;
+                    break;
+                }
+                KeyCode::Char('n') => {
+                    app.render_popup = false;
+                    app.input_mode = InputMode::Normal;
+                }
+
+                KeyCode::Char('y') => {
+                    let selected_index = state.selected();
+
+                    if let Some(selected_indx) = selected_index {
+                        let selected  = &app.files[selected_indx];
+
+                        handle_delete_based_on_type(selected).unwrap();
+
+                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                        app.render_popup = false;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                            app.input_mode = InputMode::Normal;
+                    }
+
+
+                }
+                _ => {}
+            }
+            _ => {}
             }
         }
     }

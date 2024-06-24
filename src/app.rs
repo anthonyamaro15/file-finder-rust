@@ -13,6 +13,7 @@ pub enum IDE {
 pub enum InputMode {
     Normal,
     Editing,
+    WatchDelete,
 }
 
 #[derive(Debug, Clone)]
