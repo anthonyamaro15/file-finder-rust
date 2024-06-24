@@ -1,4 +1,5 @@
 use app::{App, InputMode};
+use configuration::Configuration;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
@@ -126,6 +127,50 @@ fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     ]).split(popup_layout[1])[1]
 }
 
+fn delete_file(file: &str) -> anyhow::Result<()> {
+   match fs::remove_file(file) {
+        Ok(_) => {},
+        Err(e) => {
+            // TODO: show notification to user
+            println!("Error: {:?}", e);
+        }
+    }
+    Ok(())
+}
+
+fn delete_dir(file: &str) -> anyhow::Result<()> {
+     match fs::remove_dir_all(file) {
+        Ok(_) => {},
+        Err(e) => {
+            println!("Error: {:?}", e);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
+    let metadata = fs::metadata(file)?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_dir() {
+        delete_dir(file)?;
+    } else {
+        delete_file(file)?;
+    }
+    Ok(())
+}
+
+fn get_file_path_data(start_path: String) -> anyhow::Result<Vec<String>> {
+let entries = fs::read_dir(start_path)?
+        .map(|res| res.map(|e| e.path()))
+        .collect::<Result<Vec<_>, io::Error>>()?;
+
+    let file_strings = convert_file_path_to_string(entries);
+
+    Ok(file_strings)
+
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -134,11 +179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.handle_settings_configuration();
     // Setup terminal
 
-    let entries = fs::read_dir(config.start_path.to_owned())?
+    /* let entries = fs::read_dir(config.start_path.to_owned())?
         .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, io::Error>>()?;
+        .collect::<Result<Vec<_>, io::Error>>()?; */
 
-    let file_strings = convert_file_path_to_string(entries);
+    let file_strings = get_file_path_data(config.start_path.clone())?;    //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
     // handle ide selection from arguments
@@ -378,6 +423,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // if delete popup is open then track what user wants to do, if not then close it
                         if app.render_popup {
                             app.render_popup = false;
+                }
+            }
+            KeyCode::Char('y') => {
+                if app.render_popup {
+                    let selected_index = state.selected();
+
+                    if let Some(selected_indx) = selected_index {
+                        let selected  = &app.files[selected_indx];
+
+                        handle_delete_based_on_type(selected).unwrap();
+
+                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                        app.render_popup = false;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                    }
                 }
             }
                     KeyCode::Enter => {
