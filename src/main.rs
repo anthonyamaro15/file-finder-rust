@@ -8,7 +8,7 @@ use std::{
     process::Command,
 };
 
-use ratatui::prelude::*;
+use ratatui::{prelude::*, widgets::Clear};
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
@@ -108,6 +108,22 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
 
     let file_strings = convert_file_path_to_string(entries);
     Ok(Some(file_strings))
+}
+
+fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
+
+    let popup_layout = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ]).split(rect);
+
+    
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x)/2)
+    ]).split(popup_layout[1])[1]
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -249,6 +265,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 }
             }
+
+            
+
             f.render_widget(help_message, chunks[0]);
             f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_widget(input_block, chunks[1]);
@@ -256,6 +275,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
+            //
+            if app.render_popup {
+                let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
+                let area = draw_popup(f.size(), 60, 5);
+                    f.render_widget(Clear, area);
+                f.render_widget(block, area);
+
+        
+            }
         })?;
 
         // Handle input
@@ -330,6 +358,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     KeyCode::Char('d') => {
                         app.render_popup = !app.render_popup;
                     }
+                    KeyCode::Char('n') => {
+                // if delete popup is open then track what user wants to do, if not then close it
+                        if app.render_popup {
+                            app.render_popup = false;
+                }
+            }
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
