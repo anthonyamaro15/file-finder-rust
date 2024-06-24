@@ -11,6 +11,7 @@ Important: Currently, only available for macOS.
 - File Navigation: Navigate through your file system using simple keyboard shorcuts:
   - "l" OR ">" to move to the next directory
   - "h" OR "<" to move to the previous directory
+  - "d" to delete file or directory
 - Editor Integration: Open projects directly in "neovim", "vscoode", or "zed".
   - Example use to open project with vscode: "ff vscode"
 - Search: Use the input field for quick searching of directories.
