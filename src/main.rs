@@ -179,9 +179,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.handle_settings_configuration();
     // Setup terminal
 
-    /* let entries = fs::read_dir(config.start_path.to_owned())?
-        .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, io::Error>>()?; */
 
     let file_strings = get_file_path_data(config.start_path.clone())?;    //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
