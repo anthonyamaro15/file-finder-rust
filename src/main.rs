@@ -294,7 +294,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        let i = match state.selected() {
+                        if !app.render_popup {
+
+                            let i = match state.selected() {
                             Some(i) => {
                                 if i >= app.files.len() - 1 {
                                     0
@@ -305,9 +307,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None => 0,
                         };
                         state.select(Some(i));
-                    }
+
+                }
+                                            }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        let i = match state.selected() {
+                if !app.render_popup {
+
+                            let i = match state.selected() {
                             Some(i) => {
                                 if i == 0 {
                                     app.files.len() - 1
@@ -318,8 +324,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None => 0,
                         };
                         state.select(Some(i));
-                    }
+
+
+                }
+                                            }
                     KeyCode::Char('h') => {
+                if !app.render_popup { 
                         let selected = &app.files[state.selected().unwrap()];
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
 
@@ -336,8 +346,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.files = f_s;
                             }
                         }
-                    }
+
+                }
+                                            }
                     KeyCode::Char('l') => {
+                if !app.render_popup {
                         let selected_index = state.selected();
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
@@ -354,7 +367,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-                    }
+
+
+                }
+                                            }
                     KeyCode::Char('d') => {
                         app.render_popup = !app.render_popup;
                     }
