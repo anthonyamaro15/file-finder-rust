@@ -171,39 +171,39 @@ let entries = fs::read_dir(start_path)?
 
 }
 
-fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+fn create_new_dir(current_file_path: String, new_item: String) -> Option<bool> {
     let append_path  = format!("{}/{}", current_file_path, new_item);
 
-    match fs::create_dir_all(append_path) {
-        Ok(_) => {},
-        Err(e) => {
-            dbg!("error: {:?}", e);
+     let response = match fs::create_dir_all(append_path) {
+        Ok(_) => Some(true),
+        Err(_) => {
+           Some(false) 
         }
-    }
-    Ok(())
+    };
+    response
 }
 
-fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
-
+fn create_new_file(current_file_path: String, file_name: String) -> Option<bool> {
     let append_path = format!("{}/{}", current_file_path, file_name);
-    match File::create_new(append_path) {
-        Ok(_) => {},
-        Err(e) => {
-            dbg!("Error {:?}", e);
+    let response = match File::create_new(append_path) {
+        Ok(_) => Some(true),
+        Err(_) => {
+            // kind: AlreadyExists
+            Some(false)
         }
-    }
-    Ok(())
+    };
+    response
 }
 
-fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> Option<bool> {
 
     if new_item.contains(".") {
-        create_new_file(current_file_path, new_item)?;
+     let file_res =    create_new_file(current_file_path, new_item);
+        file_res
     } else {
-        create_new_dir(current_file_path, new_item)?;
+       let dir_res = create_new_dir(current_file_path, new_item);
+        dir_res
     }
-
-    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -533,15 +533,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
                         split_path.pop();
                         let new_path = split_path.join("/");
-                        create_item_based_on_type(new_path, app.create_edit_file_name.clone())?;// test
-                        app.input_mode = InputMode::Normal;
-                        app.reset_create_edit_values();
+                        if let Some(success) = create_item_based_on_type(new_path, app.create_edit_file_name.clone()) {
+
+                            if success {
+                                app.input_mode = InputMode::Normal;
+                                app.reset_create_edit_values();
 
                         // update the list of files
-                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
-                        app.files = file_path_list.clone();
-                        app.read_only_files = file_path_list.clone();
+                                let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                                app.files = file_path_list.clone();
+                                app.read_only_files = file_path_list.clone();
 
+
+
+
+                            } else {
+                                // show error to user
+                            }
+
+                        }// test
+                        
                     }
                 }
                 _ => {}
