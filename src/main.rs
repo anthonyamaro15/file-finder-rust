@@ -2,7 +2,7 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
-    env, fs,
+    env, fs::{self, File},
     io::{self, Stdout},
     path::{Path, PathBuf},
     process::Command,
@@ -170,6 +170,42 @@ let entries = fs::read_dir(start_path)?
     Ok(file_strings)
 
 }
+
+fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+    let append_path  = format!("{}/{}", current_file_path, new_item);
+
+    match fs::create_dir_all(append_path) {
+        Ok(_) => {},
+        Err(e) => {
+            dbg!("error: {:?}", e);
+        }
+    }
+    Ok(())
+}
+
+fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
+
+    let append_path = format!("{}/{}", current_file_path, file_name);
+    match File::create_new(append_path) {
+        Ok(_) => {},
+        Err(e) => {
+            dbg!("Error {:?}", e);
+        }
+    }
+    Ok(())
+}
+
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+
+    if new_item.contains(".") {
+        create_new_file(current_file_path, new_item)?;
+    } else {
+        create_new_dir(current_file_path, new_item)?;
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -424,10 +460,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
                                 app.files = f_s;
+                                state.select(Some(0));
                             }
                         }
 
-                                            }
+                    }
                     KeyCode::Char('l') => {
                         let selected_index = state.selected();
                         if let Some(selected_indx) = selected_index {
@@ -438,6 +475,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(files_strs) = files_strings {
                                         app.read_only_files = files_strs.clone();
                                         app.files = files_strs;
+                                        state.select(Some(0));
                                     }
                                 }
                                 Err(e) => {
@@ -489,9 +527,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Enter => {
                     // create file/dir
                     if !app.create_edit_file_name.is_empty() {
-// test
+
+                        let selected_index = state.selected();
+                        let selected = &app.files[selected_index.unwrap()];
+                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                        split_path.pop();
+                        let new_path = split_path.join("/");
+                        create_item_based_on_type(new_path, app.create_edit_file_name.clone())?;// test
                         app.input_mode = InputMode::Normal;
                         app.reset_create_edit_values();
+
+                        // update the list of files
+                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+
                     }
                 }
                 _ => {}
@@ -540,7 +590,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.render_popup = false;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
-                            app.input_mode = InputMode::Normal;
+                        app.input_mode = InputMode::Normal;
                     }
 
 
