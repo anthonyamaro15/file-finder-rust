@@ -112,6 +112,11 @@ impl App {
         self.character_index = 0;
     }
 
+    pub fn reset_create_edit_values(&mut self) {
+        self.create_edit_file_name.clear();
+        self.char_index = 0;
+    }
+
     pub fn submit_message(&mut self) {
         self.message.push(self.input.clone());
         self.input.clear();
@@ -135,11 +140,11 @@ impl App {
     //
     pub fn add_char(&mut self, new_char: char) {
         let index = self.byte_char_index();
-        self.input.insert(index, new_char);
+        self.create_edit_file_name.insert(index, new_char);
         self.move_create_edit_cursor_right();
     }
     pub fn byte_char_index(&mut self) -> usize {
-        self.input
+        self.create_edit_file_name
             .char_indices()
             .map(|(i, _)| i)
             .nth(self.char_index)
@@ -159,7 +164,8 @@ impl App {
 
             let after_char_to_delete = self.create_edit_file_name.chars().skip(current_index);
 
-            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
+            self.create_edit_file_name =
+                before_char_to_delete.chain(after_char_to_delete).collect();
             self.move_create_edit_cursor_left();
         }
     }

@@ -244,6 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
                 InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
+                InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
             };
 
 
@@ -262,6 +263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Editing => Style::default().fg(Color::Green),
                     InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
                 });
 
             // List of filtered items
@@ -280,7 +282,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .style(match app.input_mode {
                     InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
-                    InputMode::WatchDelete => Style::default().fg(Color::Gray)
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray)
                 });
 
             let bottom_instructions = Span::styled(
@@ -303,6 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match app.input_mode {
                 InputMode::Normal => {},
                 InputMode::WatchDelete => {},
+                InputMode::WatchCreate => {},
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
@@ -321,14 +325,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
             //
-            /* if app.render_popup {
+            if app.render_popup {
                 let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
-                let area = draw_popup(f.size(), 60, 5);
+                let area = draw_popup(f.size(), 40, 7);
+                let popup_chuncks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(1)
+                    .constraints([Constraint::Percentage(100)]).split(area);
                     f.render_widget(Clear, area);
-                f.render_widget(block, area);
+                f.render_widget(block, popup_chuncks[0]);
 
         
-            } */
+            }
 
             // TODO:
             // 1. create new input field, 
@@ -336,11 +344,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 3. after submit clear input field and update the list of files/dirs
 
                 // TODO: test with render popup, new popup to rename file/directory
-            if app.render_popup {
-                let popup_block = Block::default().title("testitng").borders(Borders::ALL).style(Style::default());
+            match app.input_mode {
+                InputMode::WatchCreate => {
+                
 
-                let area = draw_popup(f.size(), 60, 10);
-                f.render_widget(popup_block, area);
+                let area = draw_popup(f.size(), 40, 7);
+                //f.render_widget(popup_block, area);
+
 
                 let popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
@@ -348,9 +358,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .constraints([Constraint::Percentage(100)]).split(area);
 
 
-                let test_text = Paragraph::new("this is a test").block(Block::default().borders(Borders::NONE));
-                f.render_widget(test_text, popup_chuncks[0]);
+                let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
+                    .block(Block::default().borders(Borders::ALL).title("Create File/Dir"))
+                    .style(Style::default());
 
+                //let test_text = Paragraph::new("this is a test").block(Block::default().borders(Borders::NONE));
+                f.render_widget(create_input_block, popup_chuncks[0]);
+
+
+                },
+                _ => {}
             }
         })?;
 
@@ -434,6 +451,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.render_popup = true;
                         app.input_mode = InputMode::WatchDelete;
                     }
+                    KeyCode::Char('a') => {
+                    app.input_mode = InputMode::WatchCreate;
+                }
                     
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
@@ -461,8 +481,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 KeyCode::Right => {
                     app.move_create_edit_cursor_right();
                 }
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                        app.reset_create_edit_values();
+                    // create methods to reset the create_edit_file_name and state of it
+                }
                 KeyCode::Enter => {
                     // create file/dir
+                    if !app.create_edit_file_name.is_empty() {
+// test
+                        app.input_mode = InputMode::Normal;
+                        app.reset_create_edit_values();
+                    }
                 }
                 _ => {}
             }
