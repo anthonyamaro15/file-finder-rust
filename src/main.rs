@@ -321,13 +321,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
             //
-            if app.render_popup {
+            /* if app.render_popup {
                 let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
                 let area = draw_popup(f.size(), 60, 5);
                     f.render_widget(Clear, area);
                 f.render_widget(block, area);
 
         
+            } */
+
+            // TODO:
+            // 1. create new input field, 
+            // 2. validate that input is not empty before submitting
+            // 3. after submit clear input field and update the list of files/dirs
+
+                // TODO: test with render popup, new popup to rename file/directory
+            if app.render_popup {
+                let popup_block = Block::default().title("testitng").borders(Borders::ALL).style(Style::default());
+
+                let area = draw_popup(f.size(), 60, 10);
+                f.render_widget(popup_block, area);
+
+                let popup_chuncks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(1)
+                    .constraints([Constraint::Percentage(100)]).split(area);
+
+
+                let test_text = Paragraph::new("this is a test").block(Block::default().borders(Borders::NONE));
+                f.render_widget(test_text, popup_chuncks[0]);
+
             }
         })?;
 
@@ -425,6 +448,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
 
+                InputMode::WatchCreate if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char(c) => {
+                   app.add_char(c); 
+                }
+                KeyCode::Backspace => {
+                   app.delete_c(); 
+                }
+                KeyCode::Left => {
+                    app.move_create_edit_cursor_left();
+                }
+                KeyCode::Right => {
+                    app.move_create_edit_cursor_right();
+                }
+                KeyCode::Enter => {
+                    // create file/dir
+                }
+                _ => {}
+            }
                 InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => app.submit_message(),
                     KeyCode::Char(to_insert) => {

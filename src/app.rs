@@ -14,6 +14,7 @@ pub enum InputMode {
     Normal,
     Editing,
     WatchDelete,
+    WatchCreate,
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +27,9 @@ pub struct App {
     pub read_only_files: Vec<String>,
     pub selected_id: Option<IDE>,
     pub render_popup: bool,
+    // create and edit file name
+    pub create_edit_file_name: String,
+    pub char_index: usize,
 }
 
 impl App {
@@ -40,6 +44,8 @@ impl App {
             character_index: 0,
             selected_id: None,
             render_popup: false,
+            create_edit_file_name: String::new(),
+            char_index: 0,
         }
     }
 
@@ -119,6 +125,57 @@ impl App {
             "zed" => Some(IDE::ZED),
             _ => None,
         }
+    }
+
+    // TODO: could we combine search, create, edit input field methods?
+    // there is a lot of duplication here
+    //
+    //
+    //
+    //
+    pub fn add_char(&mut self, new_char: char) {
+        let index = self.byte_char_index();
+        self.input.insert(index, new_char);
+        self.move_create_edit_cursor_right();
+    }
+    pub fn byte_char_index(&mut self) -> usize {
+        self.input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.char_index)
+            .unwrap_or(self.create_edit_file_name.len())
+    }
+
+    pub fn delete_c(&mut self) {
+        let is_not_cursor_leftmost = self.char_index != 0;
+        if is_not_cursor_leftmost {
+            let current_index = self.char_index;
+            let from_left_to_current_index = current_index - 1;
+
+            let before_char_to_delete = self
+                .create_edit_file_name
+                .chars()
+                .take(from_left_to_current_index);
+
+            let after_char_to_delete = self.create_edit_file_name.chars().skip(current_index);
+
+            self.input = before_char_to_delete.chain(after_char_to_delete).collect();
+            self.move_create_edit_cursor_left();
+        }
+    }
+
+    pub fn move_create_edit_cursor_left(&mut self) {
+        let cursor_moved_left = self.char_index.saturating_sub(1);
+        self.char_index = self.clamp_create_edit_cursor(cursor_moved_left);
+    }
+
+    pub fn move_create_edit_cursor_right(&mut self) {
+        let cursor_moved_right = self.char_index.saturating_add(1);
+        self.char_index = self.clamp_create_edit_cursor(cursor_moved_right);
+    }
+
+    pub fn clamp_create_edit_cursor(&mut self, new_cursor_pos: usize) -> usize {
+        new_cursor_pos.clamp(0, self.create_edit_file_name.chars().count())
     }
 
     pub fn handle_arguments(&mut self, args: Vec<String>) {
