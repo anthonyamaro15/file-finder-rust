@@ -171,7 +171,8 @@ let entries = fs::read_dir(start_path)?
 fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()>{
     let append_path  = format!("{}/{}", current_file_path, new_item);
 
-     let response = match fs::create_dir_all(append_path) {
+    // TODO: implications of using (create_dir) || (create_dir_all)
+     let response = match fs::create_dir(append_path) {
         Ok(_) => Ok(()),
         Err(e) => {
            return Err(e.into()); 
@@ -195,7 +196,7 @@ fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Resu
 fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()>{
 
     if new_item.contains(".") {
-     let file_res =    create_new_file(current_file_path, new_item);
+     let file_res = create_new_file(current_file_path, new_item);
         file_res
     } else {
        let dir_res = create_new_dir(current_file_path, new_item);
@@ -549,7 +550,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let error = e.downcast_ref::<io::Error>().unwrap();
                                 match error.kind() {
                                     ErrorKind::AlreadyExists => {
-                                        // display error that file already exists
                                         app.error_message = "File Already Exists".to_string();
                                         app.is_create_edit_error = true;
                                     },
