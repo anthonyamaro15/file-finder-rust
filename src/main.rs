@@ -2,10 +2,7 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
-    env, fs,
-    io::{self, Stdout},
-    path::{Path, PathBuf},
-    process::Command,
+    env, error::Error, fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command
 };
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -170,6 +167,43 @@ let entries = fs::read_dir(start_path)?
     Ok(file_strings)
 
 }
+
+fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()>{
+    let append_path  = format!("{}/{}", current_file_path, new_item);
+
+    // TODO: implications of using (create_dir) || (create_dir_all)
+     let response = match fs::create_dir(append_path) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+           return Err(e.into()); 
+        }
+    };
+    response
+}
+
+fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
+    let append_path = format!("{}/{}", current_file_path, file_name);
+    let response = match File::create_new(append_path) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            return Err(e.into());
+            // kind: AlreadyExists
+        }
+    };
+    response
+}
+
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()>{
+
+    if new_item.contains(".") {
+     let file_res = create_new_file(current_file_path, new_item);
+        file_res
+    } else {
+       let dir_res = create_new_dir(current_file_path, new_item);
+        dir_res
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -244,6 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
                 InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
+                InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
             };
 
 
@@ -262,6 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Editing => Style::default().fg(Color::Green),
                     InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
                 });
 
             // List of filtered items
@@ -280,7 +316,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .style(match app.input_mode {
                     InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
-                    InputMode::WatchDelete => Style::default().fg(Color::Gray)
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray)
                 });
 
             let bottom_instructions = Span::styled(
@@ -303,6 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match app.input_mode {
                 InputMode::Normal => {},
                 InputMode::WatchDelete => {},
+                InputMode::WatchCreate => {},
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
@@ -323,11 +361,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //
             if app.render_popup {
                 let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
-                let area = draw_popup(f.size(), 60, 5);
+                let area = draw_popup(f.size(), 40, 7);
+                let popup_chuncks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(1)
+                    .constraints([Constraint::Percentage(100)]).split(area);
                     f.render_widget(Clear, area);
-                f.render_widget(block, area);
+                f.render_widget(block, popup_chuncks[0]);
 
         
+            }
+
+
+            match app.input_mode {
+                InputMode::WatchCreate => {
+                
+                     
+                let area = draw_popup(f.size(), 40, 7);
+                //f.render_widget(popup_block, area);
+
+
+                let popup_chuncks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(1)
+                    .constraints([Constraint::Percentage(100)]).split(area);
+
+
+                let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
+                    .block(Block::default().borders(Borders::ALL).title(
+                            match app.is_create_edit_error {
+                                false => "Create File/Dir".to_string(),
+                                true => app.error_message.to_owned()
+                            }
+                        ))
+                    .style(
+                            match app.is_create_edit_error {
+                                true => Style::default().fg(Color::Red),
+                                false => Style::default().fg(Color::LightGreen)
+                            }
+                        );
+
+                f.render_widget(create_input_block, popup_chuncks[0]);
+
+
+                },
+                _ => {}
             }
         })?;
 
@@ -384,10 +462,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
                                 app.files = f_s;
+                                state.select(Some(0));
                             }
                         }
 
-                                            }
+                    }
                     KeyCode::Char('l') => {
                         let selected_index = state.selected();
                         if let Some(selected_indx) = selected_index {
@@ -398,6 +477,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(files_strs) = files_strings {
                                         app.read_only_files = files_strs.clone();
                                         app.files = files_strs;
+                                        state.select(Some(0));
                                     }
                                 }
                                 Err(e) => {
@@ -411,6 +491,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.render_popup = true;
                         app.input_mode = InputMode::WatchDelete;
                     }
+                    KeyCode::Char('a') => {
+                    app.input_mode = InputMode::WatchCreate;
+                }
                     
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
@@ -425,6 +508,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
 
+                InputMode::WatchCreate if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Char(c) => {
+                   app.add_char(c); 
+                }
+                KeyCode::Backspace => {
+                   app.delete_c(); 
+                }
+                KeyCode::Left => {
+                    app.move_create_edit_cursor_left();
+                }
+                KeyCode::Right => {
+                    app.move_create_edit_cursor_right();
+                }
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                        app.reset_create_edit_values();
+                    // create methods to reset the create_edit_file_name and state of it
+                }
+                KeyCode::Enter => {
+                    // create file/dir
+                    if !app.create_edit_file_name.is_empty() {
+
+                        let selected_index = state.selected();
+                        let selected = &app.files[selected_index.unwrap()];
+                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                        split_path.pop();
+                        let new_path = split_path.join("/");
+                        match  create_item_based_on_type(new_path, app.create_edit_file_name.clone()) {
+
+                            Ok(_) => {
+                                app.input_mode = InputMode::Normal;
+
+                                app.reset_create_edit_values();
+                                let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                                app.files = file_path_list.clone();
+                                app.read_only_files = file_path_list.clone();
+
+                            },
+                            Err(e) => {
+                                let error = e.downcast_ref::<io::Error>().unwrap();
+                                match error.kind() {
+                                    ErrorKind::AlreadyExists => {
+                                        app.error_message = "File Already Exists".to_string();
+                                        app.is_create_edit_error = true;
+                                    },
+                                    _ => {}
+                                }
+                            }
+
+                                // show error to user
+                        }// test
+                        
+                    }
+                }
+                _ => {}
+            }
                 InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => app.submit_message(),
                     KeyCode::Char(to_insert) => {
@@ -469,7 +608,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.render_popup = false;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
-                            app.input_mode = InputMode::Normal;
+                        app.input_mode = InputMode::Normal;
                     }
 
 
