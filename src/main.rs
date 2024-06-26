@@ -2,7 +2,7 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
-    env, error::Error, fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command
+    env,  fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command
 };
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -279,6 +279,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
                 InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
                 InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
+                InputMode::WatchRename => (vec!["Watch Delete Mode".bold()], Style::default()),
             };
 
 
@@ -298,6 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
+                    InputMode::WatchRename => Style::default().fg(Color::Gray),
                 });
 
             // List of filtered items
@@ -317,7 +319,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Normal => Style::default().fg(Color::Green),
                     InputMode::Editing => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
-                    InputMode::WatchCreate => Style::default().fg(Color::Gray)
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
+                    InputMode::WatchRename => Style::default().fg(Color::Gray)
                 });
 
             let bottom_instructions = Span::styled(
@@ -341,6 +344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Normal => {},
                 InputMode::WatchDelete => {},
                 InputMode::WatchCreate => {},
+                InputMode::WatchRename => {},
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
@@ -373,19 +377,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
 
-            match app.input_mode {
-                InputMode::WatchCreate => {
-                
-                     
                 let area = draw_popup(f.size(), 40, 7);
-                //f.render_widget(popup_block, area);
-
-
                 let popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
                     .margin(1)
                     .constraints([Constraint::Percentage(100)]).split(area);
 
+            match app.input_mode {
+                InputMode::WatchCreate => {
+                //f.render_widget(popup_block, area);
 
                 let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
                     .block(Block::default().borders(Borders::ALL).title(
@@ -405,6 +405,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
                 },
+                InputMode::WatchRename => {
+                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
+                        .block(Block::default().borders(Borders::ALL).title(
+                            match app.is_create_edit_error {
+                                false => "Rename to".to_string(),
+                                true => app.error_message.to_owned()
+                            }
+                        ))
+                            .style(
+                            match app.is_create_edit_error {
+                                true => Style::default().fg(Color::Red),
+                                false => Style::default().fg(Color::LightGreen)
+                            }
+                        );
+
+                f.render_widget(create_input_block, popup_chuncks[0]);
+
+                }
                 _ => {}
             }
         })?;
@@ -493,6 +511,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char('a') => {
                     app.input_mode = InputMode::WatchCreate;
+                    }
+                    KeyCode::Char('r') => {
+                    // handle rename file/dir functionality
+                    app.input_mode = InputMode::WatchRename;
                 }
                     
                     KeyCode::Enter => {
@@ -508,6 +530,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
 
+                InputMode::WatchRename if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char(c) => {},
+                    KeyCode::Esc => {
+                        app.input_mode = InputMode::Normal;
+                        app.reset_create_edit_values();
+                }
+                    _ => {}
+                }
                 InputMode::WatchCreate if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char(c) => {
                    app.add_char(c); 
@@ -564,6 +594,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => {}
             }
+            
                 InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => app.submit_message(),
                     KeyCode::Char(to_insert) => {
