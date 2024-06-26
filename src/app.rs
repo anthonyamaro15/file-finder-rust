@@ -30,6 +30,8 @@ pub struct App {
     // create and edit file name
     pub create_edit_file_name: String,
     pub char_index: usize,
+    pub is_create_edit_error: bool,
+    pub error_message: String,
 }
 
 impl App {
@@ -46,6 +48,8 @@ impl App {
             render_popup: false,
             create_edit_file_name: String::new(),
             char_index: 0,
+            is_create_edit_error: false,
+            error_message: String::new(),
         }
     }
 
@@ -115,6 +119,10 @@ impl App {
     pub fn reset_create_edit_values(&mut self) {
         self.create_edit_file_name.clear();
         self.char_index = 0;
+
+        // reset error vaules
+        self.is_create_edit_error = false;
+        self.error_message = String::new();
     }
 
     pub fn submit_message(&mut self) {

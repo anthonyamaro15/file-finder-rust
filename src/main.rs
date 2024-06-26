@@ -2,10 +2,7 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
-    env, fs::{self, File},
-    io::{self, Stdout},
-    path::{Path, PathBuf},
-    process::Command,
+    env, error::Error, fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command
 };
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -171,31 +168,31 @@ let entries = fs::read_dir(start_path)?
 
 }
 
-fn create_new_dir(current_file_path: String, new_item: String) -> Option<bool> {
+fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()>{
     let append_path  = format!("{}/{}", current_file_path, new_item);
 
      let response = match fs::create_dir_all(append_path) {
-        Ok(_) => Some(true),
-        Err(_) => {
-           Some(false) 
+        Ok(_) => Ok(()),
+        Err(e) => {
+           return Err(e.into()); 
         }
     };
     response
 }
 
-fn create_new_file(current_file_path: String, file_name: String) -> Option<bool> {
+fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
     let append_path = format!("{}/{}", current_file_path, file_name);
     let response = match File::create_new(append_path) {
-        Ok(_) => Some(true),
-        Err(_) => {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            return Err(e.into());
             // kind: AlreadyExists
-            Some(false)
         }
     };
     response
 }
 
-fn create_item_based_on_type(current_file_path: String, new_item: String) -> Option<bool> {
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()>{
 
     if new_item.contains(".") {
      let file_res =    create_new_file(current_file_path, new_item);
@@ -374,16 +371,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         
             }
 
-            // TODO:
-            // 1. create new input field, 
-            // 2. validate that input is not empty before submitting
-            // 3. after submit clear input field and update the list of files/dirs
 
-                // TODO: test with render popup, new popup to rename file/directory
             match app.input_mode {
                 InputMode::WatchCreate => {
                 
-
+                     
                 let area = draw_popup(f.size(), 40, 7);
                 //f.render_widget(popup_block, area);
 
@@ -395,10 +387,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
                 let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                    .block(Block::default().borders(Borders::ALL).title("Create File/Dir"))
-                    .style(Style::default());
+                    .block(Block::default().borders(Borders::ALL).title(
+                            match app.is_create_edit_error {
+                                false => "Create File/Dir".to_string(),
+                                true => app.error_message.to_owned()
+                            }
+                        ))
+                    .style(
+                            match app.is_create_edit_error {
+                                true => Style::default().fg(Color::Red),
+                                false => Style::default().fg(Color::LightGreen)
+                            }
+                        );
 
-                //let test_text = Paragraph::new("this is a test").block(Block::default().borders(Borders::NONE));
                 f.render_widget(create_input_block, popup_chuncks[0]);
 
 
@@ -533,24 +534,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
                         split_path.pop();
                         let new_path = split_path.join("/");
-                        if let Some(success) = create_item_based_on_type(new_path, app.create_edit_file_name.clone()) {
+                        match  create_item_based_on_type(new_path, app.create_edit_file_name.clone()) {
 
-                            if success {
+                            Ok(_) => {
                                 app.input_mode = InputMode::Normal;
-                                app.reset_create_edit_values();
 
-                        // update the list of files
+                                app.reset_create_edit_values();
                                 let file_path_list = get_file_path_data(config.start_path.to_owned())?;
                                 app.files = file_path_list.clone();
                                 app.read_only_files = file_path_list.clone();
 
-
-
-
-                            } else {
-                                // show error to user
+                            },
+                            Err(e) => {
+                                let error = e.downcast_ref::<io::Error>().unwrap();
+                                match error.kind() {
+                                    ErrorKind::AlreadyExists => {
+                                        // display error that file already exists
+                                        app.error_message = "File Already Exists".to_string();
+                                        app.is_create_edit_error = true;
+                                    },
+                                    _ => {}
+                                }
                             }
 
+                                // show error to user
                         }// test
                         
                     }
