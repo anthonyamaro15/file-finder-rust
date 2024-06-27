@@ -541,9 +541,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char('r') => {
                         let selected_index = state.selected();
-                    // /Users/anthonyamaro/Desktop/testjs
-                    // handle rename file/dir functionality
-                    //let t = fs::rename(, to)
                     if let Some(index) = selected_index {
                         let selected = &app.files[index];
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
