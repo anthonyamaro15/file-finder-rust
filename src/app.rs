@@ -15,6 +15,7 @@ pub enum InputMode {
     Editing,
     WatchDelete,
     WatchCreate,
+    WatchRename,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,10 @@ pub struct App {
     pub char_index: usize,
     pub is_create_edit_error: bool,
     pub error_message: String,
+
+    // edit
+    pub current_path_to_edit: String,
+    pub current_name_to_edit: String,
 }
 
 impl App {
@@ -50,6 +55,8 @@ impl App {
             char_index: 0,
             is_create_edit_error: false,
             error_message: String::new(),
+            current_path_to_edit: String::new(),
+            current_name_to_edit: String::new(),
         }
     }
 
