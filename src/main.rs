@@ -217,6 +217,20 @@ fn handle_rename(app: App) ->io::Result<()>  {
     Ok(result)
 }
 
+fn check_if_exists(new_path: String) -> bool {
+   match  Path::new(&new_path).try_exists() {
+        Ok(value) => {
+            match value {
+                true => true,
+                false => false 
+            }
+        },
+        Err(e) => {
+            panic!("Error occured {:?}",e);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -580,7 +594,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.reset_create_edit_values();
                     } else {
                         // proceed with operation
-                        match handle_rename(app.clone()) {
+                        let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
+                        if !check_if_exists(new_path) {
+                            match handle_rename(app.clone()) {
                             Ok(_) => {
                                 app.reset_create_edit_values();
                                 let file_path_list = get_file_path_data(config.start_path.to_owned())?;
@@ -589,7 +605,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.input_mode = InputMode::Normal;
                             }
                             Err(e) => {
-                                println!("e {:?}", e);
                                 app.is_create_edit_error = true;
                                 match e.kind() {
                                 ErrorKind::InvalidInput => {
@@ -602,6 +617,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
+                        } else {
+                            app.is_create_edit_error  = true;
+                            app.error_message = "Already exist".to_string();
+                        }
+                        
                     }
                 }
                     _ => {}
