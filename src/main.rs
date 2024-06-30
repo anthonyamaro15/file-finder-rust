@@ -31,17 +31,30 @@ mod app;
 mod configuration;
 mod directory_store;
 
-fn convert_file_path_to_string(entries: Vec<PathBuf>) -> Vec<String> {
+fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
+    let mut entries_with_hidden = Vec::new();
 
-    for value in entries.iter() {
-        if value.is_dir() {
+    for value in entries{
+        let v = value.file_name().unwrap().to_str().unwrap();
+        if  !v.ends_with(".png") {
             let val = value.clone().into_os_string().to_str().unwrap().to_string();
             file_strings.push(val.clone());
         }
     }
 
-    file_strings
+        for entry in file_strings {
+
+        if show_hidden {
+            entries_with_hidden.push(entry);
+        } else {
+            if !entry.starts_with(".") {
+                entries_with_hidden.push(entry);
+            }
+        }
+    }
+
+    entries_with_hidden
 }
 
 fn handle_file_selection(
@@ -85,7 +98,7 @@ fn handle_file_selection(
     Ok(())
 }
 
-fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
+fn get_inner_files_info(file: String, show_hidden_files: bool) -> anyhow::Result<Option<Vec<String>>> {
     let entries = match fs::read_dir(file) {
         Ok(en) => {
             let val = en.map(|res| res.map(|e| e.path())).collect();
@@ -103,7 +116,7 @@ fn get_inner_files_info(file: String) -> anyhow::Result<Option<Vec<String>>> {
         }
     };
 
-    let file_strings = convert_file_path_to_string(entries);
+    let file_strings = convert_file_path_to_string(entries, show_hidden_files);
     Ok(Some(file_strings))
 }
 
@@ -157,12 +170,12 @@ fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_file_path_data(start_path: String) -> anyhow::Result<Vec<String>> {
+fn get_file_path_data(start_path: String, show_hidden: bool) -> anyhow::Result<Vec<String>> {
 let entries = fs::read_dir(start_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
-    let file_strings = convert_file_path_to_string(entries);
+    let file_strings = convert_file_path_to_string(entries, show_hidden);
 
     Ok(file_strings)
 
@@ -240,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
 
 
-    let file_strings = get_file_path_data(config.start_path.clone())?;    //let file_strings = convert_file_path_to_string(entries);
+    let file_strings = get_file_path_data(config.start_path.clone(), false)?;    //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
     // handle ide selection from arguments
@@ -502,7 +515,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             split_path.pop();
 
                             let new_path = split_path.join("/");
-                            let files_strings = get_inner_files_info(new_path.clone()).unwrap();
+                            let files_strings = get_inner_files_info(new_path.clone(), app.show_hidden_files).unwrap();
 
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
@@ -517,7 +530,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
 
-                            match get_inner_files_info(selected.to_string()) {
+                            match get_inner_files_info(selected.to_string(), app.show_hidden_files) {
                                 Ok(files_strings) => {
                                     if let Some(files_strs) = files_strings {
                                         app.read_only_files = files_strs.clone();
@@ -556,6 +569,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     app.input_mode = InputMode::WatchRename;
                 }
+                KeyCode::Char('.') =>  {
+
+                    let is_hidden = app.show_hidden_files;
+                    app.show_hidden_files = is_hidden;
+                    let selected_index = state.selected();
+                    if let Some(indx) = selected_index {
+                        let selected = &app.files[indx];
+
+                        match get_inner_files_info(selected.to_string(), is_hidden) {
+                            Ok(files) => {
+                                if let Some(file_strs) = files {
+                                    app.read_only_files = file_strs.clone();
+                                    app.files = file_strs;
+                                }
+                            }
+                            Err(e) => {
+                                println!("error  ------------{}", e);
+                            }
+                        }
+                    }
+
+            }
                     
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
@@ -596,7 +631,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match handle_rename(app.clone()) {
                             Ok(_) => {
                                 app.reset_create_edit_values();
-                                let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                                let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
                                 app.files = file_path_list.clone();
                                 app.read_only_files = file_path_list.clone();
                                 app.input_mode = InputMode::Normal;
@@ -656,7 +691,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.input_mode = InputMode::Normal;
 
                                 app.reset_create_edit_values();
-                                let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                                let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
                                 app.files = file_path_list.clone();
                                 app.read_only_files = file_path_list.clone();
 
@@ -720,7 +755,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         handle_delete_based_on_type(selected).unwrap();
 
-                        let file_path_list = get_file_path_data(config.start_path.to_owned())?;
+                        let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
                         app.render_popup = false;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
