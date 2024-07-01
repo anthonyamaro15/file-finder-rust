@@ -226,6 +226,19 @@ fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Resu
     response
 }
 
+fn is_file(path: String) -> bool {
+    match fs::metadata(path) {
+        Ok(file) => {
+            let file_t = file.file_type();
+            if file_t.is_file() {
+                true
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
 fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
     if new_item.contains(".") {
         let file_res = create_new_file(current_file_path, new_item);
@@ -535,20 +548,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char('l') => {
                         let selected_index = state.selected();
-                        if let Some(selected_indx) = selected_index {
-                            let selected = &app.files[selected_indx];
+                        if app.files.len() > 0 {
+                            if let Some(selected_indx) = selected_index {
+                                let selected = &app.files[selected_indx];
 
-                            match get_inner_files_info(selected.to_string(), app.show_hidden_files)
-                            {
-                                Ok(files_strings) => {
-                                    if let Some(files_strs) = files_strings {
-                                        app.read_only_files = files_strs.clone();
-                                        app.files = files_strs;
-                                        state.select(Some(0));
+                                if !is_file(selected.to_string()) {
+                                    match get_inner_files_info(
+                                        selected.to_string(),
+                                        app.show_hidden_files,
+                                    ) {
+                                        Ok(files_strings) => {
+                                            if let Some(files_strs) = files_strings {
+                                                app.read_only_files = files_strs.clone();
+                                                app.files = files_strs;
+                                                state.select(Some(0));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            println!("Error: {}", e);
+                                        }
                                     }
-                                }
-                                Err(e) => {
-                                    println!("Error: {}", e);
                                 }
                             }
                         }
