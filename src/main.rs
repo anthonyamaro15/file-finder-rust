@@ -31,30 +31,49 @@ mod app;
 mod configuration;
 mod directory_store;
 
+
+// TODO: refator this method, too many string conversions
 fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
-    let mut entries_with_hidden = Vec::new();
+
+    let mut path_buf_list = Vec::new();
 
     for value in entries{
-        let v = value.file_name().unwrap().to_str().unwrap();
-        if  !v.ends_with(".png") {
-            let val = value.clone().into_os_string().to_str().unwrap().to_string();
-            file_strings.push(val.clone());
-        }
-    }
 
-        for entry in file_strings {
+        if value.is_dir() {
 
-        if show_hidden {
-            entries_with_hidden.push(entry);
-        } else {
-            if !entry.starts_with(".") {
-                entries_with_hidden.push(entry);
+            path_buf_list.push(value);
+        } else if value.is_file() {
+            let file_name = value.file_name().unwrap();
+
+            if !file_name.to_str().unwrap().ends_with("png") {
+                path_buf_list.push(value);
             }
         }
     }
+    if !show_hidden {
+        for entry in path_buf_list {
+            if entry.is_dir() {
 
-    entries_with_hidden
+                    let file = entry.clone().into_os_string().to_str().unwrap().to_string();
+                    file_strings.push(file);
+            } else if entry.is_file() {
+                    let file_name = entry.file_name().unwrap().to_str().unwrap();
+                    if !file_name.starts_with(".") {
+                        let entry_value = entry.to_str().unwrap().to_string();
+                        file_strings.push(entry_value);
+                    }
+                }
+            }
+        } else {
+        for entry in path_buf_list {
+            let file = entry.clone().into_os_string().to_str().unwrap().to_string();
+            file_strings.push(file);
+            }
+
+    }
+        
+    file_strings
 }
 
 fn handle_file_selection(
@@ -571,13 +590,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 KeyCode::Char('.') =>  {
 
-                    let is_hidden = app.show_hidden_files;
+                    let is_hidden = !app.show_hidden_files;
                     app.show_hidden_files = is_hidden;
                     let selected_index = state.selected();
                     if let Some(indx) = selected_index {
                         let selected = &app.files[indx];
 
-                        match get_inner_files_info(selected.to_string(), is_hidden) {
+                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                        split_path.pop();
+                        let new_path = split_path.join("/");
+                        match get_inner_files_info(new_path, is_hidden) {
                             Ok(files) => {
                                 if let Some(file_strs) = files {
                                     app.read_only_files = file_strs.clone();
@@ -585,7 +607,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             Err(e) => {
-                                println!("error  ------------{}", e);
+                                println!("error  {}", e);
                             }
                         }
                     }
