@@ -2,7 +2,11 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 
 use std::{
-    env,  fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command
+    env,
+    fs::{self, File},
+    io::{self, ErrorKind, Stdout},
+    path::{Path, PathBuf},
+    process::Command,
 };
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -31,17 +35,14 @@ mod app;
 mod configuration;
 mod directory_store;
 
-
 // TODO: refator this method, too many string conversions
 fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
 
     let mut path_buf_list = Vec::new();
 
-    for value in entries{
-
+    for value in entries {
         if value.is_dir() {
-
             path_buf_list.push(value);
         } else if value.is_file() {
             let file_name = value.file_name().unwrap();
@@ -54,25 +55,23 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<
     if !show_hidden {
         for entry in path_buf_list {
             if entry.is_dir() {
-
-                    let file = entry.clone().into_os_string().to_str().unwrap().to_string();
-                    file_strings.push(file);
+                let file = entry.clone().into_os_string().to_str().unwrap().to_string();
+                file_strings.push(file);
             } else if entry.is_file() {
-                    let file_name = entry.file_name().unwrap().to_str().unwrap();
-                    if !file_name.starts_with(".") {
-                        let entry_value = entry.to_str().unwrap().to_string();
-                        file_strings.push(entry_value);
-                    }
+                let file_name = entry.file_name().unwrap().to_str().unwrap();
+                if !file_name.starts_with(".") {
+                    let entry_value = entry.to_str().unwrap().to_string();
+                    file_strings.push(entry_value);
                 }
             }
-        } else {
+        }
+    } else {
         for entry in path_buf_list {
             let file = entry.clone().into_os_string().to_str().unwrap().to_string();
             file_strings.push(file);
-            }
-
+        }
     }
-        
+
     file_strings
 }
 
@@ -117,7 +116,10 @@ fn handle_file_selection(
     Ok(())
 }
 
-fn get_inner_files_info(file: String, show_hidden_files: bool) -> anyhow::Result<Option<Vec<String>>> {
+fn get_inner_files_info(
+    file: String,
+    show_hidden_files: bool,
+) -> anyhow::Result<Option<Vec<String>>> {
     let entries = match fs::read_dir(file) {
         Ok(en) => {
             let val = en.map(|res| res.map(|e| e.path())).collect();
@@ -140,24 +142,24 @@ fn get_inner_files_info(file: String, show_hidden_files: bool) -> anyhow::Result
 }
 
 fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
-
     let popup_layout = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
         Constraint::Percentage(percent_y),
         Constraint::Percentage((100 - percent_y) / 2),
-    ]).split(rect);
+    ])
+    .split(rect);
 
-    
     Layout::horizontal([
         Constraint::Percentage((100 - percent_x) / 2),
         Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x)/2)
-    ]).split(popup_layout[1])[1]
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(popup_layout[1])[1]
 }
 
 fn delete_file(file: &str) -> anyhow::Result<()> {
-   match fs::remove_file(file) {
-        Ok(_) => {},
+    match fs::remove_file(file) {
+        Ok(_) => {}
         Err(e) => {
             // TODO: show notification to user
             println!("Error: {:?}", e);
@@ -167,8 +169,8 @@ fn delete_file(file: &str) -> anyhow::Result<()> {
 }
 
 fn delete_dir(file: &str) -> anyhow::Result<()> {
-     match fs::remove_dir_all(file) {
-        Ok(_) => {},
+    match fs::remove_dir_all(file) {
+        Ok(_) => {}
         Err(e) => {
             println!("Error: {:?}", e);
         }
@@ -190,24 +192,23 @@ fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
 }
 
 fn get_file_path_data(start_path: String, show_hidden: bool) -> anyhow::Result<Vec<String>> {
-let entries = fs::read_dir(start_path)?
+    let entries = fs::read_dir(start_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
     let file_strings = convert_file_path_to_string(entries, show_hidden);
 
     Ok(file_strings)
-
 }
 
-fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()>{
-    let append_path  = format!("{}/{}", current_file_path, new_item);
+fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+    let append_path = format!("{}/{}", current_file_path, new_item);
 
     // TODO: implications of using (create_dir) || (create_dir_all)
-     let response = match fs::create_dir(append_path) {
+    let response = match fs::create_dir(append_path) {
         Ok(_) => Ok(()),
         Err(e) => {
-           return Err(e.into()); 
+            return Err(e.into());
         }
     };
     response
@@ -225,40 +226,35 @@ fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Resu
     response
 }
 
-fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()>{
-
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
     if new_item.contains(".") {
-     let file_res = create_new_file(current_file_path, new_item);
+        let file_res = create_new_file(current_file_path, new_item);
         file_res
     } else {
-       let dir_res = create_new_dir(current_file_path, new_item);
+        let dir_res = create_new_dir(current_file_path, new_item);
         dir_res
     }
 }
 
-
-fn handle_rename(app: App) ->io::Result<()>  {
-
+fn handle_rename(app: App) -> io::Result<()> {
     let curr_path = format!("{}/{}", app.current_path_to_edit, app.current_name_to_edit);
-    let new_path  = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
+    let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
 
-    let result =match fs::rename(curr_path, new_path) {
-        Ok(res) =>res,
+    let result = match fs::rename(curr_path, new_path) {
+        Ok(res) => res,
         Err(error) => return Err(error),
-    }; 
+    };
     Ok(result)
 }
 
 fn check_if_exists(new_path: String) -> bool {
-   match  Path::new(&new_path).try_exists() {
-        Ok(value) => {
-            match value {
-                true => true,
-                false => false 
-            }
+    match Path::new(&new_path).try_exists() {
+        Ok(value) => match value {
+            true => true,
+            false => false,
         },
         Err(e) => {
-            panic!("Error occured {:?}",e);
+            panic!("Error occured {:?}", e);
         }
     }
 }
@@ -271,8 +267,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.handle_settings_configuration();
     // Setup terminal
 
-
-    let file_strings = get_file_path_data(config.start_path.clone(), false)?;    //let file_strings = convert_file_path_to_string(entries);
+    let file_strings = get_file_path_data(config.start_path.clone(), false)?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
     // handle ide selection from arguments
@@ -407,12 +402,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
-                       input_area.y  + 1, 
-                    )
+                      input_area.y + 1)
                 }
             }
-
-            
 
             f.render_widget(help_message, chunks[0]);
             f.render_widget(parsed_instructions.clone(), chunks[3]);
@@ -431,8 +423,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .constraints([Constraint::Percentage(100)]).split(area);
                     f.render_widget(Clear, area);
                 f.render_widget(block, popup_chuncks[0]);
-
-        
             }
 
 
@@ -487,16 +477,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
 
         // Handle input
-        if let Event::Key(key) = event::read()? { match app.input_mode { 
-            InputMode::Normal => match key.code { KeyCode::Char('i') => {
+        if let Event::Key(key) = event::read()? {
+            match app.input_mode {
+                InputMode::Normal => match key.code {
+                    KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
                     }
                     KeyCode::Char('q') => {
                         break;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-
-                            let i = match state.selected() {
+                        let i = match state.selected() {
                             Some(i) => {
                                 if i >= app.files.len() - 1 {
                                     0
@@ -507,11 +498,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None => 0,
                         };
                         state.select(Some(i));
-
-                                            }
+                    }
                     KeyCode::Up | KeyCode::Char('k') => {
-
-                            let i = match state.selected() {
+                        let i = match state.selected() {
                             Some(i) => {
                                 if i == 0 {
                                     app.files.len() - 1
@@ -522,8 +511,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             None => 0,
                         };
                         state.select(Some(i));
-
-                                            }
+                    }
                     KeyCode::Char('h') => {
                         let selected = &app.files[state.selected().unwrap()];
                         let mut split_path = selected.split("/").collect::<Vec<&str>>();
@@ -534,7 +522,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             split_path.pop();
 
                             let new_path = split_path.join("/");
-                            let files_strings = get_inner_files_info(new_path.clone(), app.show_hidden_files).unwrap();
+                            let files_strings =
+                                get_inner_files_info(new_path.clone(), app.show_hidden_files)
+                                    .unwrap();
 
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
@@ -542,14 +532,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 state.select(Some(0));
                             }
                         }
-
                     }
                     KeyCode::Char('l') => {
                         let selected_index = state.selected();
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
 
-                            match get_inner_files_info(selected.to_string(), app.show_hidden_files) {
+                            match get_inner_files_info(selected.to_string(), app.show_hidden_files)
+                            {
                                 Ok(files_strings) => {
                                     if let Some(files_strs) = files_strings {
                                         app.read_only_files = files_strs.clone();
@@ -562,64 +552,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
-
-                                            }
+                    }
                     KeyCode::Char('d') => {
                         app.render_popup = true;
                         app.input_mode = InputMode::WatchDelete;
                     }
                     KeyCode::Char('a') => {
-                    app.input_mode = InputMode::WatchCreate;
+                        app.input_mode = InputMode::WatchCreate;
                     }
                     KeyCode::Char('r') => {
                         let selected_index = state.selected();
-                    if let Some(index) = selected_index {
-                        let selected = &app.files[index];
-                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                        let placeholder_name = split_path.pop().unwrap();
+                        if let Some(index) = selected_index {
+                            let selected = &app.files[index];
+                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                            let placeholder_name = split_path.pop().unwrap();
 
-
-                        let new_path = split_path.join("/");
-                        let placeholder_name_copy = placeholder_name;
-                        app.current_path_to_edit = new_path;
-                        app.current_name_to_edit = placeholder_name_copy.to_string();
-                        app.create_edit_file_name = placeholder_name.to_string();
-                        app.char_index = placeholder_name.len();
+                            let new_path = split_path.join("/");
+                            let placeholder_name_copy = placeholder_name;
+                            app.current_path_to_edit = new_path;
+                            app.current_name_to_edit = placeholder_name_copy.to_string();
+                            app.create_edit_file_name = placeholder_name.to_string();
+                            app.char_index = placeholder_name.len();
+                        }
+                        app.input_mode = InputMode::WatchRename;
                     }
-                    app.input_mode = InputMode::WatchRename;
-                }
-                KeyCode::Char('.') =>  {
+                    KeyCode::Char('.') => {
+                        let is_hidden = !app.show_hidden_files;
+                        app.show_hidden_files = is_hidden;
+                        let selected_index = state.selected();
+                        if let Some(indx) = selected_index {
+                            let selected = &app.files[indx];
 
-                    let is_hidden = !app.show_hidden_files;
-                    app.show_hidden_files = is_hidden;
-                    let selected_index = state.selected();
-                    if let Some(indx) = selected_index {
-                        let selected = &app.files[indx];
-
-                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                        split_path.pop();
-                        let new_path = split_path.join("/");
-                        match get_inner_files_info(new_path, is_hidden) {
-                            Ok(files) => {
-                                if let Some(file_strs) = files {
-                                    app.read_only_files = file_strs.clone();
-                                    app.files = file_strs;
+                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                            split_path.pop();
+                            let new_path = split_path.join("/");
+                            match get_inner_files_info(new_path, is_hidden) {
+                                Ok(files) => {
+                                    if let Some(file_strs) = files {
+                                        app.read_only_files = file_strs.clone();
+                                        app.files = file_strs;
+                                    }
                                 }
-                            }
-                            Err(e) => {
-                                println!("error  {}", e);
+                                Err(e) => {
+                                    println!("error  {}", e);
+                                }
                             }
                         }
                     }
 
-            }
-                    
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
 
                         app.input = selected.clone();
-                
 
                         let _ = handle_file_selection(&selected, &mut terminal, app.clone());
                         break;
@@ -629,114 +614,117 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 InputMode::WatchRename if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char(c) => {
-                    app.add_char(c);
-
-                },
-                KeyCode::Backspace => {
-                    app.delete_c();
-                }
+                        app.add_char(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.delete_c();
+                    }
                     KeyCode::Esc => {
                         app.input_mode = InputMode::Normal;
                         app.reset_create_edit_values();
-                }
-                KeyCode::Enter => {
-                    // rename file to new name
-                    // validate tha the new name and the previous name are not the same, 
-                    // if names are equal then exit the current mode 
-                    if app.create_edit_file_name == app.current_name_to_edit {
+                    }
+                    KeyCode::Enter => {
+                        // rename file to new name
+                        // validate tha the new name and the previous name are not the same,
+                        // if names are equal then exit the current mode
+                        if app.create_edit_file_name == app.current_name_to_edit {
+                            app.input_mode = InputMode::Normal;
+                            app.reset_create_edit_values();
+                        } else {
+                            // proceed with operation
+                            let new_path = format!(
+                                "{}/{}",
+                                app.current_path_to_edit, app.create_edit_file_name
+                            );
+                            if !check_if_exists(new_path) {
+                                match handle_rename(app.clone()) {
+                                    Ok(_) => {
+                                        app.reset_create_edit_values();
+                                        let file_path_list = get_file_path_data(
+                                            config.start_path.to_owned(),
+                                            app.show_hidden_files,
+                                        )?;
+                                        app.files = file_path_list.clone();
+                                        app.read_only_files = file_path_list.clone();
+                                        app.input_mode = InputMode::Normal;
+                                    }
+                                    Err(e) => {
+                                        app.is_create_edit_error = true;
+                                        match e.kind() {
+                                            ErrorKind::InvalidInput => {
+                                                app.error_message = "Invalid input".to_string();
+                                            }
+                                            _ => {
+                                                app.error_message = "Other error".to_string();
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                app.is_create_edit_error = true;
+                                app.error_message = "Already exist".to_string();
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                InputMode::WatchCreate if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Char(c) => {
+                        app.add_char(c);
+                    }
+                    KeyCode::Backspace => {
+                        app.delete_c();
+                    }
+                    KeyCode::Left => {
+                        app.move_create_edit_cursor_left();
+                    }
+                    KeyCode::Right => {
+                        app.move_create_edit_cursor_right();
+                    }
+                    KeyCode::Esc => {
                         app.input_mode = InputMode::Normal;
                         app.reset_create_edit_values();
-                    } else {
-                        // proceed with operation
-                        let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
-                        if !check_if_exists(new_path) {
-                            match handle_rename(app.clone()) {
-                            Ok(_) => {
-                                app.reset_create_edit_values();
-                                let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list.clone();
-                                app.input_mode = InputMode::Normal;
-                            }
-                            Err(e) => {
-                                app.is_create_edit_error = true;
-                                match e.kind() {
-                                ErrorKind::InvalidInput => {
-                                        app.error_message = "Invalid input".to_string();
-                                    }
-                                _ => {
-                                    
-                                        app.error_message = "Other error".to_string();
-                                    }
-                                }
-                            }
-                        }
-                        } else {
-                            app.is_create_edit_error  = true;
-                            app.error_message = "Already exist".to_string();
-                        }
-                        
+                        // create methods to reset the create_edit_file_name and state of it
                     }
-                }
+                    KeyCode::Enter => {
+                        // create file/dir
+                        if !app.create_edit_file_name.is_empty() {
+                            let selected_index = state.selected();
+                            let selected = &app.files[selected_index.unwrap()];
+                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                            split_path.pop();
+                            let new_path = split_path.join("/");
+                            match create_item_based_on_type(
+                                new_path,
+                                app.create_edit_file_name.clone(),
+                            ) {
+                                Ok(_) => {
+                                    app.input_mode = InputMode::Normal;
+
+                                    app.reset_create_edit_values();
+                                    let file_path_list = get_file_path_data(
+                                        config.start_path.to_owned(),
+                                        app.show_hidden_files,
+                                    )?;
+                                    app.files = file_path_list.clone();
+                                    app.read_only_files = file_path_list.clone();
+                                }
+                                Err(e) => {
+                                    let error = e.downcast_ref::<io::Error>().unwrap();
+                                    match error.kind() {
+                                        ErrorKind::AlreadyExists => {
+                                            app.error_message = "File Already Exists".to_string();
+                                            app.is_create_edit_error = true;
+                                        }
+                                        _ => {}
+                                    }
+                                } // show error to user
+                            } // test
+                        }
+                    }
                     _ => {}
-                }
-                InputMode::WatchCreate if key.kind == KeyEventKind::Press => match key.code {
-                KeyCode::Char(c) => {
-                   app.add_char(c); 
-                }
-                KeyCode::Backspace => {
-                   app.delete_c(); 
-                }
-                KeyCode::Left => {
-                    app.move_create_edit_cursor_left();
-                }
-                KeyCode::Right => {
-                    app.move_create_edit_cursor_right();
-                }
-                KeyCode::Esc => {
-                    app.input_mode = InputMode::Normal;
-                        app.reset_create_edit_values();
-                    // create methods to reset the create_edit_file_name and state of it
-                }
-                KeyCode::Enter => {
-                    // create file/dir
-                    if !app.create_edit_file_name.is_empty() {
+                },
 
-                        let selected_index = state.selected();
-                        let selected = &app.files[selected_index.unwrap()];
-                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                        split_path.pop();
-                        let new_path = split_path.join("/");
-                        match  create_item_based_on_type(new_path, app.create_edit_file_name.clone()) {
-
-                            Ok(_) => {
-                                app.input_mode = InputMode::Normal;
-
-                                app.reset_create_edit_values();
-                                let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list.clone();
-
-                            },
-                            Err(e) => {
-                                let error = e.downcast_ref::<io::Error>().unwrap();
-                                match error.kind() {
-                                    ErrorKind::AlreadyExists => {
-                                        app.error_message = "File Already Exists".to_string();
-                                        app.is_create_edit_error = true;
-                                    },
-                                    _ => {}
-                                }
-                            }
-
-                                // show error to user
-                        }// test
-                        
-                    }
-                }
-                _ => {}
-            }
-            
                 InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Enter => app.submit_message(),
                     KeyCode::Char(to_insert) => {
@@ -759,36 +747,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
                 InputMode::WatchDelete => match key.code {
-                KeyCode::Char('q') => {
-                    app.render_popup = false;
-                    app.input_mode = InputMode::Normal;
-                    break;
-                }
-                KeyCode::Char('n') => {
-                    app.render_popup = false;
-                    app.input_mode = InputMode::Normal;
-                }
-
-                KeyCode::Char('y') => {
-                    let selected_index = state.selected();
-
-                    if let Some(selected_indx) = selected_index {
-                        let selected  = &app.files[selected_indx];
-
-                        handle_delete_based_on_type(selected).unwrap();
-
-                        let file_path_list = get_file_path_data(config.start_path.to_owned(), app.show_hidden_files)?;
+                    KeyCode::Char('q') => {
                         app.render_popup = false;
-                        app.files = file_path_list.clone();
-                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
+                        break;
+                    }
+                    KeyCode::Char('n') => {
+                        app.render_popup = false;
                         app.input_mode = InputMode::Normal;
                     }
 
+                    KeyCode::Char('y') => {
+                        let selected_index = state.selected();
 
-                }
+                        if let Some(selected_indx) = selected_index {
+                            let selected = &app.files[selected_indx];
+
+                            handle_delete_based_on_type(selected).unwrap();
+
+                            let file_path_list = get_file_path_data(
+                                config.start_path.to_owned(),
+                                app.show_hidden_files,
+                            )?;
+                            app.render_popup = false;
+                            app.files = file_path_list.clone();
+                            app.read_only_files = file_path_list.clone();
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    _ => {}
+                },
                 _ => {}
-            }
-            _ => {}
             }
         }
     }
