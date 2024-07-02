@@ -272,6 +272,12 @@ fn check_if_exists(new_path: String) -> bool {
     }
 }
 
+fn get_curr_path(path: String) -> String {
+    let mut split_path = path.split("/").collect::<Vec<&str>>();
+    split_path.pop();
+    let vec_to_str = split_path.join("/");
+    vec_to_str
+}
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -500,43 +506,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         break;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        let i = match state.selected() {
-                            Some(i) => {
-                                if i >= app.files.len() - 1 {
-                                    0
-                                } else {
-                                    i + 1
+                        if app.files.len() > 0 {
+                            let i = match state.selected() {
+                                Some(i) => {
+                                    if i >= app.files.len() - 1 {
+                                        0
+                                    } else {
+                                        i + 1
+                                    }
                                 }
-                            }
-                            None => 0,
-                        };
-                        state.select(Some(i));
+                                None => 0,
+                            };
+                            state.select(Some(i));
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        let i = match state.selected() {
-                            Some(i) => {
-                                if i == 0 {
-                                    app.files.len() - 1
-                                } else {
-                                    i - 1
+                        if app.files.len() > 0 {
+                            let i = match state.selected() {
+                                Some(i) => {
+                                    if i == 0 {
+                                        app.files.len() - 1
+                                    } else {
+                                        i - 1
+                                    }
                                 }
-                            }
-                            None => 0,
-                        };
-                        state.select(Some(i));
+                                None => 0,
+                            };
+                            state.select(Some(i));
+                        }
                     }
                     KeyCode::Char('h') => {
-                        let selected = &app.files[state.selected().unwrap()];
-                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                        if app.files.len() > 0 {
+                            let selected = &app.files[state.selected().unwrap()];
+                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
 
-                        // TODO: refactor this to be more idiomatic
-                        if split_path.len() > 4 {
-                            split_path.pop();
-                            split_path.pop();
+                            // TODO: refactor this to be more idiomatic
+                            if split_path.len() > 4 {
+                                split_path.pop();
+                                split_path.pop();
 
-                            let new_path = split_path.join("/");
+                                let new_path = split_path.join("/");
+                                let files_strings =
+                                    get_inner_files_info(new_path.clone(), app.show_hidden_files)
+                                        .unwrap();
+
+                                if let Some(f_s) = files_strings {
+                                    app.read_only_files = f_s.clone();
+                                    app.files = f_s;
+                                    state.select(Some(0));
+                                }
+                            }
+                        } else {
                             let files_strings =
-                                get_inner_files_info(new_path.clone(), app.show_hidden_files)
+                                get_inner_files_info(app.prev_dir.clone(), app.show_hidden_files)
                                     .unwrap();
 
                             if let Some(f_s) = files_strings {
@@ -552,6 +574,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(selected_indx) = selected_index {
                                 let selected = &app.files[selected_indx];
 
+                                app.prev_dir = get_curr_path(selected.to_string());
                                 if !is_file(selected.to_string()) {
                                     match get_inner_files_info(
                                         selected.to_string(),

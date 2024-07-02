@@ -28,6 +28,7 @@ pub struct App {
     pub read_only_files: Vec<String>,
     pub selected_id: Option<IDE>,
     pub render_popup: bool,
+    pub prev_dir: String,
 
     pub show_hidden_files: bool,
     // create and edit file name
@@ -53,6 +54,7 @@ impl App {
             character_index: 0,
             selected_id: None,
             render_popup: false,
+            prev_dir: String::new(),
             show_hidden_files: false,
             create_edit_file_name: String::new(),
             char_index: 0,
