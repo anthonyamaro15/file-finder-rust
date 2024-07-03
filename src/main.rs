@@ -1,6 +1,6 @@
 use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-
+use rayon::prelude::*;
 use std::{
     env,
     fs::{self, File},
@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use walkdir::WalkDir;
 
 use ratatui::{prelude::*, widgets::Clear};
 
@@ -290,26 +291,31 @@ fn get_curr_path(path: String) -> String {
 }
 
 fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
-    if src.is_file() {
-        fs::copy(src, new_src)?;
-    } else if src.is_dir() {
-        let name = src.file_name().unwrap().to_str().unwrap();
-        // TODO: we probrably should move this into the configuration?
-        if name != "node_modules" {
-            fs::create_dir_all(new_src)?;
+    let entries: Vec<_> = WalkDir::new(src)
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect();
 
-            for entry in fs::read_dir(src)? {
-                let entry = entry?;
-                let entry_path = entry.path();
-                let entry_name = entry.file_name();
-                let dst_path = new_src.join(&entry_name);
+    entries.par_iter().try_for_each(|entry| {
+        let entry_path = entry.path();
+        let relative_path = entry_path.strip_prefix(src).unwrap();
+        let dst_path = new_src.join(relative_path);
 
-                copy_dir_file_helper(&entry_path, &dst_path)?;
+        if entry_path.is_dir() {
+            fs::create_dir_all(&dst_path)?;
+        } else if entry_path.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent)?;
             }
+            fs::copy(entry_path, dst_path)?;
+        } else {
+            println!("Error, file type not supported");
+            return Err(io::Error::new(ErrorKind::Other, "unsuported file type"));
         }
-    } else {
-        println!("Error, file type not supported");
-    }
+
+        Ok(())
+    })?;
+
     Ok(())
 }
 
