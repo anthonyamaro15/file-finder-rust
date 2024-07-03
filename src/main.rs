@@ -57,10 +57,12 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<
             if entry.is_dir() {
                 let file = entry.clone().into_os_string().to_str().unwrap().to_string();
                 file_strings.push(file);
+                //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
             } else if entry.is_file() {
                 let file_name = entry.file_name().unwrap().to_str().unwrap();
                 if !file_name.starts_with(".") {
                     let entry_value = entry.to_str().unwrap().to_string();
+                    //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
                     file_strings.push(entry_value);
                 }
             }
@@ -69,6 +71,7 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<
         for entry in path_buf_list {
             let file = entry.clone().into_os_string().to_str().unwrap().to_string();
             file_strings.push(file);
+            //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
         }
     }
 
@@ -239,6 +242,16 @@ fn is_file(path: String) -> bool {
         Err(_) => false,
     }
 }
+
+fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
+    let get_info = Path::new(&curr_path);
+
+    let file_name = get_info.file_name().unwrap().to_str().unwrap();
+
+    let create_new_file_name = format!("{}/copy_{}", new_path, file_name);
+    create_new_file_name
+}
+
 fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
     if new_item.contains(".") {
         let file_res = create_new_file(current_file_path, new_item);
@@ -278,6 +291,36 @@ fn get_curr_path(path: String) -> String {
     let vec_to_str = split_path.join("/");
     vec_to_str
 }
+
+fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
+    if src.is_file() {
+        fs::copy(src, new_src)?;
+    } else if src.is_dir() {
+        fs::create_dir_all(new_src)?;
+
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+
+            let entry_path = entry.path();
+            let entry_name = entry.file_name();
+            let dst_path = new_src.join(&entry_name);
+
+            copy_dir_file_helper(&entry_path, &dst_path)?;
+        }
+    } else {
+        println!("Error, file type not supported");
+    }
+    Ok(())
+}
+
+fn copy_selected_item(item_path: String, new_item_loc: String) -> anyhow::Result<()> {
+    let src = Path::new(&item_path);
+    let new_src = Path::new(&new_item_loc);
+
+    copy_dir_file_helper(src, new_src)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -641,6 +684,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    KeyCode::Char('c') => {
+                        // item path to copy
+                        if app.files.len() > 0 {
+                            let index = state.selected();
+
+                            if let Some(indx) = index {
+                                // item to copy
+                                let selected_path = &app.files[indx];
+
+                                // get current path to add new item
+                                let mut split_path =
+                                    selected_path.split("/").collect::<Vec<&str>>();
+                                split_path.pop();
+                                let string_path = split_path.join("/");
+                                // append copy to new dir/file
+                                let src = Path::new(selected_path);
+
+                                let new_path_with_new_name = generate_copy_file_dir_name(
+                                    selected_path.to_string(),
+                                    string_path.clone(),
+                                );
+                                let new_src = Path::new(&new_path_with_new_name);
+                                copy_dir_file_helper(src, new_src)?;
+                                // show spinner that is downloading?
+
+                                // TODO: create method that updates refreshes files
+                                match get_inner_files_info(string_path, app.show_hidden_files) {
+                                    Ok(files) => {
+                                        if let Some(file_strs) = files {
+                                            app.read_only_files = file_strs.clone();
+                                            app.files = file_strs;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("error  {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
@@ -819,6 +902,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {}
                 },
+
                 _ => {}
             }
         }
