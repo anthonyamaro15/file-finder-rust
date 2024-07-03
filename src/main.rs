@@ -57,12 +57,10 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<
             if entry.is_dir() {
                 let file = entry.clone().into_os_string().to_str().unwrap().to_string();
                 file_strings.push(file);
-                //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
             } else if entry.is_file() {
                 let file_name = entry.file_name().unwrap().to_str().unwrap();
                 if !file_name.starts_with(".") {
                     let entry_value = entry.to_str().unwrap().to_string();
-                    //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
                     file_strings.push(entry_value);
                 }
             }
@@ -71,7 +69,6 @@ fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<
         for entry in path_buf_list {
             let file = entry.clone().into_os_string().to_str().unwrap().to_string();
             file_strings.push(file);
-            //file_strings.push(entry.file_name().unwrap().to_str().unwrap().to_string());
         }
     }
 
