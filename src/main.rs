@@ -293,28 +293,23 @@ fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
     if src.is_file() {
         fs::copy(src, new_src)?;
     } else if src.is_dir() {
-        fs::create_dir_all(new_src)?;
+        let name = src.file_name().unwrap().to_str().unwrap();
+        // TODO: we probrably should move this into the configuration?
+        if name != "node_modules" {
+            fs::create_dir_all(new_src)?;
 
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
+            for entry in fs::read_dir(src)? {
+                let entry = entry?;
+                let entry_path = entry.path();
+                let entry_name = entry.file_name();
+                let dst_path = new_src.join(&entry_name);
 
-            let entry_path = entry.path();
-            let entry_name = entry.file_name();
-            let dst_path = new_src.join(&entry_name);
-
-            copy_dir_file_helper(&entry_path, &dst_path)?;
+                copy_dir_file_helper(&entry_path, &dst_path)?;
+            }
         }
     } else {
         println!("Error, file type not supported");
     }
-    Ok(())
-}
-
-fn copy_selected_item(item_path: String, new_item_loc: String) -> anyhow::Result<()> {
-    let src = Path::new(&item_path);
-    let new_src = Path::new(&new_item_loc);
-
-    copy_dir_file_helper(src, new_src)?;
     Ok(())
 }
 
