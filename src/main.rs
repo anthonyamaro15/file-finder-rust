@@ -1,13 +1,15 @@
 use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-
+use rayon::prelude::*;
 use std::{
     env,
     fs::{self, File},
     io::{self, ErrorKind, Stdout},
     path::{Path, PathBuf},
     process::Command,
+    time::{Duration, Instant},
 };
+use walkdir::WalkDir;
 
 use ratatui::{prelude::*, widgets::Clear};
 
@@ -239,6 +241,16 @@ fn is_file(path: String) -> bool {
         Err(_) => false,
     }
 }
+
+fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
+    let get_info = Path::new(&curr_path);
+
+    let file_name = get_info.file_name().unwrap().to_str().unwrap();
+
+    let create_new_file_name = format!("{}/copy_{}", new_path, file_name);
+    create_new_file_name
+}
+
 fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
     if new_item.contains(".") {
         let file_res = create_new_file(current_file_path, new_item);
@@ -278,6 +290,39 @@ fn get_curr_path(path: String) -> String {
     let vec_to_str = split_path.join("/");
     vec_to_str
 }
+
+fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
+    if src.is_file() {
+        fs::copy(src, new_src)?;
+    } else {
+        let entries: Vec<_> = WalkDir::new(src)
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+        entries.par_iter().try_for_each(|entry| {
+            let entry_path = entry.path();
+            let relative_path = entry_path.strip_prefix(src).unwrap();
+            let dst_path = new_src.join(relative_path);
+
+            if entry_path.is_dir() {
+                fs::create_dir_all(&dst_path)?;
+            } else if entry_path.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(entry_path, dst_path)?;
+            } else {
+                println!("Error, file type not supported");
+                return Err(io::Error::new(ErrorKind::Other, "unsuported file type"));
+            }
+
+            Ok(())
+        })?;
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -334,6 +379,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Constraint::Length(3),
                         Constraint::Min(1),
                         Constraint::Length(3),
+                        Constraint::Length(1),
                     ]
                     .as_ref(),
                 )
@@ -375,12 +421,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
                 });
 
+
+            let mut list_title = String::new();
+            if app.loading {
+                let title_with_loader = format!("Copying Files...");
+                list_title.push_str(&title_with_loader);
+            } else {
+                list_title.push_str(&"List");
+            }
             // List of filtered items
             let list_block = List::new(filtered_items.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("Filtered List"),
+                        .title(list_title.as_str()),
+                        //.title("Filtered List"),
                 )
                 .highlight_style(
                     Style::default()
@@ -424,6 +479,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                       input_area.y + 1)
                 }
             }
+
+
 
             f.render_widget(help_message, chunks[0]);
             f.render_widget(parsed_instructions.clone(), chunks[3]);
@@ -641,6 +698,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    KeyCode::Char('c') => {
+                        // item path to copy
+                        if app.files.len() > 0 {
+                            let index = state.selected();
+                            app.loading = true;
+                            if let Some(indx) = index {
+                                // item to copy
+                                let selected_path = &app.files[indx];
+
+                                // get current path to add new item
+                                let mut split_path =
+                                    selected_path.split("/").collect::<Vec<&str>>();
+                                split_path.pop();
+                                let string_path = split_path.join("/");
+                                // append copy to new dir/file
+                                let src = Path::new(selected_path);
+
+                                let new_path_with_new_name = generate_copy_file_dir_name(
+                                    selected_path.to_string(),
+                                    string_path.clone(),
+                                );
+
+                                app.input = src.to_str().unwrap().to_string();
+                                let new_src = Path::new(&new_path_with_new_name);
+                                copy_dir_file_helper(src, new_src)?;
+                                // show spinner that is downloading?
+                                app.loading = false;
+                                // TODO: create method that updates refreshes files
+                                match get_inner_files_info(string_path, app.show_hidden_files) {
+                                    Ok(files) => {
+                                        if let Some(file_strs) = files {
+                                            app.read_only_files = file_strs.clone();
+                                            app.files = file_strs;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("error  {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
@@ -819,6 +918,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {}
                 },
+
                 _ => {}
             }
         }
