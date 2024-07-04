@@ -466,6 +466,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+
+            let loader_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(20),
+                ]. as_ref()
+                ).split(f.size());
+
+
+           // let loader_text = match
+
             f.render_widget(help_message, chunks[0]);
             f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_widget(input_block, chunks[1]);
