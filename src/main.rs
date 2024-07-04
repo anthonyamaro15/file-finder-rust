@@ -412,9 +412,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Input field
                        let input_block = Paragraph::new(app.input.clone())
-                .block(Block::default().borders(Borders::ALL).title("Find"))
-                .style(match app.input_mode {
+                .block(Block::default().borders(Borders::ALL).title("Search").style(match app.input_mode {
+                    InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::Editing => Style::default().fg(Color::Green),
+                    _ => Style::default().fg(Color::White)
+                }))
+                .style(match app.input_mode {
+                    InputMode::Editing => Style::default().fg(Color::White),
                     InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
@@ -434,7 +438,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(list_title.as_str()),
+                        .title(list_title.as_str())
+                       .style(match app.input_mode {
+                            InputMode::Normal  => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::White),
+                            _ => Style::default().fg(Color::White)
+                        }) 
                         //.title("Filtered List"),
                 )
                 .highlight_style(
@@ -442,9 +451,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol(">>")
+                .highlight_symbol(">")
                 .style(match app.input_mode {
-                    InputMode::Normal => Style::default().fg(Color::Green),
+                    InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::Editing => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
@@ -720,7 +729,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     string_path.clone(),
                                 );
 
-                                app.input = src.to_str().unwrap().to_string();
                                 let new_src = Path::new(&new_path_with_new_name);
                                 copy_dir_file_helper(src, new_src)?;
                                 // show spinner that is downloading?
