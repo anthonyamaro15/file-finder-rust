@@ -40,6 +40,8 @@ pub struct App {
     // edit
     pub current_path_to_edit: String,
     pub current_name_to_edit: String,
+
+    pub loading: bool,
 }
 
 impl App {
@@ -62,6 +64,7 @@ impl App {
             error_message: String::new(),
             current_path_to_edit: String::new(),
             current_name_to_edit: String::new(),
+            loading: false,
         }
     }
 
