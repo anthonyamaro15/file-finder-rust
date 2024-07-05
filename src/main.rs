@@ -2,12 +2,7 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use rayon::prelude::*;
 use std::{
-    env,
-    fs::{self, File},
-    io::{self, ErrorKind, Stdout},
-    path::{Path, PathBuf},
-    process::Command,
-    time::{Duration, Instant},
+    env, fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command 
 };
 use walkdir::WalkDir;
 
@@ -36,6 +31,7 @@ use copypasta::{ClipboardContext, ClipboardProvider};
 mod app;
 mod configuration;
 mod directory_store;
+mod ui;
 
 // TODO: refator this method, too many string conversions
 fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<String> {
@@ -425,6 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
                 });
 
+            
 
             let mut list_title = String::new();
             if app.loading {
@@ -491,14 +488,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
 
+
             f.render_widget(help_message, chunks[0]);
-            f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_widget(input_block, chunks[1]);
+            //f.render_widget(paragraph, chunks[2]);
             f.render_widget(default_label, chunks[2]);
+            f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
-            //
+            
+
+
+
             if app.render_popup {
                 let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
                 let area = draw_popup(f.size(), 40, 7);
