@@ -1,8 +1,12 @@
 use app::{App, InputMode};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, KeyModifiers};
 use rayon::prelude::*;
 use std::{
-    env, fs::{self, File}, io::{self, ErrorKind, Stdout}, path::{Path, PathBuf}, process::Command 
+    env,
+    fs::{self, File},
+    io::{self, ErrorKind, Stdout},
+    path::{Path, PathBuf},
+    process::Command,
 };
 use walkdir::WalkDir;
 
@@ -395,6 +399,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
                 InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
                 InputMode::WatchRename => (vec!["Watch Delete Mode".bold()], Style::default()),
+                InputMode::WatchSort => (vec!["Watch Delete Mode".bold()], Style::default()),
             };
 
 
@@ -419,9 +424,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
+                    InputMode::WatchSort => Style::default().fg(Color::Gray),
                 });
 
-            
 
             let mut list_title = String::new();
             if app.loading {
@@ -440,7 +445,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             InputMode::Normal  => Style::default().fg(Color::Green),
                             InputMode::Editing => Style::default().fg(Color::White),
                             _ => Style::default().fg(Color::White)
-                        }) 
+                        })
                         //.title("Filtered List"),
                 )
                 .highlight_style(
@@ -454,7 +459,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::Editing => Style::default().fg(Color::White),
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
-                    InputMode::WatchRename => Style::default().fg(Color::Gray)
+                    InputMode::WatchRename => Style::default().fg(Color::Gray),
+                    InputMode::WatchSort => Style::default().fg(Color::Gray)
                 });
 
             let bottom_instructions = Span::styled(
@@ -479,6 +485,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::WatchDelete => {},
                 InputMode::WatchCreate => {},
                 InputMode::WatchRename => {},
+                InputMode::WatchSort => {},
                 InputMode::Editing => {
                     f.set_cursor(
                       input_area.x + app.character_index as u16 + 1,
@@ -497,9 +504,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
-            
-
-
 
             if app.render_popup {
                 let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
@@ -518,6 +522,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .direction(Direction::Horizontal)
                     .margin(1)
                     .constraints([Constraint::Percentage(100)]).split(area);
+
+
+            let sort_option_area = draw_popup(f.size(), 50, 50);
+            let sort_options_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .margin(1)
+                .constraints([Constraint::Percentage(100)]).split(sort_option_area);
 
             match app.input_mode {
                 InputMode::WatchCreate => {
@@ -542,22 +553,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 },
                 InputMode::WatchRename => {
-                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                        .block(Block::default().borders(Borders::ALL).title(
-                            match app.is_create_edit_error {
-                                false => "Rename to".to_string(),
-                                true => app.error_message.to_owned()
-                            }
-                        ))
-                            .style(
-                            match app.is_create_edit_error {
-                                true => Style::default().fg(Color::Red),
-                                false => Style::default().fg(Color::LightGreen)
-                            }
-                        );
+                    let create_input_block = Paragraph::new("Sort By: ")
+                        .block(Block::default().borders(Borders::ALL).title("test"))
+                            .style(Style::default().fg(Color::LightGreen));
 
                 f.render_widget(create_input_block, popup_chuncks[0]);
 
+                }
+                InputMode::WatchSort => {
+                    let create_input_block = Paragraph::new("Sort By: ").block(Block::default().borders(Borders::ALL).title("test")).style(Style::default().fg(Color::LightGreen));
+
+                f.render_widget(create_input_block, sort_options_chunks[0]);
                 }
                 _ => {}
             }
@@ -751,6 +757,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
+                    KeyCode::Char('s') => {
+                        app.input_mode = InputMode::WatchSort;
+                        app.input = "does htis wrok".to_string();
+                    }
+
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
@@ -925,6 +936,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.read_only_files = file_path_list.clone();
                             app.input_mode = InputMode::Normal;
                         }
+                    }
+                    _ => {}
+                },
+                InputMode::WatchSort => match key.code {
+                    KeyCode::Char('q') => {
+                        app.input_mode = InputMode::Normal;
                     }
                     _ => {}
                 },

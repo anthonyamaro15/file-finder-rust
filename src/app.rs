@@ -16,6 +16,7 @@ pub enum InputMode {
     WatchDelete,
     WatchCreate,
     WatchRename,
+    WatchSort,
 }
 
 #[derive(Debug, Clone)]

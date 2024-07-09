@@ -12,14 +12,7 @@ pub struct Ui<'a> {
 }
 
 impl Ui<'_> {
-    pub fn new(f: Frame) -> Ui {
-        let config = Ui {
-            f,
-            container_chunk: Layout::default(),
-        };
-
-        config
-    }
+    pub fn new(f: Frame) {}
     pub fn generate_ui_container(&mut self, f: Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
