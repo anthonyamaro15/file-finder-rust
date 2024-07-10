@@ -524,11 +524,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .constraints([Constraint::Percentage(100)]).split(area);
 
 
-            let sort_option_area = draw_popup(f.size(), 50, 50);
+            let sort_option_area = draw_popup(f.size(), 90, 20);
             let sort_options_chunks = Layout::default()
-                .direction(Direction::Horizontal)
+                .direction(Direction::Vertical)
                 .margin(1)
-                .constraints([Constraint::Percentage(100)]).split(sort_option_area);
+                .constraints([Constraint::Percentage(100),
+                ]).split(sort_option_area);
 
             match app.input_mode {
                 InputMode::WatchCreate => {
@@ -557,13 +558,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .block(Block::default().borders(Borders::ALL).title("test"))
                             .style(Style::default().fg(Color::LightGreen));
 
-                f.render_widget(create_input_block, popup_chuncks[0]);
-
+                    f.render_widget(create_input_block, popup_chuncks[0]);
                 }
                 InputMode::WatchSort => {
-                    let create_input_block = Paragraph::new("Sort By: ").block(Block::default().borders(Borders::ALL).title("test")).style(Style::default().fg(Color::LightGreen));
+                    let mut lines = vec![];
 
-                f.render_widget(create_input_block, sort_options_chunks[0]);
+                    lines.push(Line::from(vec![
+                        Span::styled("Name: (n) ", Style::default().fg(Color::LightGreen)),
+                        Span::styled("Date Created ASC: (a) ", Style::default().fg(Color::LightGreen)),
+                        Span::styled("Date Created DESC: (d) ", Style::default().fg(Color::LightGreen)),
+                    ]));
+
+                    let list_items = Text::from(lines);
+                    let p = Paragraph::new(list_items).block(Block::default().borders(Borders::ALL).title("Sort By: ")).style(Style::default().fg(Color::LightGreen));
+                
+                f.render_widget(p, sort_options_chunks[0]);
+
+                //f.render_widget(create_input_block, sort_options_chunks[0]);
                 }
                 _ => {}
             }
@@ -759,7 +770,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     KeyCode::Char('s') => {
                         app.input_mode = InputMode::WatchSort;
-                        app.input = "does htis wrok".to_string();
                     }
 
                     KeyCode::Enter => {
