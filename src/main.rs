@@ -37,13 +37,47 @@ mod configuration;
 mod directory_store;
 mod ui;
 
+enum SortType {
+    Name,
+    Size,
+    DateAddedASC,
+    DateAddedDESC,
+    Default,
+}
+
+fn sort_entries_by_type(sort_type: SortType, mut entries: Vec<PathBuf>) -> Vec<PathBuf> {
+    match sort_type {
+        SortType::Name => {
+            entries.sort_by_key(|entry| entry.file_name().unwrap().to_string_lossy().into_owned())
+        }
+        SortType::Size => {
+            entries.sort_by_key(|entry| entry.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+        }
+        SortType::DateAddedASC => entries.sort_by_key(|entry| {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|meta| meta.created().ok())
+                .unwrap_or(std::time::SystemTime::now())
+        }),
+        _ => return entries,
+    }
+
+    entries
+}
+
 // TODO: refator this method, too many string conversions
-fn convert_file_path_to_string(entries: Vec<PathBuf>, show_hidden: bool) -> Vec<String> {
+fn convert_file_path_to_string(
+    entries: Vec<PathBuf>,
+    show_hidden: bool,
+    sort_type: SortType,
+) -> Vec<String> {
     let mut file_strings: Vec<String> = Vec::new();
 
+    let sort_entries = sort_entries_by_type(sort_type, entries);
     let mut path_buf_list = Vec::new();
 
-    for value in entries {
+    for value in sort_entries {
         if value.is_dir() {
             path_buf_list.push(value);
         } else if value.is_file() {
@@ -121,6 +155,7 @@ fn handle_file_selection(
 fn get_inner_files_info(
     file: String,
     show_hidden_files: bool,
+    sort_tpe: SortType,
 ) -> anyhow::Result<Option<Vec<String>>> {
     let entries = match fs::read_dir(file) {
         Ok(en) => {
@@ -139,7 +174,7 @@ fn get_inner_files_info(
         }
     };
 
-    let file_strings = convert_file_path_to_string(entries, show_hidden_files);
+    let file_strings = convert_file_path_to_string(entries, show_hidden_files, sort_tpe);
     Ok(Some(file_strings))
 }
 
@@ -193,12 +228,16 @@ fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn get_file_path_data(start_path: String, show_hidden: bool) -> anyhow::Result<Vec<String>> {
+fn get_file_path_data(
+    start_path: String,
+    show_hidden: bool,
+    sort_type: SortType,
+) -> anyhow::Result<Vec<String>> {
     let entries = fs::read_dir(start_path)?
         .map(|res| res.map(|e| e.path()))
         .collect::<Result<Vec<_>, io::Error>>()?;
 
-    let file_strings = convert_file_path_to_string(entries, show_hidden);
+    let file_strings = convert_file_path_to_string(entries, show_hidden, sort_type);
 
     Ok(file_strings)
 }
@@ -331,7 +370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.handle_settings_configuration();
     // Setup terminal
 
-    let file_strings = get_file_path_data(config.start_path.clone(), false)?; //let file_strings = convert_file_path_to_string(entries);
+    let file_strings = get_file_path_data(config.start_path.clone(), false, SortType::Default)?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
     // handle ide selection from arguments
@@ -570,8 +609,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ]));
 
                     let list_items = Text::from(lines);
-                    let p = Paragraph::new(list_items).block(Block::default().borders(Borders::ALL).title("Sort By: ")).style(Style::default().fg(Color::LightGreen));
-                
+                    let p = Paragraph::new(list_items).block(Block::default().borders(Borders::ALL).title("Sort By: ")).style(Style::default().fg(Color::LightGreen)); 
                 f.render_widget(p, sort_options_chunks[0]);
 
                 //f.render_widget(create_input_block, sort_options_chunks[0]);
@@ -631,9 +669,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 split_path.pop();
 
                                 let new_path = split_path.join("/");
-                                let files_strings =
-                                    get_inner_files_info(new_path.clone(), app.show_hidden_files)
-                                        .unwrap();
+                                let files_strings = get_inner_files_info(
+                                    new_path.clone(),
+                                    app.show_hidden_files,
+                                    SortType::Default,
+                                )
+                                .unwrap();
 
                                 if let Some(f_s) = files_strings {
                                     app.read_only_files = f_s.clone();
@@ -642,9 +683,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         } else {
-                            let files_strings =
-                                get_inner_files_info(app.prev_dir.clone(), app.show_hidden_files)
-                                    .unwrap();
+                            let files_strings = get_inner_files_info(
+                                app.prev_dir.clone(),
+                                app.show_hidden_files,
+                                SortType::Default,
+                            )
+                            .unwrap();
 
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
@@ -664,6 +708,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     match get_inner_files_info(
                                         selected.to_string(),
                                         app.show_hidden_files,
+                                        SortType::Default,
                                     ) {
                                         Ok(files_strings) => {
                                             if let Some(files_strs) = files_strings {
@@ -713,7 +758,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut split_path = selected.split("/").collect::<Vec<&str>>();
                             split_path.pop();
                             let new_path = split_path.join("/");
-                            match get_inner_files_info(new_path, is_hidden) {
+                            match get_inner_files_info(new_path, is_hidden, SortType::Default) {
                                 Ok(files) => {
                                     if let Some(file_strs) = files {
                                         app.read_only_files = file_strs.clone();
@@ -753,7 +798,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // show spinner that is downloading?
                                 app.loading = false;
                                 // TODO: create method that updates refreshes files
-                                match get_inner_files_info(string_path, app.show_hidden_files) {
+                                match get_inner_files_info(
+                                    string_path,
+                                    app.show_hidden_files,
+                                    SortType::Default,
+                                ) {
                                     Ok(files) => {
                                         if let Some(file_strs) = files {
                                             app.read_only_files = file_strs.clone();
@@ -815,6 +864,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let file_path_list = get_file_path_data(
                                             config.start_path.to_owned(),
                                             app.show_hidden_files,
+                                            SortType::Default,
                                         )?;
                                         app.files = file_path_list.clone();
                                         app.read_only_files = file_path_list.clone();
@@ -877,6 +927,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let file_path_list = get_file_path_data(
                                         config.start_path.to_owned(),
                                         app.show_hidden_files,
+                                        SortType::Default,
                                     )?;
                                     app.files = file_path_list.clone();
                                     app.read_only_files = file_path_list.clone();
@@ -940,6 +991,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let file_path_list = get_file_path_data(
                                 config.start_path.to_owned(),
                                 app.show_hidden_files,
+                                SortType::Default,
                             )?;
                             app.render_popup = false;
                             app.files = file_path_list.clone();
@@ -952,6 +1004,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::WatchSort => match key.code {
                     KeyCode::Char('q') => {
                         app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('n') => {
+                        // sort by name
+                        let selected_index = state.selected();
+
+                        if let Some(selected_indx) = selected_index {
+                            let selected = &app.files[selected_indx];
+
+                            handle_delete_based_on_type(selected).unwrap();
+
+                            let file_path_list = get_file_path_data(
+                                config.start_path.to_owned(),
+                                app.show_hidden_files,
+                                SortType::Name,
+                            )?;
+                            app.files = file_path_list.clone();
+                            app.read_only_files = file_path_list.clone();
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Char('s') => {
+                        let selected_index = state.selected();
+                        // TODO: this code should be refactor to into a reusable method since is
+                        // used in multiple places
+                        if let Some(selected_indx) = selected_index {
+                            let selected = &app.files[selected_indx];
+
+                            handle_delete_based_on_type(selected).unwrap();
+
+                            let file_path_list = get_file_path_data(
+                                config.start_path.to_owned(),
+                                app.show_hidden_files,
+                                SortType::Size,
+                            )?;
+                            app.files = file_path_list.clone();
+                            app.read_only_files = file_path_list.clone();
+                            app.input_mode = InputMode::Normal;
+                        }
                     }
                     _ => {}
                 },
