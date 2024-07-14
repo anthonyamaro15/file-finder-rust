@@ -688,13 +688,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(create_input_block, popup_chuncks[0]);
                 }
                 InputMode::WatchSort => {
-                    let mut lines = vec![];
-
-                    lines.push(Line::from(vec![
-                        Span::styled("Name: (n) ", Style::default().fg(Color::LightGreen)),
-                        Span::styled("Date Created ASC: (a) ", Style::default().fg(Color::LightGreen)),
-                        Span::styled("Date Created DESC: (d) ", Style::default().fg(Color::LightGreen)),
-                    ]));
+                    let lines = vec![
+                        Line::from("Press (a) to sort ASC or (d) to sort DESC, (q) to exit"),
+                        Line::from("Name: (n)"),
+                        Line::from("Date Created: (t)"),
+                        Line::from("Size: (s)")
+                    ];
 
                     let sort_by_text = generate_sort_by_string(&sort_type);
                     let list_items = Text::from(lines);
