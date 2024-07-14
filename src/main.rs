@@ -1012,7 +1012,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
 
-                            handle_delete_based_on_type(selected).unwrap();
+                            //handle_delete_based_on_type(selected).unwrap();
 
                             let file_path_list = get_file_path_data(
                                 config.start_path.to_owned(),
@@ -1025,23 +1025,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     KeyCode::Char('s') => {
-                        let selected_index = state.selected();
                         // TODO: this code should be refactor to into a reusable method since is
                         // used in multiple places
-                        if let Some(selected_indx) = selected_index {
-                            let selected = &app.files[selected_indx];
 
-                            handle_delete_based_on_type(selected).unwrap();
-
-                            let file_path_list = get_file_path_data(
-                                config.start_path.to_owned(),
-                                app.show_hidden_files,
-                                SortType::Size,
-                            )?;
-                            app.files = file_path_list.clone();
-                            app.read_only_files = file_path_list.clone();
-                            app.input_mode = InputMode::Normal;
-                        }
+                        let file_path_list = get_file_path_data(
+                            config.start_path.to_owned(),
+                            app.show_hidden_files,
+                            SortType::Size,
+                        )?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('a') => {
+                        let file_path_list = get_file_path_data(
+                            config.start_path.to_owned(),
+                            app.show_hidden_files,
+                            SortType::DateAddedASC,
+                        )?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
                     }
                     _ => {}
                 },
