@@ -38,7 +38,8 @@ mod directory_store;
 mod ui;
 
 enum SortType {
-    Name,
+    NameASC,
+    NameDESC,
     Size,
     DateAddedASC,
     DateAddedDESC,
@@ -47,8 +48,25 @@ enum SortType {
 
 fn sort_entries_by_type(sort_type: SortType, mut entries: Vec<PathBuf>) -> Vec<PathBuf> {
     match sort_type {
-        SortType::Name => {
-            entries.sort_by_key(|entry| entry.file_name().unwrap().to_string_lossy().into_owned())
+        SortType::NameASC => {
+            entries.sort_by(
+                |a, b| {
+                    a.file_name()
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .cmp(&b.file_name().unwrap().to_ascii_lowercase())
+                }, //entries.sort_by_key(|entry| entry.file_name().unwrap().to_string_lossy().into_owned())
+            )
+        }
+        SortType::NameDESC => {
+            entries.sort_by(
+                |a, b| {
+                    b.file_name()
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .cmp(&a.file_name().unwrap().to_ascii_lowercase())
+                }, //entries.sort_by_key(|entry| entry.file_name().unwrap().to_string_lossy().into_owned())
+            )
         }
         SortType::Size => {
             entries.sort_by_key(|entry| entry.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
@@ -1007,39 +1025,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     KeyCode::Char('n') => {
                         // sort by name
-                        let selected_index = state.selected();
 
-                        if let Some(selected_indx) = selected_index {
-                            let selected = &app.files[selected_indx];
-
-                            //handle_delete_based_on_type(selected).unwrap();
-
-                            let file_path_list = get_file_path_data(
-                                config.start_path.to_owned(),
-                                app.show_hidden_files,
-                                SortType::Name,
-                            )?;
-                            app.files = file_path_list.clone();
-                            app.read_only_files = file_path_list.clone();
-                            app.input_mode = InputMode::Normal;
-                        }
+                        // we only care about the path not the selcted item
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
+                        let file_path_list =
+                            get_file_path_data(cur_path, app.show_hidden_files, SortType::NameASC)?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
                     }
-                    KeyCode::Char('s') => {
-                        // TODO: this code should be refactor to into a reusable method since is
-                        // used in multiple places
+                    KeyCode::Char('m') => {
+                        // sort by name
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
 
                         let file_path_list = get_file_path_data(
-                            config.start_path.to_owned(),
+                            cur_path,
                             app.show_hidden_files,
-                            SortType::Size,
+                            SortType::NameDESC,
                         )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
                         app.input_mode = InputMode::Normal;
                     }
+                    KeyCode::Char('s') => {
+                        // TODO: this code should be refactor to into a reusable method since is
+                        // used in multiple places
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
+
+                        let file_path_list =
+                            get_file_path_data(cur_path, app.show_hidden_files, SortType::Size)?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
+                    }
                     KeyCode::Char('a') => {
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
+
                         let file_path_list = get_file_path_data(
-                            config.start_path.to_owned(),
+                            cur_path,
                             app.show_hidden_files,
                             SortType::DateAddedASC,
                         )?;
