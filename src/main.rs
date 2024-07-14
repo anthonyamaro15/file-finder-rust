@@ -40,7 +40,8 @@ mod ui;
 enum SortType {
     NameASC,
     NameDESC,
-    Size,
+    SizeASC,
+    SizeDESC,
     DateAddedASC,
     DateAddedDESC,
     Default,
@@ -68,16 +69,51 @@ fn sort_entries_by_type(sort_type: SortType, mut entries: Vec<PathBuf>) -> Vec<P
                 }, //entries.sort_by_key(|entry| entry.file_name().unwrap().to_string_lossy().into_owned())
             )
         }
-        SortType::Size => {
-            entries.sort_by_key(|entry| entry.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+        SortType::SizeASC => {
+            //entries.sort_by_key(|entry| entry.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            entries.sort_by(|a, b| {
+                a.metadata()
+                    .ok()
+                    .map(|meta| meta.len())
+                    .unwrap_or(0)
+                    .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            })
         }
-        SortType::DateAddedASC => entries.sort_by_key(|entry| {
-            entry
-                .metadata()
+        SortType::SizeDESC => {
+            //entries.sort_by_key(|entry| entry.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            entries.sort_by(|a, b| {
+                b.metadata()
+                    .ok()
+                    .map(|meta| meta.len())
+                    .unwrap_or(0)
+                    .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            })
+        }
+        SortType::DateAddedASC => entries.sort_by(|a, b| {
+            a.metadata()
                 .ok()
                 .and_then(|meta| meta.created().ok())
                 .unwrap_or(std::time::SystemTime::now())
+                .cmp(
+                    &b.metadata()
+                        .ok()
+                        .and_then(|meta| meta.created().ok())
+                        .unwrap_or(std::time::SystemTime::now()),
+                )
         }),
+        SortType::DateAddedDESC => entries.sort_by(|a, b| {
+            b.metadata()
+                .ok()
+                .and_then(|meta| meta.created().ok())
+                .unwrap_or(std::time::SystemTime::now())
+                .cmp(
+                    &a.metadata()
+                        .ok()
+                        .and_then(|meta| meta.created().ok())
+                        .unwrap_or(std::time::SystemTime::now()),
+                )
+        }),
+
         _ => return entries,
     }
 
@@ -1056,7 +1092,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let cur_path = get_curr_path(get_path_from_list.to_string());
 
                         let file_path_list =
-                            get_file_path_data(cur_path, app.show_hidden_files, SortType::Size)?;
+                            get_file_path_data(cur_path, app.show_hidden_files, SortType::SizeASC)?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('z') => {
+                        // TODO: this code should be refactor to into a reusable method since is
+                        // used in multiple places
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
+
+                        let file_path_list = get_file_path_data(
+                            cur_path,
+                            app.show_hidden_files,
+                            SortType::SizeDESC,
+                        )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
                         app.input_mode = InputMode::Normal;
@@ -1069,6 +1120,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             cur_path,
                             app.show_hidden_files,
                             SortType::DateAddedASC,
+                        )?;
+                        app.files = file_path_list.clone();
+                        app.read_only_files = file_path_list.clone();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Char('t') => {
+                        let get_path_from_list = &app.files[0];
+                        let cur_path = get_curr_path(get_path_from_list.to_string());
+
+                        let file_path_list = get_file_path_data(
+                            cur_path,
+                            app.show_hidden_files,
+                            SortType::DateAddedDESC,
                         )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
