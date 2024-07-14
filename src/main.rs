@@ -675,6 +675,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         );
 
+                f.render_widget(Clear, popup_chuncks[0]);
                 f.render_widget(create_input_block, popup_chuncks[0]);
 
 
@@ -698,6 +699,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let sort_by_text = generate_sort_by_string(&sort_type);
                     let list_items = Text::from(lines);
                     let p = Paragraph::new(list_items).block(Block::default().borders(Borders::ALL).title(sort_by_text)).style(Style::default().fg(Color::LightGreen)); 
+                f.render_widget(Clear, sort_options_chunks[0]);
                 f.render_widget(p, sort_options_chunks[0]);
 
                 //f.render_widget(create_input_block, sort_options_chunks[0]);
