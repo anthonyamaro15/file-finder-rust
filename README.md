@@ -14,6 +14,7 @@ Important: Currently, only available for macOS.
   - "d" to delete file or directory
   - "a" to create file or directory
   - "r" to rename file or directory
+  - "s" to open sort options
 - Editor Integration: Open projects directly in "neovim", "vscoode", or "zed".
   - Example use to open project with vscode: "ff vscode"
 - Search: Use the input field for quick searching of directories.
