@@ -1,7 +1,8 @@
 use app::{App, InputMode};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture };
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use rayon::prelude::*;
 use std::{
+    alloc::LayoutErr,
     env,
     fs::{self, File},
     io::{self, ErrorKind, Stdout},
@@ -58,78 +59,64 @@ fn sort_entries_by_type(
 ) -> Vec<PathBuf> {
     match sort_type {
         SortType::ASC => match sort_by {
-            SortBy::Name => {
-                entries.sort_by(
-                    |a, b| {
-                        a.file_name()
-                            .unwrap()
-                            .to_ascii_lowercase()
-                            .cmp(&b.file_name().unwrap().to_ascii_lowercase())
-                    }, 
-                    
-                )
-            }
-            SortBy::Size => {
-               entries.sort_by(|a, b| {
-                   a.metadata()
-                       .ok()
-                       .map(|meta| meta.len())
-                       .unwrap_or(0)
-                       .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-               })
-           }
+            SortBy::Name => entries.sort_by(|a, b| {
+                a.file_name()
+                    .unwrap()
+                    .to_ascii_lowercase()
+                    .cmp(&b.file_name().unwrap().to_ascii_lowercase())
+            }),
+            SortBy::Size => entries.sort_by(|a, b| {
+                a.metadata()
+                    .ok()
+                    .map(|meta| meta.len())
+                    .unwrap_or(0)
+                    .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            }),
 
-        SortBy::DateAdded => entries.sort_by(|a, b| {
-               a.metadata()
-                   .ok()
-                   .and_then(|meta| meta.created().ok())
-                   .unwrap_or(std::time::SystemTime::now())
-                   .cmp(
-                       &b.metadata()
-                           .ok()
-                           .and_then(|meta| meta.created().ok())
-                           .unwrap_or(std::time::SystemTime::now()),
-                   )
-           }),
+            SortBy::DateAdded => entries.sort_by(|a, b| {
+                a.metadata()
+                    .ok()
+                    .and_then(|meta| meta.created().ok())
+                    .unwrap_or(std::time::SystemTime::now())
+                    .cmp(
+                        &b.metadata()
+                            .ok()
+                            .and_then(|meta| meta.created().ok())
+                            .unwrap_or(std::time::SystemTime::now()),
+                    )
+            }),
             _ => {}
         },
         SortType::DESC => match sort_by {
-            SortBy::Name => {
-                entries.sort_by(
-                    |a, b| {
-                        b.file_name()
-                            .unwrap()
-                            .to_ascii_lowercase()
-                            .cmp(&a.file_name().unwrap().to_ascii_lowercase())
-                    }, 
-                )
-            }
-            SortBy::Size => {
-               entries.sort_by(|a, b| {
-                   b.metadata()
-                       .ok()
-                       .map(|meta| meta.len())
-                       .unwrap_or(0)
-                       .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-               })
-           }
+            SortBy::Name => entries.sort_by(|a, b| {
+                b.file_name()
+                    .unwrap()
+                    .to_ascii_lowercase()
+                    .cmp(&a.file_name().unwrap().to_ascii_lowercase())
+            }),
+            SortBy::Size => entries.sort_by(|a, b| {
+                b.metadata()
+                    .ok()
+                    .map(|meta| meta.len())
+                    .unwrap_or(0)
+                    .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
+            }),
             SortBy::DateAdded => entries.sort_by(|a, b| {
-               b.metadata()
-                   .ok()
-                   .and_then(|meta| meta.created().ok())
-                   .unwrap_or(std::time::SystemTime::now())
-                   .cmp(
-                       &a.metadata()
-                           .ok()
-                           .and_then(|meta| meta.created().ok())
-                           .unwrap_or(std::time::SystemTime::now()),
-                   )
-           }),
+                b.metadata()
+                    .ok()
+                    .and_then(|meta| meta.created().ok())
+                    .unwrap_or(std::time::SystemTime::now())
+                    .cmp(
+                        &a.metadata()
+                            .ok()
+                            .and_then(|meta| meta.created().ok())
+                            .unwrap_or(std::time::SystemTime::now()),
+                    )
+            }),
             _ => {}
         },
-
     }
-    
+
     entries
 }
 
@@ -498,14 +485,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(2)
+                .margin(1)
                 .constraints(
                     [
                         Constraint::Length(2),
                         Constraint::Length(3),
                         Constraint::Min(1),
                         Constraint::Length(3),
-                        Constraint::Length(1),
+                        //Constraint::Length(1),
                     ]
                     .as_ref(),
                 )
@@ -526,24 +513,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
                 InputMode::WatchRename => (vec!["Watch Delete Mode".bold()], Style::default()),
                 InputMode::WatchSort => (vec!["Watch Delete Mode".bold()], Style::default()),
+                _ => (vec!["Default".bold()], Style::default()),
             };
 
-
-            let inner_layout= Layout::default()
+            let inner_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(vec![
                     //Constraint::Percentage(50),
                     Constraint::Percentage(100),
                 ])
-                    .split(chunks[2]);
+                .split(chunks[2]);
 
             // Input field
-                       let input_block = Paragraph::new(app.input.clone())
-                .block(Block::default().borders(Borders::ALL).title("Search").style(match app.input_mode {
-                    InputMode::Normal => Style::default().fg(Color::White),
-                    InputMode::Editing => Style::default().fg(Color::Green),
-                    _ => Style::default().fg(Color::White)
-                }))
+            let input_block = Paragraph::new(app.input.clone())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Search")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::White),
+                            InputMode::Editing => Style::default().fg(Color::Green),
+                            _ => Style::default().fg(Color::White),
+                        }),
+                )
                 .style(match app.input_mode {
                     InputMode::Editing => Style::default().fg(Color::White),
                     InputMode::Normal => Style::default().fg(Color::White),
@@ -551,8 +543,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
                     InputMode::WatchSort => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::Gray),
                 });
-
 
             let mut list_title = String::new();
             if app.loading {
@@ -567,12 +559,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Block::default()
                         .borders(Borders::ALL)
                         .title(list_title.as_str())
-                       .style(match app.input_mode {
-                            InputMode::Normal  => Style::default().fg(Color::Green),
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
                             InputMode::Editing => Style::default().fg(Color::White),
-                            _ => Style::default().fg(Color::White)
-                        })
-                        //.title("Filtered List"),
+                            _ => Style::default().fg(Color::White),
+                        }), //.title("Filtered List"),
                 )
                 .highlight_style(
                     Style::default()
@@ -586,105 +577,127 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchDelete => Style::default().fg(Color::Gray),
                     InputMode::WatchCreate => Style::default().fg(Color::Gray),
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
-                    InputMode::WatchSort => Style::default().fg(Color::Gray)
+                    InputMode::WatchSort => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::Gray),
                 });
 
+            let footer_outer_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(vec![Constraint::Percentage(100)])
+                .split(chunks[3]);
+
+            let footer_inner_layout = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(footer_outer_layout[0]);
+
             let bottom_instructions = Span::styled(
-                "Use (j,k) to navigate, use(h,l) to navigate directory, 'Enter' to open with selected IDE",
+                "Open with selected IDE: <Enter> | Keybindings: ?",
                 Style::default(),
             );
-            let default_empty_label = Span::styled("",Style::default());
+            //let default_empty_label = Span::styled("", Style::default());
 
+            let footer_stats =
+                Text::from(Line::from(Span::styled("stats coming", Style::default())));
             let instructions = Text::from(Line::from(bottom_instructions));
+
+            let footer_stats_paragraph = Paragraph::new(footer_stats)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
             let parsed_instructions = Paragraph::new(instructions)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
-            let default_label = Paragraph::new(default_empty_label)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
+            /* let default_label = Paragraph::new(default_empty_label)
+            .block(Block::default().borders(Borders::ALL))
+            .style(Style::default()); */
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
             let input_area = chunks[1];
             match app.input_mode {
-                InputMode::Normal => {},
-                InputMode::WatchDelete => {},
-                InputMode::WatchCreate => {},
-                InputMode::WatchRename => {},
-                InputMode::WatchSort => {},
-                InputMode::Editing => {
-                    f.set_cursor(
-                      input_area.x + app.character_index as u16 + 1,
-                      input_area.y + 1)
-                }
+                InputMode::Normal => {}
+                InputMode::WatchDelete => {}
+                InputMode::WatchCreate => {}
+                InputMode::WatchRename => {}
+                InputMode::WatchSort => {}
+                InputMode::Editing => f.set_cursor(
+                    input_area.x + app.character_index as u16 + 1,
+                    input_area.y + 1,
+                ),
+                _ => {}
             }
-
-
-
 
             f.render_widget(help_message, chunks[0]);
             f.render_widget(input_block, chunks[1]);
             //f.render_widget(paragraph, chunks[2]);
-            f.render_widget(default_label, chunks[2]);
-            f.render_widget(parsed_instructions.clone(), chunks[3]);
+            //f.render_widget(default_label, chunks[2]);
+            //f.render_widget(parsed_instructions.clone(), footer_outer_layout[0]);
+            //f.render_widget(parsed_instructions.clone(), footer_layout[1]);
+            //f.render_widget(parsed_instructions.clone(), chunks[3]);
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
-           // f.render_widget(list_block, inner_layout[1]);
+            // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
+            f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
+            f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
             if app.render_popup {
-                let block = Block::bordered().title("Confirm to delete y/n").style(Style::default().fg(Color::Red));
+                let block = Block::bordered()
+                    .title("Confirm to delete y/n")
+                    .style(Style::default().fg(Color::Red));
                 let area = draw_popup(f.size(), 40, 7);
                 let popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
                     .margin(1)
-                    .constraints([Constraint::Percentage(100)]).split(area);
-                    f.render_widget(Clear, area);
+                    .constraints([Constraint::Percentage(100)])
+                    .split(area);
+                f.render_widget(Clear, area);
                 f.render_widget(block, popup_chuncks[0]);
             }
 
-
-                let area = draw_popup(f.size(), 40, 7);
-                let popup_chuncks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .margin(1)
-                    .constraints([Constraint::Percentage(100)]).split(area);
-
+            let area = draw_popup(f.size(), 40, 7);
+            let popup_chuncks = Layout::default()
+                .direction(Direction::Horizontal)
+                .margin(1)
+                .constraints([Constraint::Percentage(100)])
+                .split(area);
 
             let sort_option_area = draw_popup(f.size(), 90, 20);
             let sort_options_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(1)
-                .constraints([Constraint::Percentage(100),
-                ]).split(sort_option_area);
+                .constraints([Constraint::Percentage(100)])
+                .split(sort_option_area);
+
+            let keybinding_area = draw_popup(f.size(), 80, 20);
+            let keybinding_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Percentage(100)])
+                .split(keybinding_area);
 
             match app.input_mode {
                 InputMode::WatchCreate => {
-                //f.render_widget(popup_block, area);
+                    //f.render_widget(popup_block, area);
 
-                let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                    .block(Block::default().borders(Borders::ALL).title(
+                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
+                        .block(Block::default().borders(Borders::ALL).title(
                             match app.is_create_edit_error {
                                 false => "Create File/Dir".to_string(),
-                                true => app.error_message.to_owned()
-                            }
+                                true => app.error_message.to_owned(),
+                            },
                         ))
-                    .style(
-                            match app.is_create_edit_error {
-                                true => Style::default().fg(Color::Red),
-                                false => Style::default().fg(Color::LightGreen)
-                            }
-                        );
+                        .style(match app.is_create_edit_error {
+                            true => Style::default().fg(Color::Red),
+                            false => Style::default().fg(Color::LightGreen),
+                        });
 
-                f.render_widget(Clear, popup_chuncks[0]);
-                f.render_widget(create_input_block, popup_chuncks[0]);
-
-
-                },
+                    f.render_widget(Clear, popup_chuncks[0]);
+                    f.render_widget(create_input_block, popup_chuncks[0]);
+                }
                 InputMode::WatchRename => {
-
                     let create_input_block = Paragraph::new("Enter file/dir name")
                         .block(Block::default().borders(Borders::ALL).title("test"))
-                            .style(Style::default().fg(Color::LightGreen));
+                        .style(Style::default().fg(Color::LightGreen));
 
                     f.render_widget(create_input_block, popup_chuncks[0]);
                 }
@@ -693,16 +706,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Line::from("Press (a) to sort ASC or (d) to sort DESC, (q) to exit"),
                         Line::from("Name: (n)"),
                         Line::from("Date Created: (t)"),
-                        Line::from("Size: (s)")
+                        Line::from("Size: (s)"),
                     ];
 
                     let sort_by_text = generate_sort_by_string(&sort_type);
                     let list_items = Text::from(lines);
-                    let p = Paragraph::new(list_items).block(Block::default().borders(Borders::ALL).title(sort_by_text)).style(Style::default().fg(Color::LightGreen)); 
-                f.render_widget(Clear, sort_options_chunks[0]);
-                f.render_widget(p, sort_options_chunks[0]);
+                    let p = Paragraph::new(list_items)
+                        .block(Block::default().borders(Borders::ALL).title(sort_by_text))
+                        .style(Style::default().fg(Color::LightGreen));
+                    f.render_widget(Clear, sort_options_chunks[0]);
+                    f.render_widget(p, sort_options_chunks[0]);
 
-                //f.render_widget(create_input_block, sort_options_chunks[0]);
+                    //f.render_widget(create_input_block, sort_options_chunks[0]);
+                }
+                InputMode::WatchKeyBinding => {
+                    let lines = vec![
+                        Line::from("<Enter>: Open directory with selected IDE. copy path if not IDE option provided."),
+                        Line::from("<s>: Sort"),
+                        Line::from("<a>: Create new"),
+                        Line::from("<d>: Delete"),
+                        Line::from("<i>: Search mode"),
+                        Line::from("<.> : Show hidden files"),
+                    ];
+
+                    let sort_by_text = generate_sort_by_string(&sort_type);
+                    let list_items = Text::from(lines);
+                    let paragraph = Paragraph::new(list_items)
+                        .block(Block::default().borders(Borders::ALL).title(sort_by_text))
+                        .style(Style::default().fg(Color::LightGreen));
+                    f.render_widget(Clear, keybinding_chunks[0]);
+                    f.render_widget(paragraph, keybinding_chunks[0]);
                 }
                 _ => {}
             }
@@ -922,6 +955,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.input_mode = InputMode::WatchSort;
                     }
 
+                    KeyCode::Char('?') => {
+                        app.input_mode = InputMode::WatchKeyBinding;
+                    }
+
                     KeyCode::Enter => {
                         let app_files = app.files.clone();
                         let selected = &app_files[state.selected().unwrap()];
@@ -1125,7 +1162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.read_only_files = file_path_list.clone();
                         app.input_mode = InputMode::Normal;
                     }
-                    
+
                     KeyCode::Char('s') => {
                         // TODO: this code should be refactor to into a reusable method since is
                         // used in multiple places
@@ -1142,8 +1179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.read_only_files = file_path_list.clone();
                         app.input_mode = InputMode::Normal;
                     }
-                    
-                    
+
                     KeyCode::Char('t') => {
                         let get_path_from_list = &app.files[0];
                         let cur_path = get_curr_path(get_path_from_list.to_string());
@@ -1167,6 +1203,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 },
 
+                InputMode::WatchKeyBinding => match key.code {
+                    KeyCode::Char('q') => {
+                        app.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
