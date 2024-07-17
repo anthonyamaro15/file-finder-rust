@@ -44,6 +44,7 @@ pub struct App {
     pub current_name_to_edit: String,
 
     pub loading: bool,
+    pub curr_index: Option<usize>,
 }
 
 impl App {
@@ -67,6 +68,7 @@ impl App {
             current_path_to_edit: String::new(),
             current_name_to_edit: String::new(),
             loading: false,
+            curr_index: Some(0),
         }
     }
 

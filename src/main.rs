@@ -2,9 +2,8 @@ use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use rayon::prelude::*;
 use std::{
-    alloc::LayoutErr,
     env,
-    fs::{self, File},
+    fs::{self, File, Metadata},
     io::{self, ErrorKind, Stdout},
     path::{Path, PathBuf},
     process::Command,
@@ -340,6 +339,33 @@ fn is_file(path: String) -> bool {
     }
 }
 
+fn get_metadata_info(path: String) -> anyhow::Result<Option<Metadata>> {
+    let metadata = match fs::metadata(path) {
+        Ok(info) => Some(info),
+        Err(_) => None,
+    };
+
+    Ok(metadata)
+}
+
+fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> String {
+    let metadata_info = match metadata {
+        Ok(res) => match res {
+            Some(info) => {
+                let size = info.len();
+                let permissions = info.permissions();
+
+                let format_str = format!("size: {} | permission: {}", size, permissions.readonly());
+                format_str
+            }
+            None => String::from("Info not available"),
+        },
+        Err(_) => String::from("Encounter an error"),
+    };
+
+    metadata_info
+}
+
 fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
     let get_info = Path::new(&curr_path);
 
@@ -597,13 +623,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             //let default_empty_label = Span::styled("", Style::default());
 
-            let footer_stats =
-                Text::from(Line::from(Span::styled("stats coming", Style::default())));
-            let instructions = Text::from(Line::from(bottom_instructions));
-
-            let footer_stats_paragraph = Paragraph::new(footer_stats)
+             match app.files.len() > 0 {
+                true => {
+                if let Some(selected_indx) = state.selected() {
+                let selected_cur_path = &app.files[selected_indx];
+                    let get_path = get_curr_path(selected_cur_path.to_string());
+                    let get_metadata = get_metadata_info(get_path);
+                    let generated_metadata_str = generate_metadata_str_info(get_metadata);
+                    app.input = generated_metadata_str.clone();
+                    let footer_stats =
+                Text::from(Line::from(Span::styled(generated_metadata_str, Style::default())));
+                        let footer_stats_paragraph = Paragraph::new(footer_stats)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
+                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
+
+}
+        },
+                false =>{}
+                };
+
+            /* let footer_stats =
+                Text::from(Line::from(Span::styled(metadata_stats, Style::default()))); */
+            let instructions = Text::from(Line::from(bottom_instructions));
+
+            /* let footer_stats_paragraph = Paragraph::new(footer_stats)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default()); */
             let parsed_instructions = Paragraph::new(instructions)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
@@ -638,7 +684,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // f.render_widget(list_block, inner_layout[1]);
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
             f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
-            f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
+            //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
             if app.render_popup {
                 let block = Block::bordered()
@@ -764,6 +810,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 None => 0,
                             };
                             state.select(Some(i));
+                            app.curr_index = Some(i);
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
@@ -779,6 +826,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 None => 0,
                             };
                             state.select(Some(i));
+                            app.curr_index = Some(i);
                         }
                     }
                     KeyCode::Char('h') => {
