@@ -17,6 +17,7 @@ pub enum InputMode {
     WatchCreate,
     WatchRename,
     WatchSort,
+    WatchKeyBinding,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +44,8 @@ pub struct App {
     pub current_name_to_edit: String,
 
     pub loading: bool,
+    pub curr_index: Option<usize>,
+    pub curr_stats: String,
 }
 
 impl App {
@@ -66,6 +69,8 @@ impl App {
             current_path_to_edit: String::new(),
             current_name_to_edit: String::new(),
             loading: false,
+            curr_index: Some(0),
+            curr_stats: String::new(),
         }
     }
 
