@@ -360,7 +360,10 @@ fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> Str
             }
             None => String::from("Info not available"),
         },
-        Err(_) => String::from("Encounter an error"),
+        Err(_) => {
+            println!("errr from here",);
+            String::from("Encounter an error")
+        }
     };
 
     metadata_info
@@ -622,10 +625,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Style::default(),
             );
             //let default_empty_label = Span::styled("", Style::default());
+let footer_stats =
+                Text::from(Line::from(Span::styled(app.curr_stats.clone(), Style::default())));
+                        let footer_stats_paragraph = Paragraph::new(footer_stats)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
+                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
              match app.files.len() > 0 {
                 true => {
-                if let Some(selected_indx) = state.selected() {
+                /* let footer_stats =
+                Text::from(Line::from(Span::styled(app.curr_stats.clone(), Style::default())));
+                        let footer_stats_paragraph = Paragraph::new(footer_stats)
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
+                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]); */
+
+
+                /* if let Some(selected_indx) = state.selected() {
                 let selected_cur_path = &app.files[selected_indx];
                     let get_path = get_curr_path(selected_cur_path.to_string());
                     let get_metadata = get_metadata_info(get_path);
@@ -638,7 +655,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .style(Style::default());
                  f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
-}
+} */
         },
                 false =>{}
                 };
@@ -811,8 +828,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             };
                             state.select(Some(i));
                             app.curr_index = Some(i);
+
+                            let selected_cur_path = &app.files[i];
+                            let get_path = get_curr_path(selected_cur_path.to_string());
+                            let get_metadata = get_metadata_info(get_path);
+                            let generated_metadata_str = generate_metadata_str_info(get_metadata);
+
+                            app.curr_stats = generated_metadata_str;
                         }
                     }
+                    // BUG: for some reason this is not rendering stats corectly
                     KeyCode::Up | KeyCode::Char('k') => {
                         if app.files.len() > 0 {
                             let i = match state.selected() {
@@ -827,6 +852,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             };
                             state.select(Some(i));
                             app.curr_index = Some(i);
+                            let selected_cur_path = &app.files[i];
+                            let get_path = get_curr_path(selected_cur_path.to_string());
+                            let get_metadata = get_metadata_info(get_path);
+                            let generated_metadata_str = generate_metadata_str_info(get_metadata);
+                            app.curr_stats = generated_metadata_str;
                         }
                     }
                     KeyCode::Char('h') => {
