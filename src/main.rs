@@ -476,6 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
+    app.input = config.start_path.clone();
     // handle ide selection from arguments
     app.handle_arguments(input_arguments);
 
@@ -500,12 +501,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initial selected state
     let mut state = ListState::default();
     state.select(Some(0)); // Select the first item by default
+                           //
+    let mut read_only_state = ListState::default();
+    read_only_state.select(Some(0));
 
     // Main loop
     loop {
         // Filtered items based on input
         let filtered_items: Vec<ListItem> = app
             .files
+            .iter()
+            .map(|file| ListItem::new(file.clone()))
+            .collect();
+
+        let filtered_read_only_items: Vec<ListItem> = app
+            .copy_move_read_only_files
             .iter()
             .map(|file| ListItem::new(file.clone()))
             .collect();
@@ -800,6 +810,43 @@ let footer_stats =
                     f.render_widget(Clear, keybinding_chunks[0]);
                     f.render_widget(paragraph, keybinding_chunks[0]);
                 }
+                InputMode::WatchCopy => {
+let copy_area= draw_popup(f.size(), 50, 50);
+let copy_popup_chuncks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .margin(1)
+                    .constraints([Constraint::Percentage(100)])
+                    .split(copy_area);
+            // TODO: add dir list here: 
+            let read_only_list = List::new(filtered_read_only_items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Select Location")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::White),
+                            _ => Style::default().fg(Color::White),
+                        }),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">")
+                .style(match app.input_mode {
+                    InputMode::Normal => Style::default().fg(Color::White),
+                    InputMode::Editing => Style::default().fg(Color::White),
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
+                    InputMode::WatchRename => Style::default().fg(Color::Gray),
+                    InputMode::WatchSort => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::Gray),
+                });
+                f.render_widget(Clear, copy_area);
+                f.render_stateful_widget(read_only_list, copy_popup_chuncks[0], &mut read_only_state);
+                }
                 _ => {}
             }
         })?;
@@ -984,7 +1031,8 @@ let footer_stats =
                     }
                     KeyCode::Char('c') => {
                         // item path to copy
-                        if app.files.len() > 0 {
+                        app.input_mode = InputMode::WatchCopy;
+                        /* if app.files.len() > 0 {
                             let index = state.selected();
                             app.loading = true;
                             if let Some(indx) = index {
@@ -1026,7 +1074,7 @@ let footer_stats =
                                     }
                                 }
                             }
-                        }
+                        } */
                     }
 
                     KeyCode::Char('s') => {
@@ -1284,6 +1332,114 @@ let footer_stats =
                 InputMode::WatchKeyBinding => match key.code {
                     KeyCode::Char('q') => {
                         app.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                },
+                InputMode::WatchCopy => match key.code {
+                    KeyCode::Char('q') => {
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.files.len() > 0 {
+                            let i = match read_only_state.selected() {
+                                Some(i) => {
+                                    if i >= app.copy_move_read_only_files.len() - 1 {
+                                        0
+                                    } else {
+                                        i + 1
+                                    }
+                                }
+                                None => 0,
+                            };
+                            read_only_state.select(Some(i));
+                        }
+                    }
+                    // BUG: for some reason this is not rendering stats corectly
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if app.files.len() > 0 {
+                            let i = match read_only_state.selected() {
+                                Some(i) => {
+                                    if i == 0 {
+                                        app.copy_move_read_only_files.len() - 1
+                                    } else {
+                                        i - 1
+                                    }
+                                }
+                                None => 0,
+                            };
+                            read_only_state.select(Some(i));
+                        }
+                    }
+                    KeyCode::Char('h') => {
+                        if app.files.len() > 0 {
+                            let selected =
+                                &app.copy_move_read_only_files[read_only_state.selected().unwrap()];
+                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
+
+                            let sort_type_copy = sort_type.clone();
+                            if split_path.len() > 4 {
+                                split_path.pop();
+                                split_path.pop();
+
+                                let new_path = split_path.join("/");
+                                let files_strings = get_inner_files_info(
+                                    new_path.clone(),
+                                    app.show_hidden_files,
+                                    SortBy::Default,
+                                    &sort_type_copy,
+                                )
+                                .unwrap();
+
+                                if let Some(f_s) = files_strings {
+                                    app.copy_move_read_only_files = f_s.clone();
+                                    read_only_state.select(Some(0));
+                                }
+                            }
+                        } else {
+                            let copy = sort_type.clone();
+                            let files_strings = get_inner_files_info(
+                                app.copy_move_read_only_files_prev.clone(),
+                                app.show_hidden_files,
+                                SortBy::Default,
+                                &copy,
+                            )
+                            .unwrap();
+
+                            if let Some(f_s) = files_strings {
+                                app.copy_move_read_only_files = f_s.clone();
+                                read_only_state.select(Some(0));
+                            }
+                        }
+                    }
+
+                    KeyCode::Char('l') => {
+                        let selected_index = read_only_state.selected();
+                        if app.copy_move_read_only_files.len() > 0 {
+                            if let Some(selected_indx) = selected_index {
+                                let selected = &app.copy_move_read_only_files[selected_indx];
+
+                                app.copy_move_read_only_files_prev =
+                                    get_curr_path(selected.to_string());
+                                if !is_file(selected.to_string()) {
+                                    match get_inner_files_info(
+                                        selected.to_string(),
+                                        app.show_hidden_files,
+                                        SortBy::Default,
+                                        &sort_type,
+                                    ) {
+                                        Ok(files_strings) => {
+                                            if let Some(files_strs) = files_strings {
+                                                app.copy_move_read_only_files = files_strs.clone();
+                                                state.select(Some(0));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            println!("Error: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 },

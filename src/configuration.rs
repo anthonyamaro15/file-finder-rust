@@ -33,8 +33,9 @@ impl Configuration {
             format!("{}/.config/ff/cache_directory.json", home_dir.display());
         let append_config_to_settings = format!("{}/.config/ff/settings.json", home_dir.display());
         let append_to_start_path = format!("{}/Desktop", home_dir.display());
+        //let append_to_start_path = format!("{}/Desktop", home_dir.display());
 
-        config.start_path = append_to_start_path;
+        config.start_path = ".".to_string();
         config.root_dir = home_dir.display().to_string();
         config.cache_directory = append_config_to_cache;
         config.settings_path = append_config_to_settings;
