@@ -47,6 +47,7 @@ pub struct App {
     pub loading: bool,
     pub curr_index: Option<usize>,
     pub curr_stats: String,
+    pub item_to_copy_path: String,
     pub copy_move_read_only_files: Vec<String>,
     pub copy_move_read_only_files_prev: String,
 }
@@ -75,6 +76,7 @@ impl App {
             loading: false,
             curr_index: Some(0),
             curr_stats: String::new(),
+            item_to_copy_path: String::new(),
             copy_move_read_only_files: second_files_clone,
             copy_move_read_only_files_prev: String::new(),
         }
