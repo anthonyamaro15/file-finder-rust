@@ -811,7 +811,7 @@ let footer_stats =
                     f.render_widget(paragraph, keybinding_chunks[0]);
                 }
                 InputMode::WatchCopy => {
-let copy_area= draw_popup(f.size(), 50, 50);
+let copy_area= draw_popup(f.size(), 80, 60);
 let copy_popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
                     .margin(1)
@@ -826,7 +826,7 @@ let copy_popup_chuncks = Layout::default()
                         .style(match app.input_mode {
                             InputMode::Normal => Style::default().fg(Color::Green),
                             InputMode::Editing => Style::default().fg(Color::White),
-                            _ => Style::default().fg(Color::White),
+                            _ => Style::default().fg(Color::White).bg(Color::Black),
                         }),
                 )
                 .highlight_style(
@@ -1459,12 +1459,7 @@ let copy_popup_chuncks = Layout::default()
                                 split_path.pop();
                                 let string_path = split_path.join("/");
                                 // append copy to new dir/file
-                                let src = Path::new(&app.item_to_copy_path);
-
-                                /* let new_path_with_new_name = generate_copy_file_dir_name(
-                                    selected_path.to_string(),
-                                    string_path.clone(),
-                                ); */
+                                let item_to_copy_cur_path = Path::new(&app.item_to_copy_path);
 
                                 let new_path_with_new_name = generate_copy_file_dir_name(
                                     app.item_to_copy_path.clone(),
@@ -1472,31 +1467,17 @@ let copy_popup_chuncks = Layout::default()
                                 );
 
                                 // item to copy path => app.item_to_copy_path.clone();
-
                                 let new_src = Path::new(&new_path_with_new_name);
-                                //app.input = src.display().to_string();
-                                app.input = new_src.is_file().to_string();
-                                //app.input = src.is_file().to_string();
-                                //app.input = new_src.display().to_string();
-                                //copy_dir_file_helper(src, new_src)?;
+                                app.input = new_src.display().to_string();
+                                copy_dir_file_helper(item_to_copy_cur_path, new_src)?;
                                 // show spinner that is downloading?
                                 app.loading = false;
-                                // TODO: create method that updates refreshes files
-                                /* match get_inner_files_info(
-                                    string_path,
-                                    app.show_hidden_files,
-                                    SortBy::Default,
-                                    &sort_type,
-                                ) {
-                                    Ok(files) => {
-                                        if let Some(file_strs) = files {
-                                            app.copy_move_read_only_files = file_strs;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("error  {}", e);
-                                    }
-                                } */
+                                let copy_curr_files = app.files.clone();
+                                app.copy_move_read_only_files = copy_curr_files;
+                                read_only_state.select(Some(0));
+
+                                app.copy_move_read_only_files = app.files.clone();
+                                app.input_mode = InputMode::Normal;
                             }
                         }
                     }
