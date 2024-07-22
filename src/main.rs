@@ -794,11 +794,12 @@ let footer_stats =
                 }
                 InputMode::WatchKeyBinding => {
                     let lines = vec![
-                        Line::from("<Enter>: Open directory with selected IDE. copy path if not IDE option provided."),
-                        Line::from("<s>: Sort"),
-                        Line::from("<a>: Create new"),
-                        Line::from("<d>: Delete"),
-                        Line::from("<i>: Search mode"),
+                        Line::from("< Enter >: Open directory with selected IDE. copy path if not IDE option provided."),
+                        Line::from("< s >: Sort"),
+                        Line::from("< a >: Create new"),
+                        Line::from("< d >: Delete"),
+                        Line::from("< i >: Search mode"),
+                        Line::from("< c >: Copy dir/file"),
                         Line::from("<.> : Show hidden files"),
                     ];
 
