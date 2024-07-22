@@ -1035,49 +1035,6 @@ let copy_popup_chuncks = Layout::default()
                         let index = state.selected().unwrap();
                         let selected_path = &app.files[index].to_owned();
                         app.item_to_copy_path = selected_path.clone();
-                        /* if app.files.len() > 0 {
-                            let index = state.selected();
-                            app.loading = true;
-                            if let Some(indx) = index {
-                                // item to copy
-                                let selected_path = &app.files[indx];
-
-                                // get current path to add new item
-                                let mut split_path =
-                                    selected_path.split("/").collect::<Vec<&str>>();
-                                split_path.pop();
-                                let string_path = split_path.join("/");
-                                // append copy to new dir/file
-                                let src = Path::new(selected_path);
-
-                                let new_path_with_new_name = generate_copy_file_dir_name(
-                                    selected_path.to_string(),
-                                    string_path.clone(),
-                                );
-
-                                let new_src = Path::new(&new_path_with_new_name);
-                                copy_dir_file_helper(src, new_src)?;
-                                // show spinner that is downloading?
-                                app.loading = false;
-                                // TODO: create method that updates refreshes files
-                                match get_inner_files_info(
-                                    string_path,
-                                    app.show_hidden_files,
-                                    SortBy::Default,
-                                    &sort_type,
-                                ) {
-                                    Ok(files) => {
-                                        if let Some(file_strs) = files {
-                                            app.read_only_files = file_strs.clone();
-                                            app.files = file_strs;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("error  {}", e);
-                                    }
-                                }
-                            }
-                        } */
                     }
 
                     KeyCode::Char('s') => {
