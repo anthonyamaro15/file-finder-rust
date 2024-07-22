@@ -18,6 +18,7 @@ pub enum InputMode {
     WatchRename,
     WatchSort,
     WatchKeyBinding,
+    WatchCopy,
 }
 
 #[derive(Debug, Clone)]
@@ -46,11 +47,15 @@ pub struct App {
     pub loading: bool,
     pub curr_index: Option<usize>,
     pub curr_stats: String,
+    pub item_to_copy_path: String,
+    pub copy_move_read_only_files: Vec<String>,
+    pub copy_move_read_only_files_prev: String,
 }
 
 impl App {
     pub fn new(files: Vec<String>) -> Self {
         let files_clone = files.clone();
+        let second_files_clone = files.clone();
         Self {
             input: String::new(),
             input_mode: InputMode::Normal,
@@ -71,6 +76,9 @@ impl App {
             loading: false,
             curr_index: Some(0),
             curr_stats: String::new(),
+            item_to_copy_path: String::new(),
+            copy_move_read_only_files: second_files_clone,
+            copy_move_read_only_files_prev: String::new(),
         }
     }
 
