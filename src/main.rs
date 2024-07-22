@@ -476,7 +476,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
-    app.input = config.start_path.clone();
     // handle ide selection from arguments
     app.handle_arguments(input_arguments);
 
@@ -812,8 +811,8 @@ let footer_stats =
                     f.render_widget(paragraph, keybinding_chunks[0]);
                 }
                 InputMode::WatchCopy => {
-let copy_area= draw_popup(f.size(), 80, 60);
-let copy_popup_chuncks = Layout::default()
+                    let copy_area= draw_popup(f.size(), 80, 60);
+                    let copy_popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
                     .margin(1)
                     .constraints([Constraint::Percentage(100)])
@@ -1426,7 +1425,6 @@ let copy_popup_chuncks = Layout::default()
 
                                 // item to copy path => app.item_to_copy_path.clone();
                                 let new_src = Path::new(&new_path_with_new_name);
-                                app.input = new_src.display().to_string();
                                 copy_dir_file_helper(item_to_copy_cur_path, new_src)?;
                                 // show spinner that is downloading?
                                 app.loading = false;
