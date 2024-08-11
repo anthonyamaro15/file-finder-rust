@@ -6,29 +6,6 @@ use ratatui::{
 };
 
 #[derive(Debug)]
-pub struct Ui<'a> {
-    f: Frame<'a>,
-    container_chunk: Rc<[ratatui::layout::Rect]>,
-}
+pub struct Ui {}
 
-impl Ui<'_> {
-    pub fn new(f: Frame) {}
-    pub fn generate_ui_container(&mut self, f: Frame) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(2)
-            .constraints(
-                [
-                    Constraint::Length(2),
-                    Constraint::Length(3),
-                    Constraint::Min(1),
-                    Constraint::Length(3),
-                    Constraint::Length(1),
-                ]
-                .as_ref(),
-            )
-            .split(f.size());
-
-        self.container_chunk = chunks;
-    }
-}
+impl Ui {}

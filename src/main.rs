@@ -557,8 +557,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let inner_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(vec![
-                    //Constraint::Percentage(50),
-                    Constraint::Percentage(100),
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
                 ])
                 .split(chunks[2]);
 
@@ -618,6 +618,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchSort => Style::default().fg(Color::Gray),
                     _ => Style::default().fg(Color::Gray),
                 });
+
 
             let footer_outer_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -706,9 +707,9 @@ let footer_stats =
             //f.render_widget(parsed_instructions.clone(), footer_outer_layout[0]);
             //f.render_widget(parsed_instructions.clone(), footer_layout[1]);
             //f.render_widget(parsed_instructions.clone(), chunks[3]);
-            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
-            //f.render_stateful_widget(list_block, chunks[2], &mut state);
+            f.render_stateful_widget(list_block, chunks[2], &mut state);
             f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
             //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
@@ -767,8 +768,8 @@ let footer_stats =
                     f.render_widget(create_input_block, popup_chuncks[0]);
                 }
                 InputMode::WatchRename => {
-                    let create_input_block = Paragraph::new("Enter file/dir name")
-                        .block(Block::default().borders(Borders::ALL).title("test"))
+                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
+                        .block(Block::default().borders(Borders::ALL).title("Enter file/dir name"))
                         .style(Style::default().fg(Color::LightGreen));
 
                     f.render_widget(create_input_block, popup_chuncks[0]);
@@ -991,7 +992,6 @@ let footer_stats =
                             let selected = &app.files[index];
                             let mut split_path = selected.split("/").collect::<Vec<&str>>();
                             let placeholder_name = split_path.pop().unwrap();
-
                             let new_path = split_path.join("/");
                             let placeholder_name_copy = placeholder_name;
                             app.current_path_to_edit = new_path;
