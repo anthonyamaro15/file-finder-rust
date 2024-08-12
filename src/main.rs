@@ -1297,6 +1297,10 @@ let footer_stats =
                 },
                 InputMode::WatchCopy => match key.code {
                     KeyCode::Char('q') => {
+                        read_only_state.select(Some(0));
+                        let copy_curr_files = app.files.clone();
+                        app.copy_move_read_only_files = copy_curr_files;
+                        app.copy_move_read_only_files = app.files.clone();
                         app.input_mode = InputMode::Normal;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
@@ -1391,7 +1395,7 @@ let footer_stats =
                                         Ok(files_strings) => {
                                             if let Some(files_strs) = files_strings {
                                                 app.copy_move_read_only_files = files_strs.clone();
-                                                state.select(Some(0));
+                                                read_only_state.select(Some(0));
                                             }
                                         }
                                         Err(e) => {
@@ -1403,39 +1407,38 @@ let footer_stats =
                         }
                     }
                     KeyCode::Enter => {
-                        if app.copy_move_read_only_files.len() > 0 {
-                            let index = read_only_state.selected();
-                            app.loading = true;
-                            if let Some(indx) = index {
-                                // item to copy
-                                let selected_path = &app.copy_move_read_only_files[indx];
+                        //if app.copy_move_read_only_files.len() > 0 {
+                        let index = read_only_state.selected();
+                        app.loading = true;
+                        if let Some(indx) = index {
+                            // item to copy
+                            let selected_path = &app.copy_move_read_only_files[indx];
 
-                                // get current path to add new item
-                                let mut split_path =
-                                    selected_path.split("/").collect::<Vec<&str>>();
-                                split_path.pop();
-                                let string_path = split_path.join("/");
-                                // append copy to new dir/file
-                                let item_to_copy_cur_path = Path::new(&app.item_to_copy_path);
+                            // get current path to add new item
+                            let mut split_path = selected_path.split("/").collect::<Vec<&str>>();
+                            split_path.pop();
+                            let string_path = split_path.join("/");
+                            // append copy to new dir/file
+                            let item_to_copy_cur_path = Path::new(&app.item_to_copy_path);
 
-                                let new_path_with_new_name = generate_copy_file_dir_name(
-                                    app.item_to_copy_path.clone(),
-                                    string_path.clone(),
-                                );
+                            let new_path_with_new_name = generate_copy_file_dir_name(
+                                app.item_to_copy_path.clone(),
+                                string_path.clone(),
+                            );
 
-                                // item to copy path => app.item_to_copy_path.clone();
-                                let new_src = Path::new(&new_path_with_new_name);
-                                copy_dir_file_helper(item_to_copy_cur_path, new_src)?;
-                                // show spinner that is downloading?
-                                app.loading = false;
-                                let copy_curr_files = app.files.clone();
-                                app.copy_move_read_only_files = copy_curr_files;
-                                read_only_state.select(Some(0));
+                            // item to copy path => app.item_to_copy_path.clone();
+                            let new_src = Path::new(&new_path_with_new_name);
+                            copy_dir_file_helper(item_to_copy_cur_path, new_src)?;
+                            // show spinner that is downloading?
+                            app.loading = false;
+                            let copy_curr_files = app.files.clone();
+                            app.copy_move_read_only_files = copy_curr_files;
+                            read_only_state.select(Some(0));
 
-                                app.copy_move_read_only_files = app.files.clone();
-                                app.input_mode = InputMode::Normal;
-                            }
+                            app.copy_move_read_only_files = app.files.clone();
+                            app.input_mode = InputMode::Normal;
                         }
+                        //}
                     }
                     _ => {}
                 },
