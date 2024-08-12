@@ -459,6 +459,30 @@ fn generate_sort_by_string(sort_type: &SortType) -> String {
     join_str
 }
 
+fn get_preview_path(files: Vec<String>) -> Option<String> {
+    let curr_path = if files.len() == 0 {
+        None
+    } else {
+        let fi = files[0].clone();
+        Some(fi)
+    };
+    curr_path
+}
+
+fn validate_file_path(file_path: Option<String>) -> Option<bool> {
+    let check_type = if let Some(curr_path) = file_path {
+        if is_file(curr_path.to_string()) {
+            Some(true)
+        } else {
+            Some(false)
+        }
+    } else {
+        None
+    };
+
+    check_type
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
@@ -592,8 +616,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 list_title.push_str(&"List");
             }
             // List of filtered items
+            // TODO: get first item from the list, 
+            // 1. get first item from list
+            // 2. render content based on type 
+            //    - if type if dir then render its content 
+            //    - if type is file then display content of file if posible
+            // 3. preview mode will only apply when in normal MODE, 
             let list_block = List::new(filtered_items.clone())
                 .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(list_title.as_str())
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::White),
+                            _ => Style::default().fg(Color::White),
+                        }), //.title("Filtered List"),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol(">")
+                .style(match app.input_mode {
+                    InputMode::Normal => Style::default().fg(Color::White),
+                    InputMode::Editing => Style::default().fg(Color::White),
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
+                    InputMode::WatchRename => Style::default().fg(Color::Gray),
+                    InputMode::WatchSort => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::Gray),
+                });
+
+            let preview_list_path = get_preview_path(app.files.clone());
+
+            let validate_is_file = match validate_file_path(preview_list_path.clone()) {
+                Some(v) => v,
+                _=>  {
+                    println!("not a valid file or empty");
+                    false
+                },
+            };
+
+
+            let preview_list_block =match validate_is_file {
+                false => get_file_path_data(preview_list_path.unwrap(), false, SortBy::Default, &sort_type),
+                _ => Ok(Vec::new())
+
+            };
+
+
+            //let file_list = get_file_path_data(valid_preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
+
+            /* let file_list_res = match file_list {
+                Ok(list) => list,
+                Err(err) =>  {
+                   Vec::new() 
+                },
+
+            }; */
+            let list_preview_block = List::new(preview_list_block.unwrap()).block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title(list_title.as_str())
@@ -709,7 +792,9 @@ let footer_stats =
             //f.render_widget(parsed_instructions.clone(), chunks[3]);
             //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
-            f.render_stateful_widget(list_block, chunks[2], &mut state);
+            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+            //f.render_stateful_widget(list_block, chunks[2], &mut state);
             f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
             //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
