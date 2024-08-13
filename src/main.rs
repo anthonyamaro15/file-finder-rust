@@ -659,11 +659,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
 
+            match validate_is_file {
+                false => {
+let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
+                    app.preview_files = new_preview_files.unwrap();
 
-            let preview_list_block =match validate_is_file {
-                false => get_file_path_data(preview_list_path.unwrap(), false, SortBy::Default, &sort_type),
-                _ => Ok(Vec::new())
-
+                },
+                _ => app.preview_files = Vec::new()
             };
 
 
@@ -676,10 +678,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
 
             }; */
-            let list_preview_block = List::new(preview_list_block.unwrap()).block(
+            let list_preview_block = List::new(app.preview_files.clone()).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(list_title.as_str())
+                        .title("Preview")
                         .style(match app.input_mode {
                             InputMode::Normal => Style::default().fg(Color::Green),
                             InputMode::Editing => Style::default().fg(Color::White),
@@ -689,9 +691,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .highlight_style(
                     Style::default()
                         .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
+                        //.add_modifier(Modifier::BOLD),
                 )
-                .highlight_symbol(">")
+                //.highlight_symbol(">")
                 .style(match app.input_mode {
                     InputMode::Normal => Style::default().fg(Color::White),
                     InputMode::Editing => Style::default().fg(Color::White),
@@ -727,45 +729,15 @@ let footer_stats =
 
              match app.files.len() > 0 {
                 true => {
-                /* let footer_stats =
-                Text::from(Line::from(Span::styled(app.curr_stats.clone(), Style::default())));
-                        let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]); */
-
-
-                /* if let Some(selected_indx) = state.selected() {
-                let selected_cur_path = &app.files[selected_indx];
-                    let get_path = get_curr_path(selected_cur_path.to_string());
-                    let get_metadata = get_metadata_info(get_path);
-                    let generated_metadata_str = generate_metadata_str_info(get_metadata);
-                    app.input = generated_metadata_str.clone();
-                    let footer_stats =
-                Text::from(Line::from(Span::styled(generated_metadata_str, Style::default())));
-                        let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
-
-} */
         },
                 false =>{}
                 };
 
-            /* let footer_stats =
-                Text::from(Line::from(Span::styled(metadata_stats, Style::default()))); */
             let instructions = Text::from(Line::from(bottom_instructions));
 
-            /* let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default()); */
             let parsed_instructions = Paragraph::new(instructions)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
-            /* let default_label = Paragraph::new(default_empty_label)
-            .block(Block::default().borders(Borders::ALL))
-            .style(Style::default()); */
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
@@ -964,10 +936,34 @@ let footer_stats =
 
                             let selected_cur_path = &app.files[i];
                             let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path);
+                            let get_metadata = get_metadata_info(get_path.clone());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
                             app.curr_stats = generated_metadata_str;
+
+                            // INFO: update preview list
+                            let validate_is_file =
+                                match validate_file_path(Some(selected_cur_path.clone())) {
+                                    Some(v) => v,
+                                    _ => {
+                                        println!("not a valid file or empty");
+                                        false
+                                    }
+                                };
+
+                            app.input = selected_cur_path.clone();
+                            match validate_is_file {
+                                false => {
+                                    let new_preview_files = get_file_path_data(
+                                        selected_cur_path.clone(),
+                                        false,
+                                        SortBy::Default,
+                                        &sort_type,
+                                    );
+                                    app.preview_files = new_preview_files.unwrap();
+                                }
+                                _ => app.preview_files = Vec::new(),
+                            };
                         }
                     }
                     // BUG: for some reason this is not rendering stats corectly
@@ -987,9 +983,32 @@ let footer_stats =
                             app.curr_index = Some(i);
                             let selected_cur_path = &app.files[i];
                             let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path);
+                            let get_metadata = get_metadata_info(get_path.clone());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
                             app.curr_stats = generated_metadata_str;
+
+                            app.input = selected_cur_path.to_owned();
+                            // INFO: update preview list
+
+                            if !is_file(selected_cur_path.clone()) {
+                                match get_inner_files_info(
+                                    selected_cur_path.clone(),
+                                    app.show_hidden_files,
+                                    SortBy::Default,
+                                    &sort_type,
+                                ) {
+                                    Ok(files_strings) => {
+                                        if let Some(files_strs) = files_strings {
+                                            app.preview_files = files_strs;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("Error: {}", e);
+                                    }
+                                }
+                            } else {
+                                app.preview_files = Vec::new()
+                            }
                         }
                     }
                     KeyCode::Char('h') => {
