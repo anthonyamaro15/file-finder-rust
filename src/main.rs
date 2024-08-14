@@ -649,24 +649,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => Style::default().fg(Color::Gray),
                 });
 
-            let preview_list_path = get_preview_path(app.files.clone());
+            //let preview_list_path = get_preview_path(app.files.clone());
 
-            let validate_is_file = match validate_file_path(preview_list_path.clone()) {
+            /* let validate_is_file = match validate_file_path(preview_list_path.clone()) {
                 Some(v) => v,
                 _=>  {
                     println!("not a valid file or empty");
                     false
                 },
-            };
+            }; */
 
-            match validate_is_file {
+            /* match validate_is_file {
                 false => {
 let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
                     app.preview_files = new_preview_files.unwrap();
 
                 },
                 _ => app.preview_files = Vec::new()
-            };
+            }; */
 
 
             //let file_list = get_file_path_data(valid_preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
@@ -678,6 +678,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                 },
 
             }; */
+            // TODO: handle first item preview
             let list_preview_block = List::new(app.preview_files.clone()).block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -935,35 +936,30 @@ let footer_stats =
                             app.curr_index = Some(i);
 
                             let selected_cur_path = &app.files[i];
-                            let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path.clone());
+                            let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
-                            app.curr_stats = generated_metadata_str;
+                            app.curr_stats = generated_metadata_str.clone();
 
-                            // INFO: update preview list
-                            let validate_is_file =
-                                match validate_file_path(Some(selected_cur_path.clone())) {
-                                    Some(v) => v,
-                                    _ => {
-                                        println!("not a valid file or empty");
-                                        false
+                            if !is_file(selected_cur_path.to_string()) {
+                                match get_inner_files_info(
+                                    selected_cur_path.to_string(),
+                                    app.show_hidden_files,
+                                    SortBy::Default,
+                                    &sort_type,
+                                ) {
+                                    Ok(files_strings) => {
+                                        if let Some(files_strs) = files_strings {
+                                            app.preview_files = files_strs;
+                                        }
                                     }
-                                };
-
-                            app.input = selected_cur_path.clone();
-                            match validate_is_file {
-                                false => {
-                                    let new_preview_files = get_file_path_data(
-                                        selected_cur_path.clone(),
-                                        false,
-                                        SortBy::Default,
-                                        &sort_type,
-                                    );
-                                    app.preview_files = new_preview_files.unwrap();
+                                    Err(e) => {
+                                        println!("Error: {}", e);
+                                    }
                                 }
-                                _ => app.preview_files = Vec::new(),
-                            };
+                            } else {
+                                app.preview_files = Vec::new();
+                            }
                         }
                     }
                     // BUG: for some reason this is not rendering stats corectly
@@ -982,12 +978,10 @@ let footer_stats =
                             state.select(Some(i));
                             app.curr_index = Some(i);
                             let selected_cur_path = &app.files[i];
-                            let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path.clone());
+                            let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
-                            app.curr_stats = generated_metadata_str;
+                            app.curr_stats = generated_metadata_str.clone();
 
-                            app.input = selected_cur_path.to_owned();
                             // INFO: update preview list
 
                             if !is_file(selected_cur_path.clone()) {
