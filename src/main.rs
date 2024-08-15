@@ -1,5 +1,6 @@
 use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use file_reader_content::{FileContent, FileType};
 use rayon::prelude::*;
 use std::{
     env,
@@ -35,6 +36,7 @@ use copypasta::{ClipboardContext, ClipboardProvider};
 mod app;
 mod configuration;
 mod directory_store;
+mod file_reader_content;
 mod ui;
 
 #[derive(Clone)]
@@ -489,6 +491,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
 
+    let mut file_reader_content = FileContent::new();
+
     config.handle_settings_configuration();
     // Setup terminal
 
@@ -705,6 +709,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                     _ => Style::default().fg(Color::Gray),
                 });
 
+            
 
             let footer_outer_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -766,7 +771,21 @@ let footer_stats =
             //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+
+
+            match file_reader_content.file_type {
+                FileType::FILE => {
+let file_preview_text = Paragraph::new(app.preview_file_content.clone())
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
+            f.render_widget(file_preview_text, inner_layout[1] );
+                }
+                _ => {
+
             f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+                }
+            }
+            //TODO: add match method here
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
             f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
             //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
@@ -1001,6 +1020,27 @@ let footer_stats =
                                     }
                                 }
                             } else {
+                                let file_extension = file_reader_content
+                                    .get_file_extension(selected_cur_path.clone());
+
+
+                                println!("here::: {:?}", file_extension);
+
+                                match file_extension {
+                                    FileType::FILE => {
+                                        file_reader_content.file_type = FileType::FILE;
+                                        let file_content = file_reader_content
+                                            .read_file_content(selected_cur_path.to_string());
+
+                                        // only update if there are no errors
+                                        if !file_reader_content.is_error {
+                                            app.preview_file_content = file_content;
+                                        }
+                                    }
+                                    _ => {
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                    }
+                                }
                                 app.preview_files = Vec::new()
                             }
                         }

@@ -52,6 +52,7 @@ pub struct App {
     pub copy_move_read_only_files_prev: String,
 
     pub preview_files: Vec<String>,
+    pub preview_file_content: String,
 }
 
 impl App {
@@ -83,6 +84,7 @@ impl App {
             copy_move_read_only_files_prev: String::new(),
 
             preview_files: Vec::new(),
+            preview_file_content: String::new(),
         }
     }
 
