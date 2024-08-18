@@ -236,6 +236,35 @@ fn get_inner_files_info(
     Ok(Some(file_strings))
 }
 
+fn get_content_from_path(path:String) -> Option<Vec<String>> {
+let mut file_name_list: Vec<String> = Vec::new();
+ match fs::read_dir(path) {
+Ok(val) =>  {
+
+            for name in val.into_iter() {
+
+                match name {
+                    Ok(result ) => {
+                        let file_name = result.file_name().to_str().unwrap().to_string();
+                        file_name_list.push(file_name);
+                    }
+                    Err(e) => {
+                        println!("error getting content from path: {:?}", e);
+                        return None;
+                    }
+                }
+
+            }
+        }
+        Err(e) => {
+            println!("her: {:?}", e);
+            return None;
+        }
+    };
+    Some(file_name_list)
+
+}
+
 fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let popup_layout = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
@@ -961,20 +990,8 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                             app.curr_stats = generated_metadata_str.clone();
 
                             if !is_file(selected_cur_path.to_string()) {
-                                match get_inner_files_info(
-                                    selected_cur_path.to_string(),
-                                    app.show_hidden_files,
-                                    SortBy::Default,
-                                    &sort_type,
-                                ) {
-                                    Ok(files_strings) => {
-                                        if let Some(files_strs) = files_strings {
-                                            app.preview_files = files_strs;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("Error: {}", e);
-                                    }
+                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                    app.preview_files = file_names;
                                 }
                             } else {
                                 let file_extension = file_reader_content
@@ -1000,7 +1017,6 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                             }
                         }
                     }
-                    // BUG: for some reason this is not rendering stats corectly
                     KeyCode::Up | KeyCode::Char('k') => {
                         if app.files.len() > 0 {
                             let i = match state.selected() {
@@ -1023,20 +1039,8 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                             // INFO: update preview list
 
                             if !is_file(selected_cur_path.clone()) {
-                                match get_inner_files_info(
-                                    selected_cur_path.clone(),
-                                    app.show_hidden_files,
-                                    SortBy::Default,
-                                    &sort_type,
-                                ) {
-                                    Ok(files_strings) => {
-                                        if let Some(files_strs) = files_strings {
-                                            app.preview_files = files_strs;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("Error: {}", e);
-                                    }
+                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                    app.preview_files = file_names;
                                 }
                             } else {
                                 let file_extension = file_reader_content
