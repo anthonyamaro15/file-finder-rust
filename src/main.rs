@@ -977,6 +977,25 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                     }
                                 }
                             } else {
+                                let file_extension = file_reader_content
+                                    .get_file_extension(selected_cur_path.clone());
+
+                                match file_extension {
+                                    FileType::FILE => {
+                                        file_reader_content.file_type = FileType::FILE;
+                                        let file_content = file_reader_content
+                                            .read_file_content(selected_cur_path.to_string());
+
+                                        // only update if there are no errors
+                                        if !file_reader_content.is_error {
+                                            app.preview_file_content = file_content;
+                                        }
+                                    }
+                                    _ => {
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                    }
+                                }
+
                                 app.preview_files = Vec::new();
                             }
                         }
@@ -1023,8 +1042,6 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                 let file_extension = file_reader_content
                                     .get_file_extension(selected_cur_path.clone());
 
-
-                                println!("here::: {:?}", file_extension);
 
                                 match file_extension {
                                     FileType::FILE => {
