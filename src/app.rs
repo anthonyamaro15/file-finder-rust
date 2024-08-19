@@ -50,6 +50,9 @@ pub struct App {
     pub item_to_copy_path: String,
     pub copy_move_read_only_files: Vec<String>,
     pub copy_move_read_only_files_prev: String,
+
+    pub preview_files: Vec<String>,
+    pub preview_file_content: String,
 }
 
 impl App {
@@ -79,6 +82,9 @@ impl App {
             item_to_copy_path: String::new(),
             copy_move_read_only_files: second_files_clone,
             copy_move_read_only_files_prev: String::new(),
+
+            preview_files: Vec::new(),
+            preview_file_content: String::new(),
         }
     }
 

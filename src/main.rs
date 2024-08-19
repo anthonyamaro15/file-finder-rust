@@ -1,5 +1,6 @@
 use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use file_reader_content::{FileContent, FileType};
 use rayon::prelude::*;
 use std::{
     env,
@@ -35,6 +36,7 @@ use copypasta::{ClipboardContext, ClipboardProvider};
 mod app;
 mod configuration;
 mod directory_store;
+mod file_reader_content;
 mod ui;
 
 #[derive(Clone)]
@@ -232,6 +234,35 @@ fn get_inner_files_info(
     let file_strings =
         convert_file_path_to_string(entries, show_hidden_files, sort_by, sort_type.clone());
     Ok(Some(file_strings))
+}
+
+fn get_content_from_path(path:String) -> Option<Vec<String>> {
+let mut file_name_list: Vec<String> = Vec::new();
+ match fs::read_dir(path) {
+Ok(val) =>  {
+
+            for name in val.into_iter() {
+
+                match name {
+                    Ok(result ) => {
+                        let file_name = result.file_name().to_str().unwrap().to_string();
+                        file_name_list.push(file_name);
+                    }
+                    Err(e) => {
+                        println!("error getting content from path: {:?}", e);
+                        return None;
+                    }
+                }
+
+            }
+        }
+        Err(e) => {
+            println!("her: {:?}", e);
+            return None;
+        }
+    };
+    Some(file_name_list)
+
 }
 
 fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -459,11 +490,37 @@ fn generate_sort_by_string(sort_type: &SortType) -> String {
     join_str
 }
 
+fn get_preview_path(files: Vec<String>) -> Option<String> {
+    let curr_path = if files.len() == 0 {
+        None
+    } else {
+        let fi = files[0].clone();
+        Some(fi)
+    };
+    curr_path
+}
+
+fn validate_file_path(file_path: Option<String>) -> Option<bool> {
+    let check_type = if let Some(curr_path) = file_path {
+        if is_file(curr_path.to_string()) {
+            Some(true)
+        } else {
+            Some(false)
+        }
+    } else {
+        None
+    };
+
+    check_type
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
 
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
+
+    let mut file_reader_content = FileContent::new();
 
     config.handle_settings_configuration();
     // Setup terminal
@@ -592,6 +649,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 list_title.push_str(&"List");
             }
             // List of filtered items
+            // TODO: get first item from the list, 
+            // 1. get first item from list
+            // 2. render content based on type 
+            //    - if type if dir then render its content 
+            //    - if type is file then display content of file if posible
+            // 3. preview mode will only apply when in normal MODE, 
             let list_block = List::new(filtered_items.clone())
                 .block(
                     Block::default()
@@ -619,6 +682,63 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => Style::default().fg(Color::Gray),
                 });
 
+            //let preview_list_path = get_preview_path(app.files.clone());
+
+            /* let validate_is_file = match validate_file_path(preview_list_path.clone()) {
+                Some(v) => v,
+                _=>  {
+                    println!("not a valid file or empty");
+                    false
+                },
+            }; */
+
+            /* match validate_is_file {
+                false => {
+let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
+                    app.preview_files = new_preview_files.unwrap();
+
+                },
+                _ => app.preview_files = Vec::new()
+            }; */
+
+
+            //let file_list = get_file_path_data(valid_preview_list_path.unwrap(), false, SortBy::Default, &sort_type);
+
+            /* let file_list_res = match file_list {
+                Ok(list) => list,
+                Err(err) =>  {
+                   Vec::new() 
+                },
+
+            }; */
+            // TODO: handle first item preview
+            let list_preview_block = List::new(app.preview_files.clone()).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Preview")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::White),
+                            _ => Style::default().fg(Color::White),
+                        }), //.title("Filtered List"),
+                )
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::White)
+                        //.add_modifier(Modifier::BOLD),
+                )
+                //.highlight_symbol(">")
+                .style(match app.input_mode {
+                    InputMode::Normal => Style::default().fg(Color::White),
+                    InputMode::Editing => Style::default().fg(Color::White),
+                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
+                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
+                    InputMode::WatchRename => Style::default().fg(Color::Gray),
+                    InputMode::WatchSort => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::Gray),
+                });
+
+            
 
             let footer_outer_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -644,45 +764,15 @@ let footer_stats =
 
              match app.files.len() > 0 {
                 true => {
-                /* let footer_stats =
-                Text::from(Line::from(Span::styled(app.curr_stats.clone(), Style::default())));
-                        let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]); */
-
-
-                /* if let Some(selected_indx) = state.selected() {
-                let selected_cur_path = &app.files[selected_indx];
-                    let get_path = get_curr_path(selected_cur_path.to_string());
-                    let get_metadata = get_metadata_info(get_path);
-                    let generated_metadata_str = generate_metadata_str_info(get_metadata);
-                    app.input = generated_metadata_str.clone();
-                    let footer_stats =
-                Text::from(Line::from(Span::styled(generated_metadata_str, Style::default())));
-                        let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
-
-} */
         },
                 false =>{}
                 };
 
-            /* let footer_stats =
-                Text::from(Line::from(Span::styled(metadata_stats, Style::default()))); */
             let instructions = Text::from(Line::from(bottom_instructions));
 
-            /* let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default()); */
             let parsed_instructions = Paragraph::new(instructions)
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
-            /* let default_label = Paragraph::new(default_empty_label)
-            .block(Block::default().borders(Borders::ALL))
-            .style(Style::default()); */
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
@@ -709,7 +799,23 @@ let footer_stats =
             //f.render_widget(parsed_instructions.clone(), chunks[3]);
             //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
-            f.render_stateful_widget(list_block, chunks[2], &mut state);
+            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+
+
+            match file_reader_content.file_type {
+                FileType::FILE => {
+let file_preview_text = Paragraph::new(app.preview_file_content.clone())
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default());
+            f.render_widget(file_preview_text, inner_layout[1] );
+                }
+                _ => {
+
+            f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+                }
+            }
+            //TODO: add match method here
+            //f.render_stateful_widget(list_block, chunks[2], &mut state);
             f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
             //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
@@ -878,14 +984,39 @@ let footer_stats =
                             app.curr_index = Some(i);
 
                             let selected_cur_path = &app.files[i];
-                            let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path);
+                            let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
-                            app.curr_stats = generated_metadata_str;
+                            app.curr_stats = generated_metadata_str.clone();
+
+                            if !is_file(selected_cur_path.to_string()) {
+                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                    app.preview_files = file_names;
+                                }
+                            } else {
+                                let file_extension = file_reader_content
+                                    .get_file_extension(selected_cur_path.clone());
+
+                                match file_extension {
+                                    FileType::FILE => {
+                                        file_reader_content.file_type = FileType::FILE;
+                                        let file_content = file_reader_content
+                                            .read_file_content(selected_cur_path.to_string());
+
+                                        // only update if there are no errors
+                                        if !file_reader_content.is_error {
+                                            app.preview_file_content = file_content;
+                                        }
+                                    }
+                                    _ => {
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                    }
+                                }
+
+                                app.preview_files = Vec::new();
+                            }
                         }
                     }
-                    // BUG: for some reason this is not rendering stats corectly
                     KeyCode::Up | KeyCode::Char('k') => {
                         if app.files.len() > 0 {
                             let i = match state.selected() {
@@ -901,10 +1032,38 @@ let footer_stats =
                             state.select(Some(i));
                             app.curr_index = Some(i);
                             let selected_cur_path = &app.files[i];
-                            let get_path = get_curr_path(selected_cur_path.to_string());
-                            let get_metadata = get_metadata_info(get_path);
+                            let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
-                            app.curr_stats = generated_metadata_str;
+                            app.curr_stats = generated_metadata_str.clone();
+
+                            // INFO: update preview list
+
+                            if !is_file(selected_cur_path.clone()) {
+                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                    app.preview_files = file_names;
+                                }
+                            } else {
+                                let file_extension = file_reader_content
+                                    .get_file_extension(selected_cur_path.clone());
+
+
+                                match file_extension {
+                                    FileType::FILE => {
+                                        file_reader_content.file_type = FileType::FILE;
+                                        let file_content = file_reader_content
+                                            .read_file_content(selected_cur_path.to_string());
+
+                                        // only update if there are no errors
+                                        if !file_reader_content.is_error {
+                                            app.preview_file_content = file_content;
+                                        }
+                                    }
+                                    _ => {
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                    }
+                                }
+                                app.preview_files = Vec::new()
+                            }
                         }
                     }
                     KeyCode::Char('h') => {
