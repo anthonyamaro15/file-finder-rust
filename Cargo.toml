@@ -17,3 +17,5 @@ dirs = "5.0.1"
 copypasta = "0.10.1"
 rayon = "1.10.0"
 indicatif = "0.17.8"
+ratatui-image = { version = "1.0.5", features = ["crossterm", "rustix"] }
+image = "0.25.2"

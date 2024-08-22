@@ -8,12 +8,14 @@ pub enum FileType {
     PNG,
     NotAvailable,
     DEFAULT,
+    IMG,
 }
 
 pub struct FileContent {
     pub file_type: FileType,
     pub is_error: bool,
     pub error_message: String,
+    pub curr_asset_path: String,
 }
 
 impl FileContent {
@@ -22,6 +24,7 @@ impl FileContent {
             file_type: FileType::NotAvailable,
             is_error: false,
             error_message: String::from(""),
+            curr_asset_path: String::from(""),
         }
     }
     pub fn is_curr_path_file(path: String) -> bool {
@@ -60,7 +63,8 @@ impl FileContent {
                 let convert_to_str = extention.to_str().unwrap();
 
                 match convert_to_str {
-                    "js" => FileType::FILE,
+                    "js" | "ts" | "html" | "yml" | "json" | "css" => FileType::FILE,
+                    "png" => FileType::IMG,
                     _ => FileType::NotAvailable,
                 }
             }
