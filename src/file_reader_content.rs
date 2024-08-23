@@ -1,10 +1,10 @@
-use std::{fs, path::Path};
+use std::{fs, iter::zip, path::Path};
 
 #[derive(Debug, Clone)]
 pub enum FileType {
     FILE,
     CSV,
-    SHAPE,
+    ZIP,
     PNG,
     NotAvailable,
     DEFAULT,
@@ -16,6 +16,7 @@ pub struct FileContent {
     pub is_error: bool,
     pub error_message: String,
     pub curr_asset_path: String,
+    pub curr_zip_content: Vec<String>,
 }
 
 impl FileContent {
@@ -25,6 +26,7 @@ impl FileContent {
             is_error: false,
             error_message: String::from(""),
             curr_asset_path: String::from(""),
+            curr_zip_content: Vec::new(),
         }
     }
     pub fn is_curr_path_file(path: String) -> bool {
@@ -65,10 +67,36 @@ impl FileContent {
                 match convert_to_str {
                     "js" | "ts" | "html" | "yml" | "json" | "css" => FileType::FILE,
                     "png" => FileType::IMG,
+                    "zip" => FileType::ZIP,
                     _ => FileType::NotAvailable,
                 }
             }
             None => FileType::NotAvailable,
         }
+    }
+
+    pub fn read_zip_content(&mut self, path: String) -> i32 {
+        let filename = std::path::Path::new(&path);
+        let file = fs::File::open(filename).unwrap();
+
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        let mut list: Vec<String> = Vec::new();
+
+        for i in 0..archive.len() {
+            let file = archive.by_index(i).unwrap();
+
+            let outpath = match file.enclosed_name() {
+                Some(fil_path) => fil_path,
+                None => continue,
+            };
+
+            let name = outpath.display().to_string();
+
+            list.push(name);
+        }
+
+        self.curr_zip_content = list;
+        0
     }
 }

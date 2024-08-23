@@ -847,6 +847,22 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
             f.render_stateful_widget(image, inner_layout[1], &mut image_generator.image.clone().unwrap());
 
                 }
+                FileType::ZIP => {
+let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Preview")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::Gray),
+                            _ => Style::default().fg(Color::Gray),
+                        }), //.title("Filtered List"),
+                )
+                //.highlight_symbol(">")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(zip_list_content, inner_layout[1], );
+
+                }
                 _ => {
 
         image_generator.image = None;
@@ -1003,6 +1019,8 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                 InputMode::Normal => match key.code {
                     KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
+                        file_reader_content.file_type = FileType::NotAvailable;
+                        image_generator.image = None;
                     }
                     KeyCode::Char('q') => {
                         break;
@@ -1053,11 +1071,18 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                         }
                                     }
                                     FileType::IMG => {
+                                        image_generator.image = None;
                                         file_reader_content.curr_asset_path =
                                             selected_cur_path.to_string();
 
                                         image_generator.load_img(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::IMG;
+                                    }
+                                    FileType::ZIP => {
+                                        image_generator.image = None;
+                                        file_reader_content
+                                            .read_zip_content(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::ZIP;
                                     }
                                     _ => {
                                         image_generator.image = None;
@@ -1115,11 +1140,18 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                         }
                                     }
                                     FileType::IMG => {
+                                        image_generator.image = None;
                                         file_reader_content.curr_asset_path =
                                             selected_cur_path.to_string();
 
                                         image_generator.load_img(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::IMG;
+                                    }
+                                    FileType::ZIP => {
+                                        image_generator.image = None;
+                                        file_reader_content
+                                            .read_zip_content(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::ZIP;
                                     }
                                     _ => {
                                         image_generator.image = None;
