@@ -1,6 +1,7 @@
 use app::{App, InputMode};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use file_reader_content::{FileContent, FileType};
+use image::ImageReader;
 use rayon::prelude::*;
 use std::{
     env,
@@ -25,6 +26,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Terminal,
 };
+
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 
 use crate::directory_store::{
     build_directory_from_store, load_directory_from_file, save_directory_to_file,
@@ -51,6 +54,32 @@ enum SortBy {
     Size,
     DateAdded,
     Default,
+}
+
+#[derive(Clone)]
+struct ImageGenerator {
+    image: Option<Box<dyn StatefulProtocol>>,
+}
+
+impl ImageGenerator {
+    pub fn new() -> ImageGenerator {
+        ImageGenerator { image: None }
+    }
+
+    pub fn load_img(&mut self, path: String) {
+        let mut picker = Picker::new((8, 12));
+        picker.guess_protocol();
+
+        let dyn_img = ImageReader::open(path)
+            .expect("unable to open img")
+            .decode()
+            .expect("unable to decode image");
+        let image = picker.new_resize_protocol(dyn_img);
+
+        self.image = Some(image);
+
+        //ImageGenerator {image: Some(image)}
+    }
 }
 
 fn sort_entries_by_type(
@@ -139,9 +168,10 @@ fn convert_file_path_to_string(
         } else if value.is_file() {
             let file_name = value.file_name().unwrap();
 
-            if !file_name.to_str().unwrap().ends_with("png") {
+            path_buf_list.push(value);
+            /* if !file_name.to_str().unwrap().ends_with("png") {
                 path_buf_list.push(value);
-            }
+            } */
         }
     }
     if !show_hidden {
@@ -236,15 +266,13 @@ fn get_inner_files_info(
     Ok(Some(file_strings))
 }
 
-fn get_content_from_path(path:String) -> Option<Vec<String>> {
-let mut file_name_list: Vec<String> = Vec::new();
- match fs::read_dir(path) {
-Ok(val) =>  {
-
+fn get_content_from_path(path: String) -> Option<Vec<String>> {
+    let mut file_name_list: Vec<String> = Vec::new();
+    match fs::read_dir(path) {
+        Ok(val) => {
             for name in val.into_iter() {
-
                 match name {
-                    Ok(result ) => {
+                    Ok(result) => {
                         let file_name = result.file_name().to_str().unwrap().to_string();
                         file_name_list.push(file_name);
                     }
@@ -253,7 +281,6 @@ Ok(val) =>  {
                         return None;
                     }
                 }
-
             }
         }
         Err(e) => {
@@ -262,7 +289,6 @@ Ok(val) =>  {
         }
     };
     Some(file_name_list)
-
 }
 
 fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
@@ -521,6 +547,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sort_type = SortType::ASC;
 
     let mut file_reader_content = FileContent::new();
+    let mut image_generator = ImageGenerator::new();
 
     config.handle_settings_configuration();
     // Setup terminal
@@ -554,6 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    terminal.clear()?;
     // Initial selected state
     let mut state = ListState::default();
     state.select(Some(0)); // Select the first item by default
@@ -738,7 +766,6 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                     _ => Style::default().fg(Color::Gray),
                 });
 
-            
 
             let footer_outer_layout = Layout::default()
                 .direction(Direction::Vertical)
@@ -804,13 +831,41 @@ let footer_stats =
 
             match file_reader_content.file_type {
                 FileType::FILE => {
+        image_generator.image = None;
 let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
             f.render_widget(file_preview_text, inner_layout[1] );
                 }
+                FileType::IMG => {
+
+                     //let _ =image_generator.load_img(file_reader_content.curr_asset_path.clone()).clone();
+                    let image = StatefulImage::new(None);
+
+
+                    //let img = image_generator.image.unwrap().clone();
+            f.render_stateful_widget(image, inner_layout[1], &mut image_generator.image.clone().unwrap());
+
+                }
+                FileType::ZIP => {
+let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Preview")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::Gray),
+                            _ => Style::default().fg(Color::Gray),
+                        }), //.title("Filtered List"),
+                )
+                //.highlight_symbol(">")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(zip_list_content, inner_layout[1], );
+
+                }
                 _ => {
 
+        image_generator.image = None;
             f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
                 }
             }
@@ -964,6 +1019,8 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                 InputMode::Normal => match key.code {
                     KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
+                        file_reader_content.file_type = FileType::NotAvailable;
+                        image_generator.image = None;
                     }
                     KeyCode::Char('q') => {
                         break;
@@ -990,7 +1047,11 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                             app.curr_stats = generated_metadata_str.clone();
 
                             if !is_file(selected_cur_path.to_string()) {
-                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                if let Some(file_names) =
+                                    get_content_from_path(selected_cur_path.to_string())
+                                {
+                                    image_generator.image = None;
+                                    file_reader_content.file_type = FileType::NotAvailable;
                                     app.preview_files = file_names;
                                 }
                             } else {
@@ -999,6 +1060,7 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
 
                                 match file_extension {
                                     FileType::FILE => {
+                                        image_generator.image = None;
                                         file_reader_content.file_type = FileType::FILE;
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
@@ -1008,7 +1070,22 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                             app.preview_file_content = file_content;
                                         }
                                     }
+                                    FileType::IMG => {
+                                        image_generator.image = None;
+                                        file_reader_content.curr_asset_path =
+                                            selected_cur_path.to_string();
+
+                                        image_generator.load_img(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::IMG;
+                                    }
+                                    FileType::ZIP => {
+                                        image_generator.image = None;
+                                        file_reader_content
+                                            .read_zip_content(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::ZIP;
+                                    }
                                     _ => {
+                                        image_generator.image = None;
                                         file_reader_content.file_type = FileType::NotAvailable;
                                     }
                                 }
@@ -1039,16 +1116,20 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                             // INFO: update preview list
 
                             if !is_file(selected_cur_path.clone()) {
-                                if let Some(file_names) = get_content_from_path(selected_cur_path.to_string()) {
+                                if let Some(file_names) =
+                                    get_content_from_path(selected_cur_path.to_string())
+                                {
+                                    image_generator.image = None;
+                                    file_reader_content.file_type = FileType::NotAvailable;
                                     app.preview_files = file_names;
                                 }
                             } else {
                                 let file_extension = file_reader_content
                                     .get_file_extension(selected_cur_path.clone());
 
-
                                 match file_extension {
                                     FileType::FILE => {
+                                        image_generator.image = None;
                                         file_reader_content.file_type = FileType::FILE;
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
@@ -1058,7 +1139,22 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                                             app.preview_file_content = file_content;
                                         }
                                     }
+                                    FileType::IMG => {
+                                        image_generator.image = None;
+                                        file_reader_content.curr_asset_path =
+                                            selected_cur_path.to_string();
+
+                                        image_generator.load_img(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::IMG;
+                                    }
+                                    FileType::ZIP => {
+                                        image_generator.image = None;
+                                        file_reader_content
+                                            .read_zip_content(selected_cur_path.clone());
+                                        file_reader_content.file_type = FileType::ZIP;
+                                    }
                                     _ => {
+                                        image_generator.image = None;
                                         file_reader_content.file_type = FileType::NotAvailable;
                                     }
                                 }
