@@ -750,21 +750,8 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                             _ => Style::default().fg(Color::White),
                         }), //.title("Filtered List"),
                 )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::White)
-                        //.add_modifier(Modifier::BOLD),
-                )
                 //.highlight_symbol(">")
-                .style(match app.input_mode {
-                    InputMode::Normal => Style::default().fg(Color::White),
-                    InputMode::Editing => Style::default().fg(Color::White),
-                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
-                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
-                    InputMode::WatchRename => Style::default().fg(Color::Gray),
-                    InputMode::WatchSort => Style::default().fg(Color::Gray),
-                    _ => Style::default().fg(Color::Gray),
-                });
+                .style(Style::default().fg(Color::DarkGray));
 
 
             let footer_outer_layout = Layout::default()
@@ -861,6 +848,22 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
                 //.highlight_symbol(">")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(zip_list_content, inner_layout[1], );
+
+                }
+                FileType::CSV => {
+let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Preview")
+                        .style(match app.input_mode {
+                            InputMode::Normal => Style::default().fg(Color::Green),
+                            InputMode::Editing => Style::default().fg(Color::Gray),
+                            _ => Style::default().fg(Color::Gray),
+                        }), //.title("Filtered List"),
+                )
+                //.highlight_symbol(">")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(csv_list_content, inner_layout[1], );
 
                 }
                 _ => {
@@ -1045,6 +1048,7 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
                             app.curr_stats = generated_metadata_str.clone();
+                            file_reader_content.curr_selected_path = selected_cur_path.clone();
 
                             if !is_file(selected_cur_path.to_string()) {
                                 if let Some(file_names) =
@@ -1084,6 +1088,11 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
                                             .read_zip_content(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::ZIP;
                                     }
+                                    FileType::CSV => {
+                                        image_generator.image = None;
+                                        file_reader_content.read_csv_content();
+                                        file_reader_content.file_type = FileType::CSV;
+                                    }
                                     _ => {
                                         image_generator.image = None;
                                         file_reader_content.file_type = FileType::NotAvailable;
@@ -1115,6 +1124,7 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
 
                             // INFO: update preview list
 
+                            file_reader_content.curr_selected_path = selected_cur_path.clone();
                             if !is_file(selected_cur_path.clone()) {
                                 if let Some(file_names) =
                                     get_content_from_path(selected_cur_path.to_string())
@@ -1152,6 +1162,11 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
                                         file_reader_content
                                             .read_zip_content(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::ZIP;
+                                    }
+                                    FileType::CSV => {
+                                        image_generator.image = None;
+                                        file_reader_content.read_csv_content();
+                                        file_reader_content.file_type = FileType::CSV;
                                     }
                                     _ => {
                                         image_generator.image = None;
@@ -1240,6 +1255,18 @@ let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).b
                     }
                     KeyCode::Char('a') => {
                         app.input_mode = InputMode::WatchCreate;
+                    }
+                    KeyCode::Char('y') => {
+                        let curr_file_path = file_reader_content.curr_selected_path.clone();
+                        let file_type =
+                            file_reader_content.get_file_extension(curr_file_path.clone());
+                        match file_type {
+                            FileType::ZIP => {
+                                let t = file_reader_content.extract_zip_content();
+                                app.input = t;
+                            }
+                            _ => {}
+                        }
                     }
                     KeyCode::Char('r') => {
                         let selected_index = state.selected();
