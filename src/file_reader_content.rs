@@ -1,5 +1,13 @@
 use std::{fs, io, iter::zip, path::Path};
 
+use syntect::easy::HighlightLines;
+use syntect::highlighting::Style;
+use syntect::highlighting::{Color, ThemeSet};
+use syntect::html::highlighted_html_for_file;
+use syntect::parsing::SyntaxSet;
+use syntect::util::as_24_bit_terminal_escaped;
+use syntect::util::LinesWithEndings;
+
 #[derive(Debug, Clone)]
 pub enum FileType {
     FILE,
@@ -19,10 +27,13 @@ pub struct FileContent {
     pub curr_zip_content: Vec<String>,
     pub curr_selected_path: String,
     pub curr_csv_content: Vec<String>,
+    pub curr_extension_tpe: Option<String>,
+    pub syntax_set: SyntaxSet,
+    pub theme_set: ThemeSet,
 }
 
 impl FileContent {
-    pub fn new() -> FileContent {
+    pub fn new(ps: SyntaxSet, ts: ThemeSet) -> FileContent {
         FileContent {
             file_type: FileType::NotAvailable,
             is_error: false,
@@ -31,6 +42,9 @@ impl FileContent {
             curr_zip_content: Vec::new(),
             curr_selected_path: String::from(""),
             curr_csv_content: Vec::new(),
+            curr_extension_tpe: None,
+            syntax_set: ps,
+            theme_set: ts,
         }
     }
     pub fn is_curr_path_file(path: String) -> bool {
@@ -47,6 +61,32 @@ impl FileContent {
         }
     }
 
+    pub fn get_highlighted_content(
+        &mut self,
+        content: String,
+        extension_type: Option<String>,
+    ) -> String {
+        //let content = self.read_file_content(path);
+        if extension_type.is_none() {
+            return content;
+        }
+        let mut res = String::from("");
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_extension(&extension_type.unwrap())
+            .unwrap();
+        let mut h = HighlightLines::new(syntax, &self.theme_set.themes["base16-ocean.dark"]);
+        //let s = "pub struct Wow { hi: u64 }\nfn blah() -> u64 {}";
+        for line in LinesWithEndings::from(&content) {
+            // LinesWithEndings enables use of newlines mode
+            let ranges: Vec<(Style, &str)> = h.highlight_line(line, &self.syntax_set).unwrap();
+            let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+            res = escaped;
+            // print!("{}", escaped);
+        }
+        res
+    }
+
     pub fn read_file_content(&mut self, path: String) -> String {
         let content = match fs::read_to_string(path) {
             Ok(file_content) => file_content,
@@ -59,6 +99,19 @@ impl FileContent {
             }
         };
         content
+    }
+
+    pub fn get_file_extension_type(&mut self, path: String) -> Option<String> {
+        let file_extension = Path::new(&path).extension();
+
+        let curr_extension_type = match file_extension {
+            Some(extension) => Some(extension.to_owned().into_string().unwrap()),
+            None => None, // TODO: find out what would be the best default
+        };
+
+        //self.curr_extension_tpe = curr_extension_type;
+
+        curr_extension_type
     }
 
     pub fn get_file_extension(&mut self, path: String) -> FileType {

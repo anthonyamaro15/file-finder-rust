@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 use walkdir::WalkDir;
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -542,11 +543,13 @@ fn validate_file_path(file_path: Option<String>) -> Option<bool> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
 
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
 
-    let mut file_reader_content = FileContent::new();
+    let mut file_reader_content = FileContent::new(ps, ts);
     let mut image_generator = ImageGenerator::new();
 
     config.handle_settings_configuration();
@@ -1069,9 +1072,17 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
 
+                                        let curr_file_type = file_reader_content
+                                            .get_file_extension_type(selected_cur_path.clone());
+
+                                        let highlighted_content = file_reader_content
+                                            .get_highlighted_content(file_content, curr_file_type);
+                                        //.get_highlighted_content(file_content, curr_file_type);
+
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
-                                            app.preview_file_content = file_content;
+                                            app.preview_file_content = highlighted_content;
+                                            //app.preview_file_content = file_content;
                                         }
                                     }
                                     FileType::IMG => {
