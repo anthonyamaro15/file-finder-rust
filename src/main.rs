@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings};
 use walkdir::WalkDir;
 
 use ratatui::{prelude::*, widgets::Clear};
@@ -542,11 +543,14 @@ fn validate_file_path(file_path: Option<String>) -> Option<bool> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_arguments: Vec<String> = env::args().collect();
+    let ps = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
 
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
 
-    let mut file_reader_content = FileContent::new();
+    let mut file_reader_content = FileContent::new(ps, ts);
+    //let file_type = file_reader_content.file_type.clone();
     let mut image_generator = ImageGenerator::new();
 
     config.handle_settings_configuration();
@@ -815,11 +819,11 @@ let footer_stats =
             // f.render_widget(list_block, inner_layout[1]);
             f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
 
-
-            match file_reader_content.file_type {
+            let t = file_reader_content.file_type.clone();
+            match t {
                 FileType::FILE => {
         image_generator.image = None;
-let file_preview_text = Paragraph::new(app.preview_file_content.clone())
+let file_preview_text = file_reader_content.hightlighted_content.as_ref().unwrap().clone() 
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
             f.render_widget(file_preview_text, inner_layout[1] );
@@ -830,7 +834,6 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
                     let image = StatefulImage::new(None);
 
 
-                    //let img = image_generator.image.unwrap().clone();
             f.render_stateful_widget(image, inner_layout[1], &mut image_generator.image.clone().unwrap());
 
                 }
@@ -838,14 +841,13 @@ let file_preview_text = Paragraph::new(app.preview_file_content.clone())
 let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("Preview")
+                        .title("ZIP Preview")
                         .style(match app.input_mode {
                             InputMode::Normal => Style::default().fg(Color::Green),
                             InputMode::Editing => Style::default().fg(Color::Gray),
                             _ => Style::default().fg(Color::Gray),
                         }), //.title("Filtered List"),
                 )
-                //.highlight_symbol(">")
                 .style(Style::default().fg(Color::DarkGray));
             f.render_widget(zip_list_content, inner_layout[1], );
 
@@ -1069,9 +1071,17 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
 
+                                        let curr_file_type = file_reader_content
+                                            .get_file_extension_type(selected_cur_path.clone());
+
+                                        //app.input = curr_file_type.clone().unwrap().clone();
+
+                                        let highlighted_content = file_reader_content
+                                        .get_highlighted_content(file_content, curr_file_type);
+
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
-                                            app.preview_file_content = file_content;
+                                            app.preview_file_content = highlighted_content;
                                         }
                                     }
                                     FileType::IMG => {
@@ -1143,14 +1153,18 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         file_reader_content.file_type = FileType::FILE;
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
-
+                                        let curr_file_type = file_reader_content
+                                            .get_file_extension_type(selected_cur_path.clone());
+                                        let highlighted_content = file_reader_content
+                                        .get_highlighted_content(file_content, curr_file_type);
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
-                                            app.preview_file_content = file_content;
+                                            //app.preview_file_content = file_content;
+                                             app.preview_file_content = highlighted_content;
                                         }
                                     }
                                     FileType::IMG => {
-                                        image_generator.image = None;
+                                        // image_generator.image = None;
                                         file_reader_content.curr_asset_path =
                                             selected_cur_path.to_string();
 

@@ -1,5 +1,17 @@
 use std::{fs, io, iter::zip, path::Path};
 
+use ratatui::style::Style;
+use ratatui::text::{Line, Span, Text};
+use ratatui::{
+    style::Color,
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
+use syntect::html::highlighted_html_for_file;
+use syntect::parsing::SyntaxSet;
+use syntect::util::as_24_bit_terminal_escaped;
+use syntect::util::LinesWithEndings;
 #[derive(Debug, Clone)]
 pub enum FileType {
     FILE,
@@ -11,7 +23,7 @@ pub enum FileType {
     IMG,
 }
 
-pub struct FileContent {
+pub struct FileContent<'a> {
     pub file_type: FileType,
     pub is_error: bool,
     pub error_message: String,
@@ -19,10 +31,14 @@ pub struct FileContent {
     pub curr_zip_content: Vec<String>,
     pub curr_selected_path: String,
     pub curr_csv_content: Vec<String>,
+    pub curr_extension_tpe: Option<String>,
+    pub syntax_set: SyntaxSet,
+    pub theme_set: ThemeSet,
+    pub hightlighted_content: Option<Paragraph<'a>>,
 }
 
-impl FileContent {
-    pub fn new() -> FileContent {
+impl FileContent<'_> {
+    pub fn new(ps: SyntaxSet, ts: ThemeSet) -> FileContent<'static> {
         FileContent {
             file_type: FileType::NotAvailable,
             is_error: false,
@@ -31,6 +47,10 @@ impl FileContent {
             curr_zip_content: Vec::new(),
             curr_selected_path: String::from(""),
             curr_csv_content: Vec::new(),
+            curr_extension_tpe: None,
+            syntax_set: ps,
+            theme_set: ts,
+            hightlighted_content: None,
         }
     }
     pub fn is_curr_path_file(path: String) -> bool {
@@ -47,6 +67,50 @@ impl FileContent {
         }
     }
 
+    fn convert_color(&mut self, color: syntect::highlighting::Color) -> Color {
+        Color::Rgb(color.r, color.g, color.b)
+    }
+
+    pub fn get_highlighted_content(
+        &mut self,
+        content: String,
+        extension_type: Option<String>,
+    ) -> String {
+        if extension_type.is_none() {
+            return content;
+        }
+        let mut res = String::from("");
+        let mut spans = vec![];
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_extension(&extension_type.unwrap())
+            .unwrap();
+        let syntax_set = self.syntax_set.clone();
+        let theme = self.theme_set.themes["base16-ocean.dark"].clone();
+        let mut h = HighlightLines::new(syntax, &theme);
+        for line in LinesWithEndings::from(&content) {
+            // LinesWithEndings enables use of newlines mode
+            let mut lines: Vec<Span> = vec![];
+            let ranges: Vec<(SyntectStyle, &str)> =
+                h.highlight_line(line, &syntax_set).unwrap().clone();
+
+            for (style, text) in ranges.clone().into_iter() {
+                let fg_color = self.convert_color(style.foreground);
+                let span = Span::styled(text.to_string(), Style::default().fg(fg_color));
+                lines.push(span);
+            }
+            spans.push(Line::from(lines));
+
+            let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
+            res = escaped.clone();
+        }
+        let text = Text::from(spans);
+
+        let paragraph = Paragraph::new(text);
+        self.hightlighted_content = Some(paragraph);
+        res
+    }
+
     pub fn read_file_content(&mut self, path: String) -> String {
         let content = match fs::read_to_string(path) {
             Ok(file_content) => file_content,
@@ -61,6 +125,19 @@ impl FileContent {
         content
     }
 
+    pub fn get_file_extension_type(&mut self, path: String) -> Option<String> {
+        let file_extension = Path::new(&path).extension();
+
+        let curr_extension_type = match file_extension {
+            Some(extension) => Some(extension.to_owned().into_string().unwrap()),
+            None => None, // TODO: find out what would be the best default
+        };
+
+        //self.curr_extension_tpe = curr_extension_type;
+
+        curr_extension_type
+    }
+
     pub fn get_file_extension(&mut self, path: String) -> FileType {
         let file_extension = Path::new(&path).extension();
 
@@ -69,7 +146,9 @@ impl FileContent {
                 let convert_to_str = extention.to_str().unwrap();
 
                 match convert_to_str {
-                    "js" | "ts" | "html" | "yml" | "json" | "css" => FileType::FILE,
+                    "js" | "rs" | "py" | "map.js" | "html" | "yml" | "json" | "css" => {
+                        FileType::FILE
+                    }
                     "png" => FileType::IMG,
                     "zip" => FileType::ZIP,
                     "csv" => FileType::CSV,
@@ -118,6 +197,7 @@ impl FileContent {
 
             let name = outpath.display().to_string();
 
+            //println!("name {}", name.clone());
             list.push(name);
         }
 
