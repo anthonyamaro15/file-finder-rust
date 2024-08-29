@@ -146,9 +146,7 @@ impl FileContent<'_> {
                 let convert_to_str = extention.to_str().unwrap();
 
                 match convert_to_str {
-                    "js" | "ts" | "tsx" | "map.js" | "html" | "yml" | "json" | "css" => {
-                        FileType::FILE
-                    }
+                    "js" | "map.js" | "html" | "yml" | "json" | "css" => FileType::FILE,
                     "png" => FileType::IMG,
                     "zip" => FileType::ZIP,
                     "csv" => FileType::CSV,
