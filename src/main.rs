@@ -29,10 +29,16 @@ use ratatui::{
 };
 
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
+mod utils;
 
-use crate::directory_store::{
-    build_directory_from_store, load_directory_from_file, save_directory_to_file,
+use crate::{
+    directory_store::{
+        build_directory_from_store, load_directory_from_file, save_directory_to_file,
+    },
+    ui::{FileListContent, ListFileItem, Ui},
+    utils::init,
 };
+use log::{debug, logger, trace, warn};
 
 extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
@@ -42,6 +48,8 @@ mod configuration;
 mod directory_store;
 mod file_reader_content;
 mod ui;
+
+//  log_to_file(format!("kind => {:?}", kind));
 
 #[derive(Clone)]
 enum SortType {
@@ -546,6 +554,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
+    init();
+
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
 
@@ -579,6 +589,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         new_store
     };
 
+    let widgets_ui = Ui::new(app.files.clone());
+
+    debug!("{:?}", widgets_ui.files_list);
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -589,27 +603,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initial selected state
     let mut state = ListState::default();
     state.select(Some(0)); // Select the first item by default
-                           //
+    debug!("{:?}", state);
     let mut read_only_state = ListState::default();
     read_only_state.select(Some(0));
 
     // Main loop
     loop {
         // Filtered items based on input
-        let filtered_items: Vec<ListItem> = app
-            .files
-            .iter()
-            .map(|file| ListItem::new(file.clone()))
-            .collect();
+        /* let filtered_items: Vec<ListItem> = app
+        .files
+        .iter()
+        .map(|file| ListItem::new(file.clone()))
+        .collect(); */
 
-        let filtered_read_only_items: Vec<ListItem> = app
-            .copy_move_read_only_files
+        let mut current_item_list: Vec<ListFileItem> = Vec::new();
+        for path in app.files.clone().iter() {
+            let new_path = Path::new(path);
+            let get_file_name = new_path.file_name().unwrap().to_str().unwrap().to_string();
+            let create_item_list = ListFileItem {
+                label: get_file_name,
+                //label: String::from(format!("label: {}", path)),
+                path: String::from(path),
+            };
+
+            current_item_list.push(create_item_list);
+
+            //debug!("{:?}",path);
+        }
+
+        let filtered_read_only_items: Vec<ListItem> = current_item_list
             .iter()
-            .map(|file| ListItem::new(file.clone()))
+            .map(|file| ListItem::from(file.label.clone()))
             .collect();
+        /* let filtered_read_only_items: Vec<ListItem> = app
+        .copy_move_read_only_files
+        .iter()
+        .map(|file| ListItem::new(file.clone()))
+        .collect(); */
 
         // Draw UI
-        terminal.draw(|f| {
+        terminal.draw(| mut f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(1)
@@ -687,7 +720,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //    - if type if dir then render its content 
             //    - if type is file then display content of file if posible
             // 3. preview mode will only apply when in normal MODE, 
-            let list_block = List::new(filtered_items.clone())
+            /* let list_block = List::new(filtered_read_only_items.clone())
+            //let list_block = List::new(filtered_items.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -712,7 +746,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
                     InputMode::WatchSort => Style::default().fg(Color::Gray),
                     _ => Style::default().fg(Color::Gray),
-                });
+                }); */
 
             //let preview_list_path = get_preview_path(app.files.clone());
 
@@ -744,7 +778,30 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
 
             }; */
             // TODO: handle first item preview
-            let list_preview_block = List::new(app.preview_files.clone()).block(
+        //let mut current_prev_list : Vec<ListFileItem> = Vec::new();
+       /* for path in app.preview_files.iter() {
+
+       let create_item_list = ListFileItem {
+        label: String::from("testing preview"),
+        //label: String::from(format!("label: {}", path)),
+        path: String::from(path)
+
+    };
+
+            current_prev_list.push(create_item_list);
+
+    //debug!("{:?}",path);
+
+        } */
+
+    /* let filtered_curr_read_only_items: Vec<ListItem> =
+           current_prev_list
+            .iter()
+            .map(|file| ListItem::from(file.label.clone()))
+            .collect(); */
+
+            /* let list_preview_block = List::new(filtered_curr_read_only_items).block(
+            //let list_preview_block = List::new(app.preview_files.clone()).block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("Preview")
@@ -755,7 +812,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                         }), //.title("Filtered List"),
                 )
                 //.highlight_symbol(">")
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Style::default().fg(Color::DarkGray)); */
 
 
             let footer_outer_layout = Layout::default()
@@ -817,13 +874,17 @@ let footer_stats =
             //f.render_widget(parsed_instructions.clone(), chunks[3]);
             //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
-            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            //
+            //
+
+            widgets_ui.clone().render_list_preview(&mut f, &chunks, &mut state, &app);
 
             let t = file_reader_content.file_type.clone();
             match t {
                 FileType::FILE => {
         image_generator.image = None;
-let file_preview_text = file_reader_content.hightlighted_content.as_ref().unwrap().clone() 
+let file_preview_text = file_reader_content.hightlighted_content.as_ref().unwrap().clone()
                 .block(Block::default().borders(Borders::ALL))
                 .style(Style::default());
             f.render_widget(file_preview_text, inner_layout[1] );
@@ -871,7 +932,10 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                 _ => {
 
         image_generator.image = None;
-            f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+            //f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+                    //
+                        widgets_ui.clone().render_preview_window(&mut f, &chunks, &mut state, &app);
+
                 }
             }
             //TODO: add match method here
@@ -1045,7 +1109,8 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                             state.select(Some(i));
                             app.curr_index = Some(i);
 
-                            let selected_cur_path = &app.files[i];
+                            let selected_cur_path = &app.read_only_files[i];
+                            debug!("check here: {:?}", selected_cur_path);
                             let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
@@ -1077,7 +1142,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         //app.input = curr_file_type.clone().unwrap().clone();
 
                                         let highlighted_content = file_reader_content
-                                        .get_highlighted_content(file_content, curr_file_type);
+                                            .get_highlighted_content(file_content, curr_file_type);
 
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
@@ -1156,11 +1221,11 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         let curr_file_type = file_reader_content
                                             .get_file_extension_type(selected_cur_path.clone());
                                         let highlighted_content = file_reader_content
-                                        .get_highlighted_content(file_content, curr_file_type);
+                                            .get_highlighted_content(file_content, curr_file_type);
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
                                             //app.preview_file_content = file_content;
-                                             app.preview_file_content = highlighted_content;
+                                            app.preview_file_content = highlighted_content;
                                         }
                                     }
                                     FileType::IMG => {

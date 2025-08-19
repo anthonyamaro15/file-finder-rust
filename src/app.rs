@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use log::debug;
+
 use crate::directory_store::DirectoryStore;
 
 extern crate copypasta;
@@ -53,12 +57,27 @@ pub struct App {
 
     pub preview_files: Vec<String>,
     pub preview_file_content: String,
+
+    pub filtered_indexes: Vec<usize>,
+
+    pub file_read_only_label_list: Vec<String>,
 }
 
 impl App {
     pub fn new(files: Vec<String>) -> Self {
         let files_clone = files.clone();
         let second_files_clone = files.clone();
+        let mut all_indexes: Vec<usize> = Vec::new();
+        let mut file_labels: Vec<String> = Vec::new();
+
+        for (index, file) in files.iter().enumerate() {
+            let new_path = Path::new(file);
+            let get_file_name = new_path.file_name().unwrap().to_str().unwrap().to_string();
+
+            all_indexes.push(index);
+            file_labels.push(get_file_name);
+        }
+
         Self {
             input: String::new(),
             input_mode: InputMode::Normal,
@@ -85,6 +104,9 @@ impl App {
 
             preview_files: Vec::new(),
             preview_file_content: String::new(),
+
+            filtered_indexes: all_indexes,
+            file_read_only_label_list: file_labels,
         }
     }
 
@@ -106,17 +128,24 @@ impl App {
     }
 
     pub fn filter_files(&mut self, input: String, store: DirectoryStore) {
-        let mut new_files: Vec<String> = Vec::new();
-
-        let r = store.search(&input);
-        for file in self.read_only_files.iter() {
+        //let mut new_files: Vec<String> = Vec::new();
+        //debug!("{:?}", store);
+        //let r = store.search(&input);
+        // get the indexes from r
+        //let indexes: Vec<usize> = r.iter().enumerate().map(|index| index).collect();
+        let mut result_indexes: Vec<usize> = Vec::new();
+        //for (index, file) in r.iter().enumerate() {
+        for (index, file) in self.read_only_files.iter().enumerate() {
             if file.contains(&input) {
-                new_files.push(file.clone());
+                //new_files.push(file.clone());
+                result_indexes.push(index);
             }
         }
 
         //self.files = new_files;
-        self.files = r;
+        //self.files = r;
+        self.filtered_indexes = result_indexes;
+        //self.filtered_indexes = result_indexes;
     }
 
     pub fn byte_index(&mut self) -> usize {
