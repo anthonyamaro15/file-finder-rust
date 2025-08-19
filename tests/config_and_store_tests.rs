@@ -370,7 +370,7 @@ mod configuration_directory_creation_tests {
         config.settings_path = format!("{}/.config/ff/settings.json", temp_path);
         
         // This should create the directory and files
-        config.handle_settings_configuration();
+        config.handle_settings_configuration().expect("Failed to handle settings configuration");
         
         // Check that the directory was created
         let config_dir = format!("{}/.config/ff", temp_path);
@@ -408,7 +408,7 @@ mod configuration_directory_creation_tests {
         config.root_dir = temp_path;
         config.settings_path = settings_path;
         
-        config.handle_settings_configuration();
+        config.handle_settings_configuration().expect("Failed to handle settings configuration");
         
         // Should have loaded the custom values
         assert_eq!(config.start_path, "/custom/path");
