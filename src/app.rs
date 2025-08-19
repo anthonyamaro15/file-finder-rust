@@ -6,14 +6,14 @@ use crate::directory_store::DirectoryStore;
 
 extern crate copypasta;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IDE {
     NVIM,
     VSCODE,
     ZED,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
     Normal,
     Editing,
