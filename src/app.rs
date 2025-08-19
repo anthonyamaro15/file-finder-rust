@@ -1,15 +1,23 @@
+use std::path::Path;
+
+use log::debug;
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+
 use crate::directory_store::DirectoryStore;
+use crate::errors::{AppError, AppResult};
+use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 extern crate copypasta;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IDE {
     NVIM,
     VSCODE,
     ZED,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
     Normal,
     Editing,
@@ -19,9 +27,19 @@ pub enum InputMode {
     WatchSort,
     WatchKeyBinding,
     WatchCopy,
+    CacheLoading,
 }
 
 #[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub file_path: String,
+    pub display_name: String,
+    pub score: i64,
+    pub is_directory: bool,
+    pub original_index: usize,
+}
+
+#[derive(Debug)]
 pub struct App {
     pub input: String,
     pub character_index: usize,
@@ -47,18 +65,78 @@ pub struct App {
     pub loading: bool,
     pub curr_index: Option<usize>,
     pub curr_stats: String,
-    pub item_to_copy_path: String,
-    pub copy_move_read_only_files: Vec<String>,
-    pub copy_move_read_only_files_prev: String,
 
     pub preview_files: Vec<String>,
     pub preview_file_content: String,
+
+    pub filtered_indexes: Vec<usize>,
+
+    pub file_read_only_label_list: Vec<String>,
+    
+    // Search functionality
+    pub search_results: Vec<SearchResult>,
+    pub global_search_mode: bool,
+    
+    // Copy progress tracking
+    pub copy_in_progress: bool,
+    pub copy_progress_message: String,
+    pub copy_files_processed: usize,
+    pub copy_total_files: usize,
+    
+    // Cached UI items for performance
+    pub cached_list_items: Vec<String>,
+    pub cached_list_items_valid: bool,
+    
+    // Pagination for lazy loading large directories
+    pub pagination_enabled: bool,
+    pub items_per_page: usize,
+    pub current_page: usize,
+    pub total_pages: usize,
+    
+    // File system watcher for real-time updates
+    pub file_watcher: Option<FileSystemWatcher>,
+    pub current_directory: String,
+    
+    // Cache loading progress tracking
+    pub cache_loading_progress: Option<std::sync::mpsc::Receiver<crate::directory_store::CacheBuildProgress>>,
+    pub cache_directories_processed: usize,
+    pub cache_current_directory: String,
+    pub cache_loading_complete: bool,
+    pub completed_cache_store: Option<crate::directory_store::DirectoryStore>,
 }
 
 impl App {
     pub fn new(files: Vec<String>) -> Self {
         let files_clone = files.clone();
-        let second_files_clone = files.clone();
+        let mut all_indexes: Vec<usize> = Vec::new();
+        let mut file_labels: Vec<String> = Vec::new();
+
+        for (index, file) in files.iter().enumerate() {
+            let new_path = Path::new(file);
+            let get_file_name = new_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| {
+                    // Fallback to the full path if filename extraction fails
+                    file.clone()
+                });
+
+            all_indexes.push(index);
+            file_labels.push(get_file_name);
+        }
+
+        // Enable pagination for large directories (>500 files)
+        let file_count = files.len();
+        let pagination_threshold = 500;
+        let pagination_enabled = file_count > pagination_threshold;
+        let items_per_page = if pagination_enabled { 200 } else { file_count };
+        let total_pages = if pagination_enabled {
+            (file_count + items_per_page - 1) / items_per_page
+        } else {
+            1
+        };
+
         Self {
             input: String::new(),
             input_mode: InputMode::Normal,
@@ -79,12 +157,43 @@ impl App {
             loading: false,
             curr_index: Some(0),
             curr_stats: String::new(),
-            item_to_copy_path: String::new(),
-            copy_move_read_only_files: second_files_clone,
-            copy_move_read_only_files_prev: String::new(),
 
             preview_files: Vec::new(),
             preview_file_content: String::new(),
+
+            filtered_indexes: all_indexes,
+            file_read_only_label_list: file_labels,
+            
+            // Initialize search functionality
+            search_results: Vec::new(),
+            global_search_mode: false,
+            
+            // Initialize copy progress tracking
+            copy_in_progress: false,
+            copy_progress_message: String::new(),
+            copy_files_processed: 0,
+            copy_total_files: 0,
+            
+            // Initialize cached UI items
+            cached_list_items: Vec::new(),
+            cached_list_items_valid: false,
+            
+            // Initialize pagination
+            pagination_enabled,
+            items_per_page,
+            current_page: 0,
+            total_pages,
+            
+            // Initialize file watcher
+            file_watcher: None,
+            current_directory: String::new(),
+            
+            // Initialize cache loading progress tracking
+            cache_loading_progress: None,
+            cache_directories_processed: 0,
+            cache_current_directory: String::new(),
+            cache_loading_complete: false,
+            completed_cache_store: None,
         }
     }
 
@@ -106,17 +215,116 @@ impl App {
     }
 
     pub fn filter_files(&mut self, input: String, store: DirectoryStore) {
-        let mut new_files: Vec<String> = Vec::new();
-
-        let r = store.search(&input);
-        for file in self.read_only_files.iter() {
-            if file.contains(&input) {
-                new_files.push(file.clone());
+        if input.is_empty() {
+            // Show all files when no search input
+            self.filtered_indexes = (0..self.files.len()).collect();
+            self.search_results.clear();
+            self.global_search_mode = false;
+            return;
+        }
+        
+        // Determine if this should be a global search (when input starts with space or special char)
+        let is_global_search = input.starts_with(' ') || input.starts_with('/');
+        self.global_search_mode = is_global_search;
+        
+        if is_global_search {
+            // Global search across directory cache
+            self.perform_global_search(input.trim(), &store);
+        } else {
+            // Local search in current directory
+            self.perform_local_search(&input);
+        }
+    }
+    
+    /// Perform fuzzy search in current directory with scoring
+    pub fn perform_local_search(&mut self, query: &str) {
+        let matcher = SkimMatcherV2::default();
+        let mut search_results: Vec<SearchResult> = Vec::new();
+        
+        for (index, file_path) in self.files.iter().enumerate() {
+            let path = Path::new(file_path);
+            let file_name = path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(file_path);
+            
+            // Try fuzzy matching on filename first (higher priority)
+            let filename_score = matcher.fuzzy_match(file_name, query);
+            
+            // Also try matching on full path (lower priority)
+            let path_score = matcher.fuzzy_match(file_path, query)
+                .map(|score| score / 2); // Reduce path match score
+                
+            // Use the best score
+            if let Some(score) = filename_score.or(path_score) {
+                let is_directory = path.is_dir();
+                
+                // Boost directory scores slightly for better organization
+                let adjusted_score = if is_directory {
+                    score + 10
+                } else {
+                    score
+                };
+                
+                search_results.push(SearchResult {
+                    file_path: file_path.clone(),
+                    display_name: file_name.to_string(),
+                    score: adjusted_score,
+                    is_directory,
+                    original_index: index,
+                });
             }
         }
-
-        //self.files = new_files;
-        self.files = r;
+        
+        // Sort by score (descending) then by name
+        search_results.sort_by(|a, b| {
+            b.score.cmp(&a.score)
+                .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
+        });
+        
+        // Update filtered indexes based on search results
+        self.filtered_indexes = search_results.iter()
+            .map(|result| result.original_index)
+            .collect();
+            
+        self.search_results = search_results;
+    }
+    
+    /// Perform global search across directory cache
+    pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
+        let matcher = SkimMatcherV2::default();
+        let mut search_results: Vec<SearchResult> = Vec::new();
+        
+        // Search through the directory cache
+        for (index, file_path) in store.directories.iter().enumerate() {
+            let path = Path::new(file_path);
+            let file_name = path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(file_path);
+            
+            // Try fuzzy matching
+            let filename_score = matcher.fuzzy_match(file_name, query);
+            let path_score = matcher.fuzzy_match(file_path, query)
+                .map(|score| score / 3); // Even lower priority for global path matches
+                
+            if let Some(score) = filename_score.or(path_score) {
+                let is_directory = path.is_dir();
+                
+                search_results.push(SearchResult {
+                    file_path: file_path.clone(),
+                    display_name: file_name.to_string(),
+                    score,
+                    is_directory,
+                    original_index: index,
+                });
+            }
+        }
+        
+        // Sort by score (descending)
+        search_results.sort_by(|a, b| b.score.cmp(&a.score));
+        
+        // For global search, we don't use filtered_indexes since we're showing different files
+        self.search_results = search_results;
+        self.filtered_indexes.clear();
     }
 
     pub fn byte_index(&mut self) -> usize {
@@ -227,21 +435,19 @@ impl App {
         new_cursor_pos.clamp(0, self.create_edit_file_name.chars().count())
     }
 
-    pub fn handle_arguments(&mut self, args: Vec<String>) {
+    pub fn handle_arguments(&mut self, args: Vec<String>) -> AppResult<()> {
         if args.len() > 1 {
             let ide = &args[1];
 
             let validated_ide = self.validate_user_input(ide);
 
             if let Some(selection) = validated_ide {
-                //
                 self.selected_id = Some(selection);
             } else {
-                panic!(
-                    "Invalid IDE selection, Please select from the following: nvim, vscode, zed"
-                );
+                return Err(AppError::invalid_ide(ide));
             }
         }
+        Ok(())
     }
 
     pub fn get_selected_ide(&self) -> Option<String> {
@@ -251,6 +457,326 @@ impl App {
                 IDE::VSCODE => Some("vscode".to_string()),
                 IDE::ZED => Some("zed".to_string()),
             }
+        } else {
+            None
+        }
+    }
+
+    /// Update filtered indexes and labels when file list changes
+    pub fn update_file_references(&mut self) {
+        // Reset filtered indexes to show all files
+        self.filtered_indexes.clear();
+        self.file_read_only_label_list.clear();
+        
+        for (index, file) in self.files.iter().enumerate() {
+            let new_path = Path::new(file);
+            let get_file_name = new_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| {
+                    // Fallback to the full path if filename extraction fails
+                    file.clone()
+                });
+
+            self.filtered_indexes.push(index);
+            self.file_read_only_label_list.push(get_file_name);
+        }
+        
+        // Clear any search input when navigating
+        if !self.input.is_empty() && self.input_mode != InputMode::Editing {
+            self.input.clear();
+        }
+        
+        // Invalidate cached list items when file list changes
+        self.cached_list_items_valid = false;
+        
+        // Update pagination when file list changes
+        self.update_pagination();
+    }
+    
+    /// Get cached list items for UI rendering (performance optimization)
+    pub fn get_cached_list_items(&mut self) -> &Vec<String> {
+        if !self.cached_list_items_valid {
+            self.rebuild_cached_list_items();
+        }
+        &self.cached_list_items
+    }
+    
+    /// Rebuild the cached list items from current file list
+    fn rebuild_cached_list_items(&mut self) {
+        self.cached_list_items.clear();
+        
+        for path in &self.files {
+            let new_path = Path::new(path);
+            let file_name = new_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_string())
+                .unwrap_or_else(|| path.clone());
+                
+            self.cached_list_items.push(file_name);
+        }
+        
+        self.cached_list_items_valid = true;
+    }
+    
+    /// Get the current page of files for display (pagination support)
+    pub fn get_current_page_items(&self) -> Vec<usize> {
+        if !self.pagination_enabled {
+            return self.filtered_indexes.clone();
+        }
+        
+        let start_idx = self.current_page * self.items_per_page;
+        let end_idx = ((self.current_page + 1) * self.items_per_page).min(self.filtered_indexes.len());
+        
+        self.filtered_indexes[start_idx..end_idx].to_vec()
+    }
+    
+    /// Navigate to the next page
+    pub fn next_page(&mut self) {
+        if self.pagination_enabled && self.current_page + 1 < self.total_pages {
+            self.current_page += 1;
+        }
+    }
+    
+    /// Navigate to the previous page
+    pub fn prev_page(&mut self) {
+        if self.pagination_enabled && self.current_page > 0 {
+            self.current_page -= 1;
+        }
+    }
+    
+    /// Update pagination when file list changes
+    pub fn update_pagination(&mut self) {
+        let file_count = self.filtered_indexes.len();
+        let pagination_threshold = 500;
+        
+        self.pagination_enabled = file_count > pagination_threshold;
+        
+        if self.pagination_enabled {
+            self.items_per_page = 200;
+            self.total_pages = (file_count + self.items_per_page - 1) / self.items_per_page;
+            // Reset to first page when file list changes significantly
+            if self.current_page >= self.total_pages {
+                self.current_page = 0;
+            }
+        } else {
+            self.items_per_page = file_count;
+            self.total_pages = 1;
+            self.current_page = 0;
+        }
+    }
+    
+    /// Get pagination info for display
+    pub fn get_pagination_info(&self) -> Option<String> {
+        if self.pagination_enabled && self.total_pages > 1 {
+            Some(format!(
+                "Page {}/{} ({} items per page)",
+                self.current_page + 1,
+                self.total_pages,
+                self.items_per_page
+            ))
+        } else {
+            None
+        }
+    }
+    
+    /// Start watching a directory for file system changes
+    pub fn start_watching_directory<P: AsRef<Path>>(&mut self, directory_path: P) -> Result<(), String> {
+        let path = directory_path.as_ref();
+        
+        // Stop any existing watcher
+        self.stop_watching();
+        
+        // Create new watcher
+        let mut watcher = FileSystemWatcher::new()
+            .map_err(|e| format!("Failed to create file watcher: {}", e))?;
+        
+        // Start watching the directory
+        watcher.watch_directory(path)
+            .map_err(|e| format!("Failed to start watching directory: {}", e))?;
+        
+        // Store the watcher and current directory
+        self.file_watcher = Some(watcher);
+        self.current_directory = path.to_string_lossy().to_string();
+        
+        debug!("Started watching directory: {}", path.display());
+        Ok(())
+    }
+    
+    /// Stop watching the current directory
+    pub fn stop_watching(&mut self) {
+        if let Some(mut watcher) = self.file_watcher.take() {
+            watcher.stop_watching();
+            debug!("Stopped watching directory: {}", self.current_directory);
+        }
+        self.current_directory.clear();
+    }
+    
+    /// Check for file system events and update the application state accordingly
+    pub fn process_file_system_events(&mut self) -> Vec<String> {
+        let mut messages = Vec::new();
+        
+        if let Some(ref watcher) = self.file_watcher {
+            let events = watcher.poll_events();
+            
+            for event in events {
+                match event {
+                    WatcherEvent::FilesCreated(paths) => {
+                        let count = paths.len();
+                        if count == 1 {
+                            if let Some(path) = paths.first() {
+                                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                                    messages.push(format!("File created: {}", filename));
+                                }
+                            }
+                        } else {
+                            messages.push(format!("{} files created", count));
+                        }
+                        self.refresh_file_list();
+                    },
+                    WatcherEvent::FilesDeleted(paths) => {
+                        let count = paths.len();
+                        if count == 1 {
+                            if let Some(path) = paths.first() {
+                                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                                    messages.push(format!("File deleted: {}", filename));
+                                }
+                            }
+                        } else {
+                            messages.push(format!("{} files deleted", count));
+                        }
+                        self.refresh_file_list();
+                    },
+                    WatcherEvent::FilesModified(paths) => {
+                        // Only show modification messages for single files to avoid spam
+                        if paths.len() == 1 {
+                            if let Some(path) = paths.first() {
+                                if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                                    messages.push(format!("File modified: {}", filename));
+                                }
+                            }
+                        }
+                        // Don't refresh file list for modifications unless it's a significant change
+                    },
+                    WatcherEvent::FilesRenamed { from, to } => {
+                        if from.len() == 1 && to.len() == 1 {
+                            if let (Some(old_name), Some(new_name)) = (
+                                from.first().and_then(|p| p.file_name()).and_then(|n| n.to_str()),
+                                to.first().and_then(|p| p.file_name()).and_then(|n| n.to_str())
+                            ) {
+                                messages.push(format!("File renamed: {} → {}", old_name, new_name));
+                            }
+                        } else {
+                            messages.push(format!("{} files renamed", from.len().max(to.len())));
+                        }
+                        self.refresh_file_list();
+                    },
+                    WatcherEvent::DirectoryChanged => {
+                        messages.push("Directory changed".to_string());
+                        self.refresh_file_list();
+                    },
+                    WatcherEvent::WatcherError(error) => {
+                        messages.push(format!("File watcher error: {}", error));
+                        // Consider stopping the watcher on persistent errors
+                        self.stop_watching();
+                    }
+                }
+            }
+        }
+        
+        messages
+    }
+    
+    /// Refresh the file list from the current directory
+    /// This should be called when file system events indicate changes
+    fn refresh_file_list(&mut self) {
+        if self.current_directory.is_empty() {
+            return;
+        }
+        
+        // This is a placeholder - in a real implementation, you would:
+        // 1. Re-scan the current directory
+        // 2. Update self.files with the new list
+        // 3. Call self.update_file_references() to update indexes and labels
+        // 4. Reset pagination and search state if needed
+        
+        // For now, we'll just mark the cached items as invalid so they get rebuilt
+        self.cached_list_items_valid = false;
+        
+        debug!("File list refresh requested for: {}", self.current_directory);
+    }
+    
+    /// Start cache loading and set up progress tracking
+    pub fn start_cache_loading(&mut self, receiver: std::sync::mpsc::Receiver<crate::directory_store::CacheBuildProgress>) {
+        self.input_mode = InputMode::CacheLoading;
+        self.cache_loading_progress = Some(receiver);
+        self.cache_directories_processed = 0;
+        self.cache_current_directory = String::new();
+        self.cache_loading_complete = false;
+    }
+    
+    /// Process cache loading progress messages
+    pub fn process_cache_loading_progress(&mut self) -> bool {
+        if let Some(ref receiver) = self.cache_loading_progress {
+            // Check for new progress messages
+            while let Ok(progress) = receiver.try_recv() {
+                match progress {
+                    crate::directory_store::CacheBuildProgress::Progress { 
+                        directories_found, 
+                        current_path 
+                    } => {
+                        self.cache_directories_processed = directories_found;
+                        self.cache_current_directory = current_path;
+                    },
+                    crate::directory_store::CacheBuildProgress::Completed { 
+                        store 
+                    } => {
+                        // Store the completed cache for later use
+                        self.completed_cache_store = Some(store);
+                        self.cache_loading_complete = true;
+                        self.cache_loading_progress = None;
+                        return true; // Cache loading is complete
+                    },
+                    crate::directory_store::CacheBuildProgress::Error(error_msg) => {
+                        // Handle cache loading error
+                        debug!("Cache loading error: {}", error_msg);
+                        self.cache_loading_complete = true;
+                        self.cache_loading_progress = None;
+                        // Set input mode back to normal even on error
+                        self.input_mode = InputMode::Normal;
+                        return true; // Stop loading even on error
+                    }
+                }
+            }
+        }
+        false // Cache loading is still in progress
+    }
+    
+    /// Finish cache loading and switch back to normal mode
+    pub fn finish_cache_loading(&mut self, directories: Vec<String>) {
+        // Update the files list with the loaded cache
+        self.files = directories;
+        
+        // Update file references and reset UI state
+        self.update_file_references();
+        
+        // Switch back to normal input mode
+        self.input_mode = InputMode::Normal;
+        
+        // Clear cache loading state
+        self.cache_loading_progress = None;
+        self.cache_directories_processed = 0;
+        self.cache_current_directory = String::new();
+        self.cache_loading_complete = false;
+        self.completed_cache_store = None;
+    }
+    
+    /// Get cache loading progress information for display
+    pub fn get_cache_loading_info(&self) -> Option<(usize, String)> {
+        if self.input_mode == InputMode::CacheLoading {
+            Some((self.cache_directories_processed, self.cache_current_directory.clone()))
         } else {
             None
         }

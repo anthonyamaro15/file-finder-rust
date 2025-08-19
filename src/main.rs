@@ -9,6 +9,8 @@ use std::{
     io::{self, ErrorKind, Stdout},
     path::{Path, PathBuf},
     process::Command,
+    sync::{mpsc, Arc, Mutex},
+    thread,
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings};
 use walkdir::WalkDir;
@@ -29,10 +31,19 @@ use ratatui::{
 };
 
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
+mod utils;
 
-use crate::directory_store::{
-    build_directory_from_store, load_directory_from_file, save_directory_to_file,
+use crate::{
+    directory_store::{
+        build_directory_from_store, load_directory_from_file, save_directory_to_file,
+        build_directory_from_store_async, CacheBuildProgress,
+    },
+    ui::{FileListContent, ListFileItem, Ui},
+    utils::init,
+    status_bar::StatusBar,
+    theme::OneDarkTheme,
 };
+use log::{debug, logger, trace, warn};
 
 extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
@@ -42,6 +53,12 @@ mod configuration;
 mod directory_store;
 mod file_reader_content;
 mod ui;
+mod errors;
+mod status_bar;
+mod watcher;
+mod theme;
+
+//  log_to_file(format!("kind => {:?}", kind));
 
 #[derive(Clone)]
 enum SortType {
@@ -59,27 +76,52 @@ enum SortBy {
 
 #[derive(Clone)]
 struct ImageGenerator {
-    image: Option<Box<dyn StatefulProtocol>>,
+    has_image: bool,
+    image_info: String,
 }
 
 impl ImageGenerator {
     pub fn new() -> ImageGenerator {
-        ImageGenerator { image: None }
+        ImageGenerator { 
+            has_image: false,
+            image_info: String::new(),
+        }
     }
 
     pub fn load_img(&mut self, path: String) {
-        let mut picker = Picker::new((8, 12));
-        picker.guess_protocol();
-
-        let dyn_img = ImageReader::open(path)
-            .expect("unable to open img")
-            .decode()
-            .expect("unable to decode image");
-        let image = picker.new_resize_protocol(dyn_img);
-
-        self.image = Some(image);
-
-        //ImageGenerator {image: Some(image)}
+        match ImageReader::open(&path) {
+            Ok(reader) => {
+                // Save format before calling decode since decode consumes reader
+                let format = reader.format().map(|f| format!("{:?}", f)).unwrap_or_else(|| "Unknown".to_string());
+                match reader.decode() {
+                    Ok(dyn_img) => {
+                        let width = dyn_img.width();
+                        let height = dyn_img.height();
+                        
+                        self.image_info = format!(
+                            "Image Preview\n\nDimensions: {}x{}\nFormat: {}\n\nNote: Image rendering in terminal is limited.\nUse external viewer for full image experience.",
+                            width, height, format
+                        );
+                        self.has_image = true;
+                    }
+                    Err(e) => {
+                        debug!("Failed to decode image {}: {}", path, e);
+                        self.has_image = false;
+                        self.image_info = format!("Failed to decode image: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Failed to open image {}: {}", path, e);
+                self.has_image = false;
+                self.image_info = format!("Failed to open image: {}", e);
+            }
+        }
+    }
+    
+    pub fn clear(&mut self) {
+        self.has_image = false;
+        self.image_info.clear();
     }
 }
 
@@ -151,57 +193,51 @@ fn sort_entries_by_type(
     entries
 }
 
-// TODO: refator this method, too many string conversions
+// Optimized parallel file processing with rayon
 fn convert_file_path_to_string(
     entries: Vec<PathBuf>,
     show_hidden: bool,
     sort_by: SortBy,
     sort_type: SortType,
 ) -> Vec<String> {
-    let mut file_strings: Vec<String> = Vec::new();
-
+    use rayon::prelude::*;
+    
     let sort_entries = sort_entries_by_type(sort_by, sort_type, entries);
-    let mut path_buf_list = Vec::new();
-
-    for value in sort_entries {
-        if value.is_dir() {
-            path_buf_list.push(value);
-        } else if value.is_file() {
-            let file_name = value.file_name().unwrap();
-
-            path_buf_list.push(value);
-            /* if !file_name.to_str().unwrap().ends_with("png") {
-                path_buf_list.push(value);
-            } */
-        }
-    }
-    if !show_hidden {
-        for entry in path_buf_list {
-            if entry.is_dir() {
-                let file = entry.clone().into_os_string().to_str().unwrap().to_string();
-                file_strings.push(file);
-            } else if entry.is_file() {
-                let file_name = entry.file_name().unwrap().to_str().unwrap();
-                if !file_name.starts_with(".") {
-                    let entry_value = entry.to_str().unwrap().to_string();
-                    file_strings.push(entry_value);
+    
+    // Filter and process files in parallel
+    let filtered_entries: Vec<PathBuf> = sort_entries
+        .into_par_iter()
+        .filter(|value| {
+            if value.is_dir() {
+                true
+            } else if value.is_file() {
+                if !show_hidden {
+                    value.file_name()
+                        .and_then(|name| name.to_str())
+                        .map(|name| !name.starts_with("."))
+                        .unwrap_or(false)
+                } else {
+                    true
                 }
+            } else {
+                false
             }
-        }
-    } else {
-        for entry in path_buf_list {
-            let file = entry.clone().into_os_string().to_str().unwrap().to_string();
-            file_strings.push(file);
-        }
-    }
-
-    file_strings
+        })
+        .collect();
+    
+    // Convert to strings in parallel
+    filtered_entries
+        .into_par_iter()
+        .filter_map(|entry| {
+            entry.to_str().map(|s| s.to_string())
+        })
+        .collect()
 }
 
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: App,
+    app: &App,
 ) -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -406,21 +442,66 @@ fn get_metadata_info(path: String) -> anyhow::Result<Option<Metadata>> {
     Ok(metadata)
 }
 
+fn format_file_size(size: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = size as f64;
+    let mut unit_index = 0;
+    
+    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_index += 1;
+    }
+    
+    if unit_index == 0 {
+        format!("{} {}", size as u64, UNITS[unit_index])
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_index])
+    }
+}
+
+fn format_system_time(time: std::time::SystemTime) -> String {
+    use std::time::{Duration, UNIX_EPOCH};
+    
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => {
+            let secs = duration.as_secs();
+            let days = secs / 86400;
+            let hours = (secs % 86400) / 3600;
+            let minutes = (secs % 3600) / 60;
+            
+            if days > 0 {
+                format!("{}d ago", days)
+            } else if hours > 0 {
+                format!("{}h ago", hours)
+            } else if minutes > 0 {
+                format!("{}m ago", minutes)
+            } else {
+                "just now".to_string()
+            }
+        }
+        Err(_) => "unknown".to_string()
+    }
+}
+
 fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> String {
     let metadata_info = match metadata {
         Ok(res) => match res {
             Some(info) => {
-                let size = info.len();
+                let size = format_file_size(info.len());
                 let permissions = info.permissions();
-
-                let format_str = format!("size: {} | permission: {}", size, permissions.readonly());
-                format_str
+                let readonly = if permissions.readonly() { "RO" } else { "RW" };
+                
+                // Try to get modification time
+                let modified = info.modified()
+                    .map(format_system_time)
+                    .unwrap_or_else(|_| "unknown".to_string());
+                
+                format!("{} | {} | modified {}", size, readonly, modified)
             }
             None => String::from("Info not available"),
         },
         Err(_) => {
-            println!("errr from here",);
-            String::from("Encounter an error")
+            String::from("Error reading metadata")
         }
     };
 
@@ -446,7 +527,7 @@ fn create_item_based_on_type(current_file_path: String, new_item: String) -> any
     }
 }
 
-fn handle_rename(app: App) -> io::Result<()> {
+fn handle_rename(app: &App) -> io::Result<()> {
     let curr_path = format!("{}/{}", app.current_path_to_edit, app.current_name_to_edit);
     let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
 
@@ -459,12 +540,10 @@ fn handle_rename(app: App) -> io::Result<()> {
 
 fn check_if_exists(new_path: String) -> bool {
     match Path::new(&new_path).try_exists() {
-        Ok(value) => match value {
-            true => true,
-            false => false,
-        },
-        Err(e) => {
-            panic!("Error occured {:?}", e);
+        Ok(value) => value,
+        Err(_) => {
+            // If we can't determine existence, assume it doesn't exist
+            false
         }
     }
 }
@@ -477,35 +556,246 @@ fn get_curr_path(path: String) -> String {
 }
 
 fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
+    // Check if source exists
+    if !src.exists() {
+        return Err(anyhow::anyhow!("Source path does not exist: {}", src.display()));
+    }
+
+    // Check if destination already exists
+    if new_src.exists() {
+        return Err(anyhow::anyhow!("Destination already exists: {}", new_src.display()));
+    }
+
     if src.is_file() {
-        fs::copy(src, new_src)?;
-    } else {
+        // Ensure parent directory exists
+        if let Some(parent) = new_src.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("Failed to create parent directory: {}", e))?;
+        }
+        
+        fs::copy(src, new_src)
+            .map_err(|e| anyhow::anyhow!("Failed to copy file '{}' to '{}': {}", 
+                src.display(), new_src.display(), e))?;
+    } else if src.is_dir() {
+        // Create the destination directory
+        fs::create_dir_all(new_src)
+            .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
+
         let entries: Vec<_> = WalkDir::new(src)
             .into_iter()
-            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                match entry {
+                    Ok(e) => Some(e),
+                    Err(err) => {
+                        warn!("Skipping entry due to error: {}", err);
+                        None
+                    }
+                }
+            })
             .collect();
+
         entries.par_iter().try_for_each(|entry| {
             let entry_path = entry.path();
-            let relative_path = entry_path.strip_prefix(src).unwrap();
+            let relative_path = entry_path.strip_prefix(src)
+                .map_err(|e| io::Error::new(ErrorKind::Other, 
+                    format!("Failed to strip prefix: {}", e)))?;
             let dst_path = new_src.join(relative_path);
 
             if entry_path.is_dir() {
-                fs::create_dir_all(&dst_path)?;
+                fs::create_dir_all(&dst_path)
+                    .map_err(|e| io::Error::new(ErrorKind::Other, 
+                        format!("Failed to create directory '{}': {}", dst_path.display(), e)))?;
             } else if entry_path.is_file() {
                 if let Some(parent) = dst_path.parent() {
-                    fs::create_dir_all(parent)?;
+                    fs::create_dir_all(parent)
+                        .map_err(|e| io::Error::new(ErrorKind::Other, 
+                            format!("Failed to create parent directory: {}", e)))?;
                 }
-                fs::copy(entry_path, dst_path)?;
+                fs::copy(entry_path, &dst_path)
+                    .map_err(|e| io::Error::new(ErrorKind::Other, 
+                        format!("Failed to copy file '{}' to '{}': {}", 
+                            entry_path.display(), dst_path.display(), e)))?;
             } else {
-                println!("Error, file type not supported");
-                return Err(io::Error::new(ErrorKind::Other, "unsuported file type"));
+                // Skip special files (symlinks, devices, etc.)
+                warn!("Skipping unsupported file type: {}", entry_path.display());
             }
 
-            Ok(())
+            Ok::<(), io::Error>(())
         })?;
+    } else {
+        return Err(anyhow::anyhow!("Source is neither a file nor a directory: {}", src.display()));
     }
 
     Ok(())
+}
+
+// Progress message for copy operations
+#[derive(Debug, Clone)]
+enum CopyMessage {
+    Progress { files_processed: usize, total_files: usize, current_file: String },
+    Completed { success: bool, message: String },
+    Error(String),
+}
+
+// Async copy function with progress tracking
+fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<CopyMessage> {
+    let (tx, rx) = mpsc::channel();
+    let src = src.to_path_buf();
+    let new_src = new_src.to_path_buf();
+    
+    thread::spawn(move || {
+        // Check if source exists
+        if !src.exists() {
+            let _ = tx.send(CopyMessage::Error(
+                format!("Source path does not exist: {}", src.display())
+            ));
+            return;
+        }
+        
+        // Check if destination already exists
+        if new_src.exists() {
+            let _ = tx.send(CopyMessage::Error(
+                format!("Destination already exists: {}", new_src.display())
+            ));
+            return;
+        }
+        
+        let result = if src.is_file() {
+            // Single file copy
+            if let Some(parent) = new_src.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    let _ = tx.send(CopyMessage::Error(
+                        format!("Failed to create parent directory: {}", e)
+                    ));
+                    return;
+                }
+            }
+            
+            let _ = tx.send(CopyMessage::Progress {
+                files_processed: 0,
+                total_files: 1,
+                current_file: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            });
+            
+            match fs::copy(&src, &new_src) {
+                Ok(_) => {
+                    let _ = tx.send(CopyMessage::Progress {
+                        files_processed: 1,
+                        total_files: 1,
+                        current_file: src.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    });
+                    Ok(())
+                }
+                Err(e) => Err(anyhow::anyhow!(
+                    "Failed to copy file '{}' to '{}': {}", src.display(), new_src.display(), e
+                ))
+            }
+        } else if src.is_dir() {
+            // Directory copy - single pass with file counting and copying
+            if let Err(e) = fs::create_dir_all(&new_src) {
+                let _ = tx.send(CopyMessage::Error(
+                    format!("Failed to create destination directory: {}", e)
+                ));
+                return;
+            }
+            
+            // Collect all entries in one pass
+            let all_entries: Vec<_> = WalkDir::new(&src)
+                .into_iter()
+                .filter_map(|entry| {
+                    match entry {
+                        Ok(e) => Some(e),
+                        Err(err) => {
+                            warn!("Skipping entry due to error: {}", err);
+                            None
+                        }
+                    }
+                })
+                .collect();
+            
+            // Count files for progress tracking
+            let total_files = all_entries.iter()
+                .filter(|entry| entry.path().is_file())
+                .count();
+            
+            let files_processed = Arc::new(Mutex::new(0usize));
+            let progress_tx = tx.clone();
+            let progress_counter = files_processed.clone();
+            
+            // Process entries with batched progress updates
+            let mut update_counter = 0;
+            const UPDATE_INTERVAL: usize = 10; // Update progress every 10 files
+            
+            all_entries.into_iter().try_for_each(|entry| {
+                let entry_path = entry.path();
+                let relative_path = entry_path.strip_prefix(&src)
+                    .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
+                let dst_path = new_src.join(relative_path);
+                
+                if entry_path.is_dir() {
+                    fs::create_dir_all(&dst_path)
+                        .map_err(|e| anyhow::anyhow!(
+                            "Failed to create directory '{}': {}", dst_path.display(), e
+                        ))?;
+                } else if entry_path.is_file() {
+                    if let Some(parent) = dst_path.parent() {
+                        fs::create_dir_all(parent)
+                            .map_err(|e| anyhow::anyhow!(
+                                "Failed to create parent directory: {}", e
+                            ))?;
+                    }
+                    
+                    fs::copy(entry_path, &dst_path)
+                        .map_err(|e| anyhow::anyhow!(
+                            "Failed to copy file '{}' to '{}': {}", 
+                            entry_path.display(), dst_path.display(), e
+                        ))?;
+                    
+                    // Update progress counter and send batched updates
+                    {
+                        let mut count = progress_counter.lock().unwrap();
+                        *count += 1;
+                        update_counter += 1;
+                        
+                        // Send progress update every UPDATE_INTERVAL files or for the last file
+                        if update_counter >= UPDATE_INTERVAL || *count == total_files {
+                            let _ = progress_tx.send(CopyMessage::Progress {
+                                files_processed: *count,
+                                total_files,
+                                current_file: entry_path.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            });
+                            update_counter = 0;
+                        }
+                    }
+                } else {
+                    // Skip special files (symlinks, devices, etc.)
+                    warn!("Skipping unsupported file type: {}", entry_path.display());
+                }
+                
+                Ok::<(), anyhow::Error>(())
+            })
+        } else {
+            Err(anyhow::anyhow!("Source is neither a file nor a directory: {}", src.display()))
+        };
+        
+        // Send completion message
+        match result {
+            Ok(_) => {
+                let _ = tx.send(CopyMessage::Completed {
+                    success: true,
+                    message: format!("Successfully copied to {}", new_src.display()),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(CopyMessage::Error(e.to_string()));
+            }
+        }
+    });
+    
+    rx
 }
 
 fn generate_sort_by_string(sort_type: &SortType) -> String {
@@ -546,6 +836,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
+    init();
+
     let mut config = configuration::Configuration::new();
     let mut sort_type = SortType::ASC;
 
@@ -553,7 +845,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //let file_type = file_reader_content.file_type.clone();
     let mut image_generator = ImageGenerator::new();
 
-    config.handle_settings_configuration();
+    if let Err(e) = config.handle_settings_configuration() {
+        eprintln!("Configuration error: {}", e);
+        return Err(e.into());
+    }
     // Setup terminal
 
     let file_strings = get_file_path_data(
@@ -564,20 +859,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
+    // Start file system watching for the initial directory
+    if let Err(e) = app.start_watching_directory(&config.start_path) {
+        debug!("Failed to start watching directory '{}': {}", config.start_path, e);
+    } else {
+        debug!("Started watching directory: {}", config.start_path);
+    }
+
     // handle ide selection from arguments
-    app.handle_arguments(input_arguments);
+    if let Err(e) = app.handle_arguments(input_arguments) {
+        eprintln!("Error: {}", e);
+        return Ok(());
+    }
 
     let store = if Path::new(&config.cache_directory).exists() {
         let res = load_directory_from_file(&config.cache_directory.to_owned()).unwrap();
         println!("Loading directory cache from file");
         res
     } else {
-        println!("Building directory cache, Please wait...");
-        let new_store =
-            build_directory_from_store(&config.start_path.to_owned(), config.ignore_directories);
-        save_directory_to_file(&new_store, &config.cache_directory.to_owned())?;
-        new_store
+        println!("Starting asynchronous directory cache build...");
+        
+        // Start async cache building
+        let rx = build_directory_from_store_async(config.start_path.clone(), config.ignore_directories.clone());
+        
+        // Set up the app to display loading progress
+        app.start_cache_loading(rx);
+        
+        // Return empty store for now - it will be populated when cache building completes
+        crate::directory_store::DirectoryStore { directories: Vec::new() }
     };
+
+    let widgets_ui = Ui::new(app.files.clone());
+    let mut status_bar = StatusBar::new();
+
+    debug!("{:?}", widgets_ui.files_list);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -589,25 +904,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initial selected state
     let mut state = ListState::default();
     state.select(Some(0)); // Select the first item by default
-                           //
+    debug!("{:?}", state);
     let mut read_only_state = ListState::default();
     read_only_state.select(Some(0));
 
+    // Copy progress receiver (for async copy operations)
+    let mut copy_receiver: Option<mpsc::Receiver<CopyMessage>> = None;
+    
     // Main loop
     loop {
+        // Update status bar with current app state
+        status_bar.update(&app);
+        
         // Filtered items based on input
-        let filtered_items: Vec<ListItem> = app
-            .files
-            .iter()
-            .map(|file| ListItem::new(file.clone()))
-            .collect();
+        /* let filtered_items: Vec<ListItem> = app
+        .files
+        .iter()
+        .map(|file| ListItem::new(file.clone()))
+        .collect(); */
 
-        let filtered_read_only_items: Vec<ListItem> = app
-            .copy_move_read_only_files
-            .iter()
-            .map(|file| ListItem::new(file.clone()))
-            .collect();
+        // Performance optimization: Use cached list items instead of recreating vectors
+        // The UI rendering code now handles list generation efficiently
+        /* let filtered_read_only_items: Vec<ListItem> = app
+        .copy_move_read_only_files
+        .iter()
+        .map(|file| ListItem::new(file.clone()))
+        .collect(); */
 
+        // Extract image info before drawing if needed
+        let has_image = image_generator.has_image;
+        
         // Draw UI
         terminal.draw(|f| {
             let chunks = Layout::default()
@@ -626,21 +952,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .split(f.size());
 
             let (msg, style) = match app.input_mode {
-                InputMode::Normal => (
-                    vec![
-                        "Exit (q)".bold(),
-                        " find (i)".bold(),
-                        app.input.clone().bold(),
-                        " Enter to select file (enter)".bold(),
-                    ],
-                    Style::default(),
-                ),
-                InputMode::Editing => (vec!["Normal Mode (Esc)".bold()], Style::default()),
-                InputMode::WatchDelete => (vec!["Watch Delete Mode".bold()], Style::default()),
-                InputMode::WatchCreate => (vec!["Watch Delete Mode".bold()], Style::default()),
-                InputMode::WatchRename => (vec!["Watch Delete Mode".bold()], Style::default()),
-                InputMode::WatchSort => (vec!["Watch Delete Mode".bold()], Style::default()),
-                _ => (vec!["Default".bold()], Style::default()),
+                InputMode::Normal => {
+                    let search_indicator = if app.global_search_mode {
+                        " [Global Search]".bold()
+                    } else if !app.input.is_empty() {
+                        " [Local Search]".bold() 
+                    } else {
+                        " find (i)".bold()
+                    };
+                    
+                    (
+                        vec![
+                            "Exit (q)".bold(),
+                            search_indicator,
+                            app.input.clone().bold(),
+                            " Enter to select file (enter)".bold(),
+                        ],
+                        OneDarkTheme::normal(),
+                    )
+                },
+                InputMode::Editing => {
+                    let mode_text = if app.global_search_mode {
+                        "Global Search Mode (Esc to exit)".bold()
+                    } else {
+                        "Local Search Mode (Esc to exit)".bold()
+                    };
+                    (vec![mode_text], OneDarkTheme::search_active())
+                },
+                InputMode::WatchDelete => (vec!["Delete Mode".bold()], OneDarkTheme::error()),
+                InputMode::WatchCreate => (vec!["Create Mode".bold()], OneDarkTheme::success()),
+                InputMode::WatchRename => (vec!["Rename Mode".bold()], OneDarkTheme::warning()),
+                InputMode::WatchSort => (vec!["Sort Mode".bold()], OneDarkTheme::info()),
+                InputMode::CacheLoading => {
+                    let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
+                    (
+                        vec![
+                            "⚡ Building directory cache...".bold(),
+                            format!(" {} directories processed", directories_processed).bold(),
+                            if !current_directory.is_empty() {
+                                format!(" Processing: {}", current_directory).bold()
+                            } else {
+                                " Starting cache build...".bold()
+                            },
+                        ],
+                        OneDarkTheme::loading(),
+                    )
+                },
+                _ => (vec!["Default".bold()], OneDarkTheme::normal()),
             };
 
             let inner_layout = Layout::default()
@@ -651,26 +1009,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ])
                 .split(chunks[2]);
 
-            // Input field
+            // Input field with OneDark theming
+            let search_title = if app.global_search_mode {
+                "🔍 Global Search"
+            } else if app.input_mode == InputMode::Editing {
+                "🔍 Local Search"
+            } else {
+                "🔍 Search"
+            };
+            
             let input_block = Paragraph::new(app.input.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("Search")
+                        .title(search_title)
                         .style(match app.input_mode {
-                            InputMode::Normal => Style::default().fg(Color::White),
-                            InputMode::Editing => Style::default().fg(Color::Green),
-                            _ => Style::default().fg(Color::White),
+                            InputMode::Normal => OneDarkTheme::inactive_border(),
+                            InputMode::Editing => {
+                                if app.global_search_mode {
+                                    OneDarkTheme::global_search()
+                                } else {
+                                    OneDarkTheme::local_search()
+                                }
+                            },
+                            _ => OneDarkTheme::disabled(),
                         }),
                 )
                 .style(match app.input_mode {
-                    InputMode::Editing => Style::default().fg(Color::White),
-                    InputMode::Normal => Style::default().fg(Color::White),
-                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
-                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
-                    InputMode::WatchRename => Style::default().fg(Color::Gray),
-                    InputMode::WatchSort => Style::default().fg(Color::Gray),
-                    _ => Style::default().fg(Color::Gray),
+                    InputMode::Editing => OneDarkTheme::normal(),
+                    InputMode::Normal => OneDarkTheme::normal(),
+                    _ => OneDarkTheme::disabled(),
                 });
 
             let mut list_title = String::new();
@@ -687,7 +1055,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //    - if type if dir then render its content 
             //    - if type is file then display content of file if posible
             // 3. preview mode will only apply when in normal MODE, 
-            let list_block = List::new(filtered_items.clone())
+            /* let list_block = List::new(filtered_read_only_items.clone())
+            //let list_block = List::new(filtered_items.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -712,7 +1081,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     InputMode::WatchRename => Style::default().fg(Color::Gray),
                     InputMode::WatchSort => Style::default().fg(Color::Gray),
                     _ => Style::default().fg(Color::Gray),
-                });
+                }); */
 
             //let preview_list_path = get_preview_path(app.files.clone());
 
@@ -744,7 +1113,30 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
 
             }; */
             // TODO: handle first item preview
-            let list_preview_block = List::new(app.preview_files.clone()).block(
+        //let mut current_prev_list : Vec<ListFileItem> = Vec::new();
+       /* for path in app.preview_files.iter() {
+
+       let create_item_list = ListFileItem {
+        label: String::from("testing preview"),
+        //label: String::from(format!("label: {}", path)),
+        path: String::from(path)
+
+    };
+
+            current_prev_list.push(create_item_list);
+
+    //debug!("{:?}",path);
+
+        } */
+
+    /* let filtered_curr_read_only_items: Vec<ListItem> =
+           current_prev_list
+            .iter()
+            .map(|file| ListItem::from(file.label.clone()))
+            .collect(); */
+
+            /* let list_preview_block = List::new(filtered_curr_read_only_items).block(
+            //let list_preview_block = List::new(app.preview_files.clone()).block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("Preview")
@@ -755,42 +1147,11 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                         }), //.title("Filtered List"),
                 )
                 //.highlight_symbol(">")
-                .style(Style::default().fg(Color::DarkGray));
+                .style(Style::default().fg(Color::DarkGray)); */
 
 
-            let footer_outer_layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints(vec![Constraint::Percentage(100)])
-                .split(chunks[3]);
-
-            let footer_inner_layout = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(footer_outer_layout[0]);
-
-            let bottom_instructions = Span::styled(
-                "Open with selected IDE: <Enter> | Keybindings: ?",
-                Style::default(),
-            );
-            //let default_empty_label = Span::styled("", Style::default());
-let footer_stats =
-                Text::from(Line::from(Span::styled(app.curr_stats.clone(), Style::default())));
-                        let footer_stats_paragraph = Paragraph::new(footer_stats)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-                 f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
-
-             match app.files.len() > 0 {
-                true => {
-        },
-                false =>{}
-                };
-
-            let instructions = Text::from(Line::from(bottom_instructions));
-
-            let parsed_instructions = Paragraph::new(instructions)
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
+            // Render the enhanced status bar
+            status_bar.render(f, chunks[3], &app);
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
@@ -817,72 +1178,145 @@ let footer_stats =
             //f.render_widget(parsed_instructions.clone(), chunks[3]);
             //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
             // f.render_widget(list_block, inner_layout[1]);
-            f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            //f.render_stateful_widget(list_block.clone(), inner_layout[0], &mut state);
+            //
+            //
+
+            // Handle cache loading screen or normal list rendering
+            match app.input_mode {
+                InputMode::CacheLoading => {
+                    // Render cache loading screen
+                    let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
+                    
+                    // Create a simple loading screen with progress info and spinner
+                    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                    let spinner_index = (directories_processed / 10) % spinner_chars.len(); // Update every 10 directories
+                    let spinner = spinner_chars[spinner_index];
+                    
+                    let loading_text = if current_directory.is_empty() {
+                        format!(
+                            "{} Building directory cache...\n\nDirectories processed: {}\n\nPlease wait while the cache is being built.",
+                            spinner, directories_processed
+                        )
+                    } else {
+                        let display_dir = if current_directory.len() > 60 {
+                            format!("...{}", &current_directory[current_directory.len() - 57..])
+                        } else {
+                            current_directory.clone()
+                        };
+                        
+                        format!(
+                            "{} Building directory cache...\n\nDirectories processed: {}\nCurrent: {}\n\nPlease wait while the cache is being built.",
+                            spinner, directories_processed, display_dir
+                        )
+                    };
+                    
+                    let loading_block = Paragraph::new(loading_text)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("⚡ Directory Cache Loading")
+                                .style(OneDarkTheme::loading())
+                        )
+                        .style(OneDarkTheme::normal())
+                        .alignment(ratatui::layout::Alignment::Center);
+                    
+                    // Render loading screen across both panels
+                    f.render_widget(loading_block, chunks[2]);
+                }
+                _ => {
+                    // Normal file list rendering
+                    widgets_ui.clone().render_list_preview(f, &chunks, &mut state, &app);
+                }
+            }
 
             let t = file_reader_content.file_type.clone();
             match t {
-                FileType::FILE => {
-        image_generator.image = None;
-let file_preview_text = file_reader_content.hightlighted_content.as_ref().unwrap().clone() 
-                .block(Block::default().borders(Borders::ALL))
-                .style(Style::default());
-            f.render_widget(file_preview_text, inner_layout[1] );
+                FileType::SourceCode | FileType::Markdown | FileType::TextFile | 
+                FileType::ConfigFile | FileType::JSON => {
+                    image_generator.clear();
+                    if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
+                        let file_preview_text = highlighted_content.clone()
+                            .block(Block::default().borders(Borders::ALL).title("File Preview"))
+                            .style(Style::default());
+                        f.render_widget(file_preview_text, inner_layout[1]);
+                    } else {
+                        // Fallback for when highlighted content is not available
+                        let preview_text = Paragraph::new(app.preview_file_content.clone())
+                            .block(Block::default().borders(Borders::ALL).title("File Preview"))
+                            .style(Style::default());
+                        f.render_widget(preview_text, inner_layout[1]);
+                    }
                 }
-                FileType::IMG => {
-
-                     //let _ =image_generator.load_img(file_reader_content.curr_asset_path.clone()).clone();
-                    let image = StatefulImage::new(None);
-
-
-            f.render_stateful_widget(image, inner_layout[1], &mut image_generator.image.clone().unwrap());
-
+                FileType::Image => {
+                    if has_image {
+                        let image_info = Paragraph::new(image_generator.image_info.clone())
+                            .block(Block::default().borders(Borders::ALL).title("Image Preview"))
+                            .style(Style::default().fg(Color::Green));
+                        f.render_widget(image_info, inner_layout[1]);
+                    } else {
+                        let image_info = Paragraph::new(if image_generator.image_info.is_empty() {
+                            "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP".to_string()
+                        } else {
+                            image_generator.image_info.clone()
+                        })
+                            .block(Block::default().borders(Borders::ALL).title("Image Preview - Error"))
+                            .style(Style::default().fg(Color::Yellow));
+                        f.render_widget(image_info, inner_layout[1]);
+                    }
                 }
                 FileType::ZIP => {
-let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("ZIP Preview")
-                        .style(match app.input_mode {
-                            InputMode::Normal => Style::default().fg(Color::Green),
-                            InputMode::Editing => Style::default().fg(Color::Gray),
-                            _ => Style::default().fg(Color::Gray),
-                        }), //.title("Filtered List"),
-                )
-                .style(Style::default().fg(Color::DarkGray));
-            f.render_widget(zip_list_content, inner_layout[1], );
-
+                    let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("ZIP Archive Contents")
+                            .style(match app.input_mode {
+                                InputMode::Normal => Style::default().fg(Color::Green),
+                                InputMode::Editing => Style::default().fg(Color::Gray),
+                                _ => Style::default().fg(Color::Gray),
+                            })
+                    )
+                    .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(zip_list_content, inner_layout[1]);
+                }
+                FileType::Archive => {
+                    let archive_info = Paragraph::new(app.preview_file_content.clone())
+                        .block(Block::default().borders(Borders::ALL).title("Archive Info"))
+                        .style(Style::default());
+                    f.render_widget(archive_info, inner_layout[1]);
                 }
                 FileType::CSV => {
-let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Preview")
-                        .style(match app.input_mode {
-                            InputMode::Normal => Style::default().fg(Color::Green),
-                            InputMode::Editing => Style::default().fg(Color::Gray),
-                            _ => Style::default().fg(Color::Gray),
-                        }), //.title("Filtered List"),
-                )
-                //.highlight_symbol(">")
-                .style(Style::default().fg(Color::DarkGray));
-            f.render_widget(csv_list_content, inner_layout[1], );
-
+                    let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("CSV Data Preview")
+                            .style(match app.input_mode {
+                                InputMode::Normal => Style::default().fg(Color::Green),
+                                InputMode::Editing => Style::default().fg(Color::Gray),
+                                _ => Style::default().fg(Color::Gray),
+                            })
+                    )
+                    .style(Style::default().fg(Color::DarkGray));
+                    f.render_widget(csv_list_content, inner_layout[1]);
+                }
+                FileType::Binary => {
+                    let binary_info = Paragraph::new(app.preview_file_content.clone())
+                        .block(Block::default().borders(Borders::ALL).title("Binary File"))
+                        .style(Style::default().fg(Color::Yellow));
+                    f.render_widget(binary_info, inner_layout[1]);
                 }
                 _ => {
-
-        image_generator.image = None;
-            f.render_stateful_widget(list_preview_block, inner_layout[1], &mut state);
+                    image_generator.clear();
+                    widgets_ui.clone().render_preview_window(f, &chunks, &mut state, &app);
                 }
             }
             //TODO: add match method here
             //f.render_stateful_widget(list_block, chunks[2], &mut state);
-            f.render_widget(parsed_instructions.clone(), footer_inner_layout[0]);
-            //f.render_widget(footer_stats_paragraph, footer_inner_layout[1]);
 
             if app.render_popup {
                 let block = Block::bordered()
-                    .title("Confirm to delete y/n")
-                    .style(Style::default().fg(Color::Red));
+                    .title("⚠️  Confirm to delete y/n")
+                    .style(OneDarkTheme::error());
                 let area = draw_popup(f.size(), 40, 7);
                 let popup_chuncks = Layout::default()
                     .direction(Direction::Horizontal)
@@ -921,13 +1355,13 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                     let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
                         .block(Block::default().borders(Borders::ALL).title(
                             match app.is_create_edit_error {
-                                false => "Create File/Dir".to_string(),
-                                true => app.error_message.to_owned(),
+                                false => "✨ Create File/Dir".to_string(),
+                                true => format!("❌ {}", app.error_message),
                             },
                         ))
                         .style(match app.is_create_edit_error {
-                            true => Style::default().fg(Color::Red),
-                            false => Style::default().fg(Color::LightGreen),
+                            true => OneDarkTheme::error(),
+                            false => OneDarkTheme::success(),
                         });
 
                     f.render_widget(Clear, popup_chuncks[0]);
@@ -935,8 +1369,8 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                 }
                 InputMode::WatchRename => {
                     let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                        .block(Block::default().borders(Borders::ALL).title("Enter file/dir name"))
-                        .style(Style::default().fg(Color::LightGreen));
+                        .block(Block::default().borders(Borders::ALL).title("✏️  Enter file/dir name"))
+                        .style(OneDarkTheme::warning());
 
                     f.render_widget(create_input_block, popup_chuncks[0]);
                 }
@@ -951,8 +1385,8 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                     let sort_by_text = generate_sort_by_string(&sort_type);
                     let list_items = Text::from(lines);
                     let p = Paragraph::new(list_items)
-                        .block(Block::default().borders(Borders::ALL).title(sort_by_text))
-                        .style(Style::default().fg(Color::LightGreen));
+                        .block(Block::default().borders(Borders::ALL).title(format!("🔄 {}", sort_by_text)))
+                        .style(OneDarkTheme::info());
                     f.render_widget(Clear, sort_options_chunks[0]);
                     f.render_widget(p, sort_options_chunks[0]);
 
@@ -960,81 +1394,181 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                 }
                 InputMode::WatchKeyBinding => {
                     let lines = vec![
-                        Line::from("< Enter >: Open directory with selected IDE. copy path if not IDE option provided."),
-                        Line::from("< s >: Sort"),
-                        Line::from("< a >: Create new"),
-                        Line::from("< d >: Delete"),
-                        Line::from("< i >: Search mode"),
-                        Line::from("< c >: Copy dir/file"),
-                        Line::from("<.> : Show hidden files"),
+                        Line::from("<Enter>: Open directory with selected IDE. copy path if not IDE option provided."),
+                        Line::from("<s>: Sort"),
+                        Line::from("<a>: Create new"),
+                        Line::from("<d>: Delete"),
+                        Line::from("<i>: Search mode"),
+                        Line::from("<c>: Copy dir/file"),
+                        Line::from("<.>: Show hidden files"),
+                        Line::from(""),
+                        Line::from("-- Search Features --"),
+                        Line::from("Type in search mode to use fuzzy search with scoring and ranking"),
+                        Line::from("Start search with space or / to search across entire directory tree"),
+                        Line::from("Results sorted by relevance with highlighting of matched text"),
+                        Line::from("Search history is available using up/down arrow keys"),
                     ];
 
                     let sort_by_text = generate_sort_by_string(&sort_type);
                     let list_items = Text::from(lines);
                     let paragraph = Paragraph::new(list_items)
-                        .block(Block::default().borders(Borders::ALL).title(sort_by_text))
-                        .style(Style::default().fg(Color::LightGreen));
+                        .block(Block::default().borders(Borders::ALL).title("⌨️  Keybindings"))
+                        .style(OneDarkTheme::info());
                     f.render_widget(Clear, keybinding_chunks[0]);
                     f.render_widget(paragraph, keybinding_chunks[0]);
-                }
-                InputMode::WatchCopy => {
-                    let copy_area= draw_popup(f.size(), 80, 60);
-                    let copy_popup_chuncks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .margin(1)
-                    .constraints([Constraint::Percentage(100)])
-                    .split(copy_area);
-            // TODO: add dir list here: 
-            let read_only_list = List::new(filtered_read_only_items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Select Location")
-                        .style(match app.input_mode {
-                            InputMode::Normal => Style::default().fg(Color::Green),
-                            InputMode::Editing => Style::default().fg(Color::White),
-                            _ => Style::default().fg(Color::White).bg(Color::Black),
-                        }),
-                )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol(">")
-                .style(match app.input_mode {
-                    InputMode::Normal => Style::default().fg(Color::White),
-                    InputMode::Editing => Style::default().fg(Color::White),
-                    InputMode::WatchDelete => Style::default().fg(Color::Gray),
-                    InputMode::WatchCreate => Style::default().fg(Color::Gray),
-                    InputMode::WatchRename => Style::default().fg(Color::Gray),
-                    InputMode::WatchSort => Style::default().fg(Color::Gray),
-                    _ => Style::default().fg(Color::Gray),
-                });
-                f.render_widget(Clear, copy_area);
-                f.render_stateful_widget(read_only_list, copy_popup_chuncks[0], &mut read_only_state);
                 }
                 _ => {}
             }
         })?;
-
-        // Handle input
-        if let Event::Key(key) = event::read()? {
-            match app.input_mode {
+        
+        // Handle copy progress messages
+        if let Some(ref rx) = copy_receiver {
+            // Use try_recv to avoid blocking the UI
+            match rx.try_recv() {
+                Ok(CopyMessage::Progress { files_processed, total_files, current_file }) => {
+                    app.copy_files_processed = files_processed;
+                    app.copy_total_files = total_files;
+                    app.copy_progress_message = format!("Copying: {}", current_file);
+                }
+                Ok(CopyMessage::Completed { success, message }) => {
+                    if success {
+                        debug!("Copy completed: {}", message);
+                        
+                        // Refresh file lists to show the copied item
+                        if let Ok(file_path_list) = get_file_path_data(
+                            config.start_path.to_owned(),
+                            app.show_hidden_files,
+                            SortBy::Default,
+                            &sort_type,
+                        ) {
+                            app.files = file_path_list.clone();
+                            app.read_only_files = file_path_list;
+                            app.update_file_references();
+                        }
+                    } else {
+                        warn!("Copy failed: {}", message);
+                    }
+                    
+                    // Reset copy state
+                    app.copy_in_progress = false;
+                    app.copy_progress_message.clear();
+                    app.copy_files_processed = 0;
+                    app.copy_total_files = 0;
+                    copy_receiver = None;
+                }
+                Ok(CopyMessage::Error(error_msg)) => {
+                    warn!("Copy operation failed: {}", error_msg);
+                    
+                    // Reset copy state
+                    app.copy_in_progress = false;
+                    app.copy_progress_message = format!("Copy failed: {}", error_msg);
+                    app.copy_files_processed = 0;
+                    app.copy_total_files = 0;
+                    copy_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // No new messages, continue
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Copy thread finished, reset state
+                    app.copy_in_progress = false;
+                    app.copy_progress_message.clear();
+                    app.copy_files_processed = 0;
+                    app.copy_total_files = 0;
+                    copy_receiver = None;
+                }
+            }
+        }
+        
+        // Process file system events
+        let fs_events = app.process_file_system_events();
+        if !fs_events.is_empty() {
+            // File system changes detected, refresh the file list
+            if let Ok(file_path_list) = get_file_path_data(
+                config.start_path.to_owned(),
+                app.show_hidden_files,
+                SortBy::Default,
+                &sort_type,
+            ) {
+                app.files = file_path_list.clone();
+                app.read_only_files = file_path_list;
+                app.update_file_references();
+                
+                // Log the file system events for debugging
+                for event_msg in fs_events {
+                    debug!("File system event: {}", event_msg);
+                }
+            }
+        }
+        
+        // Process cache loading progress
+        if app.input_mode == InputMode::CacheLoading {
+            if app.process_cache_loading_progress() {
+                // Cache loading is complete, finish setup
+                debug!("Cache loading completed, finalizing...");
+                
+                // Use the completed cache if available, otherwise fallback to current directory
+                let completed_directories = if let Some(ref cache_store) = app.completed_cache_store {
+                    debug!("Using completed cache with {} directories", cache_store.directories.len());
+                    
+                    // Save the cache to file for future use
+                    match crate::directory_store::save_directory_to_file(cache_store, &config.cache_directory) {
+                        Ok(()) => {
+                            debug!("Successfully saved cache to file: {}", config.cache_directory);
+                        },
+                        Err(e) => {
+                            debug!("Failed to save cache to file: {}", e);
+                        }
+                    }
+                    
+                    // Return the cache directories for the UI
+                    cache_store.directories.clone()
+                } else {
+                    debug!("No completed cache available, falling back to current directory");
+                    // Fallback to current directory files
+                    get_file_path_data(
+                        config.start_path.clone(),
+                        false,
+                        SortBy::Default,
+                        &sort_type,
+                    ).unwrap_or_else(|_| Vec::new())
+                };
+                
+                // Update app with the directories and switch to normal mode
+                app.finish_cache_loading(completed_directories);
+                
+                debug!("Cache loading finished, app is now in normal mode");
+            }
+        }
+        
+        // Handle input with timeout for dynamic progress updates
+        let timeout = std::time::Duration::from_millis(100); // 100ms timeout
+        if let Ok(available) = event::poll(timeout) {
+            if available {
+                if let Event::Key(key) = event::read()? {
+                    match app.input_mode {
                 InputMode::Normal => match key.code {
                     KeyCode::Char('i') => {
                         app.input_mode = InputMode::Editing;
                         file_reader_content.file_type = FileType::NotAvailable;
-                        image_generator.image = None;
+                        image_generator.clear();
                     }
                     KeyCode::Char('q') => {
                         break;
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if app.files.len() > 0 {
+                        // Determine the list length based on current mode
+                        // Use search results if we have any (either global or local search)
+                        let list_len = if !app.search_results.is_empty() {
+                            app.search_results.len()
+                        } else {
+                            app.files.len()
+                        };
+                        
+                        if list_len > 0 {
                             let i = match state.selected() {
                                 Some(i) => {
-                                    if i >= app.files.len() - 1 {
+                                    if i >= list_len - 1 {
                                         0
                                     } else {
                                         i + 1
@@ -1045,7 +1579,15 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                             state.select(Some(i));
                             app.curr_index = Some(i);
 
-                            let selected_cur_path = &app.files[i];
+                            // Get the selected path based on current mode
+                            // Use search results if we have any (either global or local search)
+                            let selected_cur_path = if !app.search_results.is_empty() {
+                                &app.search_results[i].file_path
+                            } else {
+                                &app.files[i]
+                            };
+                            
+                            debug!("check here: {:?}", selected_cur_path);
                             let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
 
@@ -1056,7 +1598,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                 if let Some(file_names) =
                                     get_content_from_path(selected_cur_path.to_string())
                                 {
-                                    image_generator.image = None;
+                                    image_generator.clear();
                                     file_reader_content.file_type = FileType::NotAvailable;
                                     app.preview_files = file_names;
                                 }
@@ -1065,46 +1607,61 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                     .get_file_extension(selected_cur_path.clone());
 
                                 match file_extension {
-                                    FileType::FILE => {
-                                        image_generator.image = None;
-                                        file_reader_content.file_type = FileType::FILE;
+                                    FileType::SourceCode | FileType::Markdown | FileType::TextFile | 
+                                    FileType::ConfigFile | FileType::JSON => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = file_extension.clone();
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
 
                                         let curr_file_type = file_reader_content
                                             .get_file_extension_type(selected_cur_path.clone());
 
-                                        //app.input = curr_file_type.clone().unwrap().clone();
-
                                         let highlighted_content = file_reader_content
-                                        .get_highlighted_content(file_content, curr_file_type);
+                                            .get_highlighted_content(file_content, curr_file_type);
 
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
                                             app.preview_file_content = highlighted_content;
                                         }
                                     }
-                                    FileType::IMG => {
-                                        image_generator.image = None;
+                                    FileType::Image => {
+                                        image_generator.clear();
                                         file_reader_content.curr_asset_path =
                                             selected_cur_path.to_string();
 
                                         image_generator.load_img(selected_cur_path.clone());
-                                        file_reader_content.file_type = FileType::IMG;
+                                        file_reader_content.file_type = FileType::Image;
+                                        // Clear any previous text content
+                                        app.preview_file_content.clear();
+                                        file_reader_content.hightlighted_content = None;
                                     }
                                     FileType::ZIP => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content
                                             .read_zip_content(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::ZIP;
                                     }
+                                    FileType::Archive => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = FileType::Archive;
+                                        // For now, show archive info as text
+                                        let archive_info = format!("Archive file: {}", selected_cur_path);
+                                        app.preview_file_content = archive_info;
+                                    }
                                     FileType::CSV => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content.read_csv_content();
                                         file_reader_content.file_type = FileType::CSV;
                                     }
+                                    FileType::Binary => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = FileType::Binary;
+                                        let binary_info = format!("Binary file: {} (use external viewer)", selected_cur_path);
+                                        app.preview_file_content = binary_info;
+                                    }
                                     _ => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content.file_type = FileType::NotAvailable;
                                     }
                                 }
@@ -1114,11 +1671,19 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if app.files.len() > 0 {
+                        // Determine the list length based on current mode
+                        // Use search results if we have any (either global or local search)
+                        let list_len = if !app.search_results.is_empty() {
+                            app.search_results.len()
+                        } else {
+                            app.files.len()
+                        };
+                        
+                        if list_len > 0 {
                             let i = match state.selected() {
                                 Some(i) => {
                                     if i == 0 {
-                                        app.files.len() - 1
+                                        list_len - 1
                                     } else {
                                         i - 1
                                     }
@@ -1127,7 +1692,15 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                             };
                             state.select(Some(i));
                             app.curr_index = Some(i);
-                            let selected_cur_path = &app.files[i];
+                            
+                            // Get the selected path based on current mode
+                            // Use search results if we have any (either global or local search)
+                            let selected_cur_path = if !app.search_results.is_empty() {
+                                &app.search_results[i].file_path
+                            } else {
+                                &app.files[i]
+                            };
+                            
                             let get_metadata = get_metadata_info(selected_cur_path.to_owned());
                             let generated_metadata_str = generate_metadata_str_info(get_metadata);
                             app.curr_stats = generated_metadata_str.clone();
@@ -1139,7 +1712,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                 if let Some(file_names) =
                                     get_content_from_path(selected_cur_path.to_string())
                                 {
-                                    image_generator.image = None;
+                                    image_generator.clear();
                                     file_reader_content.file_type = FileType::NotAvailable;
                                     app.preview_files = file_names;
                                 }
@@ -1148,42 +1721,57 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                     .get_file_extension(selected_cur_path.clone());
 
                                 match file_extension {
-                                    FileType::FILE => {
-                                        image_generator.image = None;
-                                        file_reader_content.file_type = FileType::FILE;
+                                    FileType::SourceCode | FileType::Markdown | FileType::TextFile | 
+                                    FileType::ConfigFile | FileType::JSON => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = file_extension.clone();
                                         let file_content = file_reader_content
                                             .read_file_content(selected_cur_path.to_string());
                                         let curr_file_type = file_reader_content
                                             .get_file_extension_type(selected_cur_path.clone());
                                         let highlighted_content = file_reader_content
-                                        .get_highlighted_content(file_content, curr_file_type);
+                                            .get_highlighted_content(file_content, curr_file_type);
                                         // only update if there are no errors
                                         if !file_reader_content.is_error {
-                                            //app.preview_file_content = file_content;
-                                             app.preview_file_content = highlighted_content;
+                                            app.preview_file_content = highlighted_content;
                                         }
                                     }
-                                    FileType::IMG => {
-                                        // image_generator.image = None;
+                                    FileType::Image => {
+                                        image_generator.clear();
                                         file_reader_content.curr_asset_path =
                                             selected_cur_path.to_string();
 
                                         image_generator.load_img(selected_cur_path.clone());
-                                        file_reader_content.file_type = FileType::IMG;
+                                        file_reader_content.file_type = FileType::Image;
+                                        // Clear any previous text content
+                                        app.preview_file_content.clear();
+                                        file_reader_content.hightlighted_content = None;
                                     }
                                     FileType::ZIP => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content
                                             .read_zip_content(selected_cur_path.clone());
                                         file_reader_content.file_type = FileType::ZIP;
                                     }
+                                    FileType::Archive => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = FileType::Archive;
+                                        let archive_info = format!("Archive file: {}", selected_cur_path);
+                                        app.preview_file_content = archive_info;
+                                    }
                                     FileType::CSV => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content.read_csv_content();
                                         file_reader_content.file_type = FileType::CSV;
                                     }
+                                    FileType::Binary => {
+                                        image_generator.clear();
+                                        file_reader_content.file_type = FileType::Binary;
+                                        let binary_info = format!("Binary file: {} (use external viewer)", selected_cur_path);
+                                        app.preview_file_content = binary_info;
+                                    }
                                     _ => {
-                                        image_generator.image = None;
+                                        image_generator.clear();
                                         file_reader_content.file_type = FileType::NotAvailable;
                                     }
                                 }
@@ -1214,7 +1802,15 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                 if let Some(f_s) = files_strings {
                                     app.read_only_files = f_s.clone();
                                     app.files = f_s;
+                                    app.update_file_references();
                                     state.select(Some(0));
+                                    
+                                    // Start watching the new directory
+                                    if let Err(e) = app.start_watching_directory(&new_path) {
+                                        debug!("Failed to start watching directory '{}': {}", new_path, e);
+                                    } else {
+                                        debug!("Started watching directory: {}", new_path);
+                                    }
                                 }
                             }
                         } else {
@@ -1230,34 +1826,77 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                             if let Some(f_s) = files_strings {
                                 app.read_only_files = f_s.clone();
                                 app.files = f_s;
+                                app.update_file_references();
                                 state.select(Some(0));
                             }
                         }
                     }
                     KeyCode::Char('l') => {
                         let selected_index = state.selected();
-                        if app.files.len() > 0 {
+                        
+                        // Get the selected path based on current mode
+                        // Use search results if we have any (either global or local search)
+                        let selected_path = if !app.search_results.is_empty() {
+                            // Search mode (global or local) - get path from search results
                             if let Some(selected_indx) = selected_index {
-                                let selected = &app.files[selected_indx];
-
-                                app.prev_dir = get_curr_path(selected.to_string());
-                                if !is_file(selected.to_string()) {
-                                    match get_inner_files_info(
-                                        selected.to_string(),
-                                        app.show_hidden_files,
-                                        SortBy::Default,
-                                        &sort_type,
-                                    ) {
-                                        Ok(files_strings) => {
-                                            if let Some(files_strs) = files_strings {
-                                                app.read_only_files = files_strs.clone();
-                                                app.files = files_strs;
-                                                state.select(Some(0));
+                                if selected_indx < app.search_results.len() {
+                                    Some(app.search_results[selected_indx].file_path.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            // Normal mode - get path from files list
+                            if app.files.len() > 0 {
+                                if let Some(selected_indx) = selected_index {
+                                    if selected_indx < app.files.len() {
+                                        Some(app.files[selected_indx].clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        
+                        if let Some(selected) = selected_path {
+                            app.prev_dir = get_curr_path(selected.to_string());
+                            if !is_file(selected.to_string()) {
+                                match get_inner_files_info(
+                                    selected.to_string(),
+                                    app.show_hidden_files,
+                                    SortBy::Default,
+                                    &sort_type,
+                                ) {
+                                    Ok(files_strings) => {
+                                        if let Some(files_strs) = files_strings {
+                                            // Exit search mode when navigating into a directory
+                                            app.global_search_mode = false;
+                                            app.search_results.clear();
+                                            app.input.clear();
+                                            app.character_index = 0;
+                                            app.input_mode = InputMode::Normal;
+                                            
+                                            app.read_only_files = files_strs.clone();
+                                            app.files = files_strs;
+                                            app.update_file_references();
+                                            state.select(Some(0));
+                                            
+                                            // Start watching the new directory
+                                            if let Err(e) = app.start_watching_directory(&selected) {
+                                                debug!("Failed to start watching directory '{}': {}", selected, e);
+                                            } else {
+                                                debug!("Started watching directory: {}", selected);
                                             }
                                         }
-                                        Err(e) => {
-                                            println!("Error: {}", e);
-                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("Error: {}", e);
                                     }
                                 }
                             }
@@ -1317,6 +1956,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                     if let Some(file_strs) = files {
                                         app.read_only_files = file_strs.clone();
                                         app.files = file_strs;
+                                        app.update_file_references();
                                     }
                                 }
                                 Err(e) => {
@@ -1326,11 +1966,39 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                         }
                     }
                     KeyCode::Char('c') => {
-                        // item path to copy
-                        app.input_mode = InputMode::WatchCopy;
-                        let index = state.selected().unwrap();
-                        let selected_path = &app.files[index].to_owned();
-                        app.item_to_copy_path = selected_path.clone();
+                        // Copy selected file/directory in current location using async operation
+                        if let Some(index) = state.selected() {
+                            if index < app.files.len() {
+                                let selected_path = &app.files[index];
+                                let src_path = Path::new(selected_path);
+                                
+                                // Get current directory (parent of selected item)
+                                let current_dir = if src_path.is_file() {
+                                    src_path.parent().unwrap_or(Path::new("."))
+                                } else {
+                                    // For directories, get the parent directory
+                                    src_path.parent().unwrap_or(Path::new("."))
+                                };
+                                
+                                // Generate copy name
+                                let new_path_with_new_name = generate_copy_file_dir_name(
+                                    selected_path.clone(),
+                                    current_dir.to_string_lossy().to_string(),
+                                );
+                                
+                                let new_src = Path::new(&new_path_with_new_name);
+                                
+                                // Start async copy operation
+                                let rx = copy_dir_file_with_progress(src_path, new_src);
+                                copy_receiver = Some(rx);
+                                
+                                // Initialize copy progress state
+                                app.copy_in_progress = true;
+                                app.copy_progress_message = String::from("Starting copy...");
+                                app.copy_files_processed = 0;
+                                app.copy_total_files = 0;
+                            }
+                        }
                     }
 
                     KeyCode::Char('s') => {
@@ -1342,13 +2010,55 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                     }
 
                     KeyCode::Enter => {
-                        let app_files = app.files.clone();
-                        let selected = &app_files[state.selected().unwrap()];
-
-                        app.input = selected.clone();
-
-                        let _ = handle_file_selection(&selected, &mut terminal, app.clone());
-                        break;
+                        // Get the selected path based on current mode
+                        // Use search results if we have any (either global or local search)
+                        let selected_path = if !app.search_results.is_empty() {
+                            // Search mode (global or local) - get path from search results
+                            if let Some(selected_indx) = state.selected() {
+                                if selected_indx < app.search_results.len() {
+                                    Some(app.search_results[selected_indx].file_path.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            // Normal mode - get path from files list
+                            if let Some(selected_indx) = state.selected() {
+                                if selected_indx < app.files.len() {
+                                    Some(app.files[selected_indx].clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        };
+                        
+                        if let Some(selected) = selected_path {
+                            app.input = selected.clone();
+                            
+                            // Check if IDE is configured - if so, open file, otherwise copy to clipboard
+                            if app.get_selected_ide().is_some() {
+                                let _ = handle_file_selection(&selected, &mut terminal, &app);
+                                break;
+                            } else {
+                                // Copy path to clipboard instead of opening
+                                use copypasta::{ClipboardContext, ClipboardProvider};
+                                if let Ok(mut ctx) = ClipboardContext::new() {
+                                    if let Ok(_) = ctx.set_contents(selected.clone()) {
+                                        debug!("Copied path to clipboard: {}", selected);
+                                        // Optionally show a brief message to user
+                                        // For now just break to exit
+                                        break;
+                                    }
+                                }
+                                // Fallback to normal file selection if clipboard fails
+                                let _ = handle_file_selection(&selected, &mut terminal, &app);
+                                break;
+                            }
+                        }
                     }
                     _ => {}
                 },
@@ -1378,7 +2088,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                 app.current_path_to_edit, app.create_edit_file_name
                             );
                             if !check_if_exists(new_path) {
-                                match handle_rename(app.clone()) {
+                                match handle_rename(&app) {
                                     Ok(_) => {
                                         app.reset_create_edit_values();
                                         let file_path_list = get_file_path_data(
@@ -1389,6 +2099,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                         )?;
                                         app.files = file_path_list.clone();
                                         app.read_only_files = file_path_list.clone();
+                                        app.update_file_references();
                                         app.input_mode = InputMode::Normal;
                                     }
                                     Err(e) => {
@@ -1453,6 +2164,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                                     )?;
                                     app.files = file_path_list.clone();
                                     app.read_only_files = file_path_list.clone();
+                                    app.update_file_references();
                                 }
                                 Err(e) => {
                                     let error = e.downcast_ref::<io::Error>().unwrap();
@@ -1519,6 +2231,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                             app.render_popup = false;
                             app.files = file_path_list.clone();
                             app.read_only_files = file_path_list.clone();
+                            app.update_file_references();
                             app.input_mode = InputMode::Normal;
                         }
                     }
@@ -1542,6 +2255,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                         )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
+                        app.update_file_references();
                         app.input_mode = InputMode::Normal;
                     }
 
@@ -1559,6 +2273,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                         )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
+                        app.update_file_references();
                         app.input_mode = InputMode::Normal;
                     }
 
@@ -1574,6 +2289,7 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                         )?;
                         app.files = file_path_list.clone();
                         app.read_only_files = file_path_list.clone();
+                        app.update_file_references();
                         app.input_mode = InputMode::Normal;
                     }
                     KeyCode::Char('a') => {
@@ -1591,154 +2307,9 @@ let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).b
                     }
                     _ => {}
                 },
-                InputMode::WatchCopy => match key.code {
-                    KeyCode::Char('q') => {
-                        read_only_state.select(Some(0));
-                        let copy_curr_files = app.files.clone();
-                        app.copy_move_read_only_files = copy_curr_files;
-                        app.copy_move_read_only_files = app.files.clone();
-                        app.input_mode = InputMode::Normal;
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if app.files.len() > 0 {
-                            let i = match read_only_state.selected() {
-                                Some(i) => {
-                                    if i >= app.copy_move_read_only_files.len() - 1 {
-                                        0
-                                    } else {
-                                        i + 1
-                                    }
-                                }
-                                None => 0,
-                            };
-                            read_only_state.select(Some(i));
-                        }
-                    }
-                    // BUG: for some reason this is not rendering stats corectly
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if app.files.len() > 0 {
-                            let i = match read_only_state.selected() {
-                                Some(i) => {
-                                    if i == 0 {
-                                        app.copy_move_read_only_files.len() - 1
-                                    } else {
-                                        i - 1
-                                    }
-                                }
-                                None => 0,
-                            };
-                            read_only_state.select(Some(i));
-                        }
-                    }
-                    KeyCode::Char('h') => {
-                        if app.files.len() > 0 {
-                            let selected =
-                                &app.copy_move_read_only_files[read_only_state.selected().unwrap()];
-                            let mut split_path = selected.split("/").collect::<Vec<&str>>();
-
-                            let sort_type_copy = sort_type.clone();
-                            if split_path.len() > 4 {
-                                split_path.pop();
-                                split_path.pop();
-
-                                let new_path = split_path.join("/");
-                                app.input = new_path.clone();
-                                let files_strings = get_inner_files_info(
-                                    new_path.clone(),
-                                    app.show_hidden_files,
-                                    SortBy::Default,
-                                    &sort_type_copy,
-                                )
-                                .unwrap();
-
-                                if let Some(f_s) = files_strings {
-                                    app.copy_move_read_only_files = f_s.clone();
-                                    read_only_state.select(Some(0));
-                                }
-                            }
-                        } else {
-                            let copy = sort_type.clone();
-                            let files_strings = get_inner_files_info(
-                                app.copy_move_read_only_files_prev.clone(),
-                                app.show_hidden_files,
-                                SortBy::Default,
-                                &copy,
-                            )
-                            .unwrap();
-
-                            if let Some(f_s) = files_strings {
-                                app.copy_move_read_only_files = f_s.clone();
-                                read_only_state.select(Some(0));
-                            }
-                        }
-                    }
-
-                    KeyCode::Char('l') => {
-                        let selected_index = read_only_state.selected();
-                        if app.copy_move_read_only_files.len() > 0 {
-                            if let Some(selected_indx) = selected_index {
-                                let selected = &app.copy_move_read_only_files[selected_indx];
-
-                                app.copy_move_read_only_files_prev =
-                                    get_curr_path(selected.to_string());
-                                if !is_file(selected.to_string()) {
-                                    match get_inner_files_info(
-                                        selected.to_string(),
-                                        app.show_hidden_files,
-                                        SortBy::Default,
-                                        &sort_type,
-                                    ) {
-                                        Ok(files_strings) => {
-                                            if let Some(files_strs) = files_strings {
-                                                app.copy_move_read_only_files = files_strs.clone();
-                                                read_only_state.select(Some(0));
-                                            }
-                                        }
-                                        Err(e) => {
-                                            println!("Error: {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    KeyCode::Enter => {
-                        //if app.copy_move_read_only_files.len() > 0 {
-                        let index = read_only_state.selected();
-                        app.loading = true;
-                        if let Some(indx) = index {
-                            // item to copy
-                            let selected_path = &app.copy_move_read_only_files[indx];
-
-                            // get current path to add new item
-                            let mut split_path = selected_path.split("/").collect::<Vec<&str>>();
-                            split_path.pop();
-                            let string_path = split_path.join("/");
-                            // append copy to new dir/file
-                            let item_to_copy_cur_path = Path::new(&app.item_to_copy_path);
-
-                            let new_path_with_new_name = generate_copy_file_dir_name(
-                                app.item_to_copy_path.clone(),
-                                string_path.clone(),
-                            );
-
-                            // item to copy path => app.item_to_copy_path.clone();
-                            let new_src = Path::new(&new_path_with_new_name);
-                            copy_dir_file_helper(item_to_copy_cur_path, new_src)?;
-                            // show spinner that is downloading?
-                            app.loading = false;
-                            let copy_curr_files = app.files.clone();
-                            app.copy_move_read_only_files = copy_curr_files;
-                            read_only_state.select(Some(0));
-
-                            app.copy_move_read_only_files = app.files.clone();
-                            app.input_mode = InputMode::Normal;
-                        }
-                        //}
-                    }
-                    _ => {}
-                },
                 _ => {}
+            }
+                }
             }
         }
     }
