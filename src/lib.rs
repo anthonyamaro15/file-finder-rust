@@ -1,5 +1,6 @@
 pub mod app;
 pub mod configuration;
+pub mod config;
 pub mod directory_store;
 pub mod ui;
 pub mod file_reader_content;

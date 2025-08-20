@@ -11,6 +11,8 @@ use crate::watcher::{FileSystemWatcher, WatcherEvent};
 use crate::highlight::highlight_search_term;
 use crate::ui::theme::OneDarkTheme;
 
+use crate::config::{Settings, Theme, ThemeColors};
+
 extern crate copypasta;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,6 +108,10 @@ pub struct App {
     pub cache_current_directory: String,
     pub cache_loading_complete: bool,
     pub completed_cache_store: Option<crate::directory_store::DirectoryStore>,
+    
+    // Configuration and theming
+    pub settings: Settings,
+    pub theme_colors: ThemeColors,
 }
 
 impl App {
@@ -197,6 +203,13 @@ impl App {
             cache_current_directory: String::new(),
             cache_loading_complete: false,
             completed_cache_store: None,
+            
+            // Load default configuration - this will be replaced with proper loading
+            settings: Settings::default(),
+            theme_colors: Theme::default().to_colors().unwrap_or_else(|_| {
+                // Fallback to hardcoded theme if parsing fails
+                panic!("Failed to parse default theme")
+            }),
         }
     }
 
@@ -783,5 +796,51 @@ impl App {
         } else {
             None
         }
+    }
+    
+    /// Initialize configuration and theme from files or defaults
+    pub fn initialize_config_and_theme(&mut self) -> AppResult<()> {
+        // Ensure config directories exist
+        crate::config::ensure_config_directories()?;
+        
+        // Load settings (creates default if missing)
+        self.settings = Settings::load()?;
+        
+        // Load theme specified in settings (creates default if missing)
+        let theme = Theme::load(&self.settings.theme)?;
+        
+        // Convert theme to processed colors
+        self.theme_colors = theme.to_colors()?;
+        
+        println!("Loaded configuration with theme: {}", self.settings.theme);
+        
+        Ok(())
+    }
+    
+    /// Get theme colors for UI rendering
+    pub fn theme_colors(&self) -> &ThemeColors {
+        &self.theme_colors
+    }
+    
+    /// Update theme and save to settings
+    pub fn update_theme(&mut self, theme_name: &str) -> AppResult<()> {
+        // Load the new theme
+        let theme = Theme::load(theme_name)?;
+        
+        // Convert to processed colors
+        self.theme_colors = theme.to_colors()?;
+        
+        // Update settings and save
+        self.settings.theme = theme_name.to_string();
+        self.settings.save()?;
+        
+        debug!("Switched to theme: {}", theme_name);
+        
+        Ok(())
+    }
+    
+    /// Get settings reference
+    pub fn settings(&self) -> &Settings {
+        &self.settings
     }
 }
