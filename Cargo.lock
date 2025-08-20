@@ -735,6 +735,7 @@ dependencies = [
  "syntect",
  "tempfile",
  "thiserror",
+ "toml",
  "walkdir",
  "zip",
 ]
