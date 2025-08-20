@@ -99,6 +99,13 @@ impl OneDarkTheme {
             .fg(Self::CYAN)
             .add_modifier(Modifier::BOLD)
     }
+    
+    pub fn search_highlight() -> Style {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Self::YELLOW)
+            .add_modifier(Modifier::BOLD)
+    }
 }
 
 /// Helper functions for common UI styling patterns

@@ -49,6 +49,7 @@ extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
 
 mod app;
+mod config;
 mod configuration;
 mod directory_store;
 mod file_reader_content;
@@ -57,6 +58,7 @@ mod errors;
 mod status_bar;
 mod watcher;
 mod theme;
+mod highlight;
 
 //  log_to_file(format!("kind => {:?}", kind));
 
@@ -838,32 +840,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     init();
 
-    let mut config = configuration::Configuration::new();
-    let mut sort_type = SortType::ASC;
-
-    let mut file_reader_content = FileContent::new(ps, ts);
-    //let file_type = file_reader_content.file_type.clone();
-    let mut image_generator = ImageGenerator::new();
-
-    if let Err(e) = config.handle_settings_configuration() {
-        eprintln!("Configuration error: {}", e);
-        return Err(e.into());
+    // Check for --reset-config flag
+    if input_arguments.len() > 1 && input_arguments[1] == "--reset-config" {
+        println!("Resetting configuration to defaults...");
+        if let Err(e) = crate::config::reset_configuration() {
+            eprintln!("Failed to reset configuration: {}", e);
+            return Err(e.into());
+        }
+        println!("Configuration reset successfully!");
+        return Ok(());
     }
+
+    // Load configuration using new TOML system
+    let settings = match crate::config::Settings::load() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Configuration error: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    let mut sort_type = SortType::ASC;
+    let mut file_reader_content = FileContent::new(ps, ts);
+    let mut image_generator = ImageGenerator::new();
     // Setup terminal
 
     let file_strings = get_file_path_data(
-        config.start_path.clone(),
+        settings.start_path.clone(),
         false,
         SortBy::Default,
         &sort_type,
     )?; //let file_strings = convert_file_path_to_string(entries);
     let mut app = App::new(file_strings.clone());
 
+    // Initialize config and theme after app creation
+    if let Err(e) = app.initialize_config_and_theme() {
+        eprintln!("Configuration error: {}", e);
+        return Err(e.into());
+    }
+
     // Start file system watching for the initial directory
-    if let Err(e) = app.start_watching_directory(&config.start_path) {
-        debug!("Failed to start watching directory '{}': {}", config.start_path, e);
+    if let Err(e) = app.start_watching_directory(&settings.start_path) {
+        debug!("Failed to start watching directory '{}': {}", settings.start_path, e);
     } else {
-        debug!("Started watching directory: {}", config.start_path);
+        debug!("Started watching directory: {}", settings.start_path);
     }
 
     // handle ide selection from arguments
@@ -872,15 +892,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let store = if Path::new(&config.cache_directory).exists() {
-        let res = load_directory_from_file(&config.cache_directory.to_owned()).unwrap();
+    let store = if Path::new(&settings.cache_directory).exists() {
+        let res = load_directory_from_file(&settings.cache_directory.to_owned()).unwrap();
         println!("Loading directory cache from file");
         res
     } else {
         println!("Starting asynchronous directory cache build...");
         
         // Start async cache building
-        let rx = build_directory_from_store_async(config.start_path.clone(), config.ignore_directories.clone());
+        let rx = build_directory_from_store_async(settings.start_path.clone(), settings.ignore_directories.clone());
         
         // Set up the app to display loading progress
         app.start_cache_loading(rx);
@@ -1436,7 +1456,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                         
                         // Refresh file lists to show the copied item
                         if let Ok(file_path_list) = get_file_path_data(
-                            config.start_path.to_owned(),
+                            settings.start_path.to_owned(),
                             app.show_hidden_files,
                             SortBy::Default,
                             &sort_type,
@@ -1485,7 +1505,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
         if !fs_events.is_empty() {
             // File system changes detected, refresh the file list
             if let Ok(file_path_list) = get_file_path_data(
-                config.start_path.to_owned(),
+                settings.start_path.to_owned(),
                 app.show_hidden_files,
                 SortBy::Default,
                 &sort_type,
@@ -1512,9 +1532,9 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                     debug!("Using completed cache with {} directories", cache_store.directories.len());
                     
                     // Save the cache to file for future use
-                    match crate::directory_store::save_directory_to_file(cache_store, &config.cache_directory) {
+                    match crate::directory_store::save_directory_to_file(cache_store, &settings.cache_directory) {
                         Ok(()) => {
-                            debug!("Successfully saved cache to file: {}", config.cache_directory);
+                            debug!("Successfully saved cache to file: {}", settings.cache_directory);
                         },
                         Err(e) => {
                             debug!("Failed to save cache to file: {}", e);
@@ -1527,7 +1547,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                     debug!("No completed cache available, falling back to current directory");
                     // Fallback to current directory files
                     get_file_path_data(
-                        config.start_path.clone(),
+                        settings.start_path.clone(),
                         false,
                         SortBy::Default,
                         &sort_type,
@@ -2092,7 +2112,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                                     Ok(_) => {
                                         app.reset_create_edit_values();
                                         let file_path_list = get_file_path_data(
-                                            config.start_path.to_owned(),
+                                            settings.start_path.to_owned(),
                                             app.show_hidden_files,
                                             SortBy::Default,
                                             &sort_type,
@@ -2157,7 +2177,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
 
                                     app.reset_create_edit_values();
                                     let file_path_list = get_file_path_data(
-                                        config.start_path.to_owned(),
+                                        settings.start_path.to_owned(),
                                         app.show_hidden_files,
                                         SortBy::Default,
                                         &sort_type,
@@ -2223,7 +2243,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                             handle_delete_based_on_type(selected).unwrap();
 
                             let file_path_list = get_file_path_data(
-                                config.start_path.to_owned(),
+                                settings.start_path.to_owned(),
                                 app.show_hidden_files,
                                 SortBy::Default,
                                 &sort_type,

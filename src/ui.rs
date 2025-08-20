@@ -9,6 +9,7 @@ use std::{path::Path, rc::Rc};
 use crate::app::{App, InputMode};
 pub mod theme;
 use self::theme::OneDarkTheme;
+use crate::highlight::highlight_search_term;
 
 #[derive(Debug, Clone)]
 pub struct ListFileItem {
@@ -165,18 +166,54 @@ impl Ui {
     
     /// Generate list items based on current search state (optimized with pagination)
     fn generate_list_items(&self, app: &App) -> Vec<ListItem> {
+        let search_term = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
+            let term = app.input.trim();
+            // Remove leading search indicators for highlighting
+            if term.starts_with(' ') || term.starts_with('/') {
+                term.trim_start_matches(' ').trim_start_matches('/')
+            } else {
+                term
+            }
+        } else {
+            ""
+        };
+        
         if app.global_search_mode && !app.search_results.is_empty() {
-            // Show global search results with enhanced formatting
+            // Show global search results with highlighted search terms
             app.search_results
                 .iter()
                 .take(50) // Limit to top 50 results for performance
                 .map(|result| {
-                    let display_text = if result.is_directory {
-                        format!("📁 {} ({})", result.display_name, result.score)
+                    let icon = if result.is_directory { "📁" } else { "📄" };
+                    
+                    if !search_term.is_empty() {
+                        // Create highlighted filename with search term
+                        let highlighted_line = highlight_search_term(
+                            &result.display_name,
+                            search_term,
+                            OneDarkTheme::normal(),
+                            OneDarkTheme::search_highlight()
+                        );
+                        
+                        // Add icon and score to the highlighted line
+                        let mut spans = vec![
+                            ratatui::text::Span::styled(
+                                format!("{} ", icon),
+                                OneDarkTheme::normal()
+                            )
+                        ];
+                        spans.extend(highlighted_line.spans);
+                        spans.push(ratatui::text::Span::styled(
+                            format!(" ({})", result.score),
+                            OneDarkTheme::info()
+                        ));
+                        
+                        ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        format!("📄 {} ({})", result.display_name, result.score)
-                    };
-                    ListItem::from(display_text)
+                        // Fallback to simple text
+                        let display_text = format!("{} {} ({})", icon, result.display_name, result.score);
+                        ListItem::from(display_text)
+                    }
                 })
                 .collect()
         } else {
@@ -190,31 +227,43 @@ impl Ui {
                     let file_name = &app.file_read_only_label_list[file_index];
                     let file_path = &app.files[file_index];
                     let is_dir = Path::new(file_path).is_dir();
+                    let icon = if is_dir { "📁" } else { "📄" };
                     
-                    // Add icons and search score if available
-                    let display_text = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
-                        // Find the search result for this file to show score
+                    if app.input_mode == InputMode::Editing && !search_term.is_empty() {
+                        // Local search with highlighting
                         let score = app.search_results
                             .iter()
                             .find(|r| r.original_index == file_index)
                             .map(|r| r.score)
                             .unwrap_or(0);
-                            
-                        if is_dir {
-                            format!("📁 {} ({})", file_name, score)
-                        } else {
-                            format!("📄 {} ({})", file_name, score)
-                        }
+                        
+                        // Create highlighted filename with search term
+                        let highlighted_line = highlight_search_term(
+                            file_name,
+                            search_term,
+                            OneDarkTheme::normal(),
+                            OneDarkTheme::search_highlight()
+                        );
+                        
+                        // Add icon and score to the highlighted line
+                        let mut spans = vec![
+                            ratatui::text::Span::styled(
+                                format!("{} ", icon),
+                                OneDarkTheme::normal()
+                            )
+                        ];
+                        spans.extend(highlighted_line.spans);
+                        spans.push(ratatui::text::Span::styled(
+                            format!(" ({})", score),
+                            OneDarkTheme::info()
+                        ));
+                        
+                        ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        // Normal display without scores
-                        if is_dir {
-                            format!("📁 {}", file_name)
-                        } else {
-                            format!("📄 {}", file_name)
-                        }
-                    };
-                    
-                    ListItem::from(display_text)
+                        // Normal display without highlighting
+                        let display_text = format!("{} {}", icon, file_name);
+                        ListItem::from(display_text)
+                    }
                 })
                 .collect()
         }
