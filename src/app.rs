@@ -3,10 +3,13 @@ use std::path::Path;
 use log::debug;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use ratatui::text::Line;
 
 use crate::directory_store::DirectoryStore;
 use crate::errors::{AppError, AppResult};
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
+use crate::highlight::highlight_search_term;
+use crate::ui::theme::OneDarkTheme;
 
 extern crate copypasta;
 

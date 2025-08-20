@@ -57,6 +57,7 @@ mod errors;
 mod status_bar;
 mod watcher;
 mod theme;
+mod highlight;
 
 //  log_to_file(format!("kind => {:?}", kind));
 
