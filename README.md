@@ -61,16 +61,129 @@ cd rust-file-finder
 cargo build --release
 ```
 
-### Usage
+### Basic Usage
 
 ```bash
-# Basic usage
-cargo run
+# Launch from current directory
+ff
 
-# With IDE integration
-cargo run nvim    # Opens files with Neovim
-cargo run code    # Opens files with VS Code
-cargo run zed     # Opens files with Zed
+# Launch from specific directory
+ff ~/Documents
+ff /tmp
+ff .
+
+# Using command-line options
+ff --start ~/Projects --editor nvim
+ff -s . -e zed
+```
+
+## 🖥️ Command Line Interface
+
+### CLI Options
+
+```bash
+ff [OPTIONS] [PATH]
+```
+
+| Option              | Short | Description                       | Example              |
+| ------------------- | ----- | --------------------------------- | -------------------- |
+| `--start <PATH>`    | `-s`  | Starting directory path           | `ff -s ~/Documents`  |
+| `--editor <EDITOR>` | `-e`  | Editor to use for opening files   | `ff -e nvim`         |
+| `--theme <THEME>`   | `-t`  | Theme name or path to theme file  | `ff -t onedark`      |
+| `--reset-config`    |       | Reset configuration to defaults   | `ff --reset-config`  |
+| `--rebuild-cache`   |       | Rebuild directory cache           | `ff --rebuild-cache` |
+| `--help`            | `-h`  | Show help information             | `ff --help`          |
+| `--version`         | `-V`  | Show version                      | `ff --version`       |
+| `[PATH]`            |       | Optional positional path argument | `ff ~/Desktop`       |
+
+### Path Examples
+
+#### **Current Directory**
+
+```bash
+ff .                    # Current directory
+ff --start .           # Same using --start flag
+```
+
+#### **Home Directory**
+
+```bash
+ff ~                    # Home directory
+ff ~/Documents          # Documents folder
+ff ~/Desktop            # Desktop folder
+ff --start ~/Projects   # Projects folder using --start
+```
+
+#### **Absolute Paths**
+
+```bash
+ff /tmp                 # Temporary directory
+ff /Applications        # Applications folder
+ff --start /usr/local   # Using --start with absolute path
+```
+
+#### **Relative Paths**
+
+```bash
+ff ../                  # Parent directory
+ff src/                 # Source directory
+ff --start ../other-project  # Relative path with --start
+```
+
+### Editor Integration
+
+#### **Supported Editors**
+
+- `nvim` - Neovim
+- `vscode` - Visual Studio Code
+- `zed` - Zed Editor
+
+#### **Editor Examples**
+
+```bash
+# Set editor with current directory
+ff --editor nvim
+ff -e zed
+
+// (--editor AND -e refer to the same)
+
+# Combine with different starting paths
+ff --editor vscode ~/Documents
+ff -e nvim --start ~/Projects
+
+# Positional path with editor
+ff ~/Desktop --editor zed
+```
+
+### Configuration Management
+
+```bash
+# Reset all settings to defaults
+ff --reset-config
+
+# Rebuild directory cache for faster global search
+ff --rebuild-cache
+
+# Check current version
+ff --version
+ff -V
+```
+
+### Advanced CLI Examples
+
+```bash
+# Multiple options combined
+ff --start ~/Projects --editor nvim --theme onedark
+
+# Path precedence: --start takes priority over positional path
+ff ~/Documents --start ~/Desktop  # Opens ~/Desktop (--start wins)
+
+# Tilde expansion works everywhere
+ff --start ~/Documents/Projects/my-app
+
+# Current directory shortcuts
+ff .                    # Launch in current directory
+ff --start . --editor zed  # Current directory with Zed
 ```
 
 ## ⌨️ Keyboard Shortcuts
@@ -208,19 +321,52 @@ The tool features a beautiful OneDark theme inspired by lazygit with:
 
 ## ⚙️ Configuration
 
+### Configuration Precedence
+
+The file finder uses a layered configuration system with the following precedence (highest to lowest):
+
+1. **CLI Arguments** (highest priority)
+2. **Environment Variables** (future feature)
+3. **Configuration File** (`~/.config/ff/settings.toml`)
+4. **Built-in Defaults** (lowest priority)
+
+#### **Example Precedence**
+
+```bash
+# If settings.toml has start_path = "/Users/user/Documents"
+# But you run: ff --start ~/Projects
+# Result: Opens ~/Projects (CLI overrides settings file)
+```
+
+### Configuration Files
+
+#### **Settings Location**
+
+- **Settings**: `~/.config/ff/settings.toml`
+- **Theme**: `~/.config/ff/themes/onedark.toml`
+- **Cache**: `~/.config/ff/cache_directory.json`
+
+#### **Reset Configuration**
+
+```bash
+# Reset all settings to defaults
+ff --reset-config
+```
+
 ### Default Settings
 
 - **Start Path**: Current working directory
 - **Hidden Files**: Hidden by default (toggle with `.`)
 - **Sort Order**: Alphabetical ascending
 - **Cache**: Automatically builds directory cache for fast global search
+- **Theme**: OneDark theme
 
 ### IDE Integration
 
 ```bash
-# Supported IDEs
+# Supported IDEs (set via CLI or config)
 nvim     # Neovim
-code     # Visual Studio Code
+vscode   # Visual Studio Code
 zed      # Zed Editor
 
 # Without IDE integration
@@ -251,6 +397,51 @@ zed      # Zed Editor
 
 ## 🐛 Troubleshooting
 
+### CLI Issues
+
+**Command not found?**
+
+```bash
+# Make sure the binary is in your PATH or use full path
+./target/release/file-finder --help
+
+# Or create an alias
+alias ff='./target/release/file-finder'
+```
+
+**Path not working?**
+
+```bash
+# Use quotes for paths with spaces
+ff --start "~/My Documents"
+
+# Verify tilde expansion
+ff --start ~/Documents  # ✓ Works
+ff --start ~Documents   # ❌ Won't work
+```
+
+**Editor not opening files?**
+
+```bash
+# Check if editor is in PATH
+which nvim   # Should show path to nvim
+which code   # Should show path to code
+which zed    # Should show path to zed
+
+# For VS Code on macOS, you might need to install shell command:
+# Open VS Code → Command Palette (⇧⌘P) → "Shell Command: Install 'code' command in PATH"
+```
+
+**Configuration not persisting?**
+
+```bash
+# Reset configuration if corrupted
+ff --reset-config
+
+# Check configuration directory exists
+ls ~/.config/ff/
+```
+
 ### Common Issues
 
 **Search not working?**
@@ -261,7 +452,8 @@ zed      # Zed Editor
 **Files not opening in IDE?**
 
 - Check that your IDE is installed and in PATH
-- Use exact command names: `nvim`, `code`, `zed`
+- Use exact CLI editor names: `nvim`, `vscode`, `zed`
+- Remember to select a file first (arrow keys), then press Enter
 
 **Performance issues?**
 
