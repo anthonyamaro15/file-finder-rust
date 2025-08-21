@@ -34,6 +34,7 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 mod utils;
 
 use crate::{
+    cli::{CliArgs, compute_effective_config},
     directory_store::{
         build_directory_from_store, load_directory_from_file, save_directory_to_file,
         build_directory_from_store_async, CacheBuildProgress,
@@ -49,6 +50,7 @@ extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
 
 mod app;
+mod cli;
 mod config;
 mod configuration;
 mod directory_store;
@@ -833,15 +835,34 @@ fn validate_file_path(file_path: Option<String>) -> Option<bool> {
     check_type
 }
 
+fn get_start_path_based_on_input(settings_start_path: String, args: Vec<String>) -> String{
+
+    if args.len() > 1 && args[1] == ".".to_string() {
+
+
+        let current_path = String::from(".");
+        return current_path;
+    }
+    settings_start_path 
+
+
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let input_arguments: Vec<String> = env::args().collect();
+    // Parse command line arguments using clap
+    let cli_args = CliArgs::parse_args();
+    
+    // Log the effective CLI values
+    debug!("CLI Arguments: Start path: {:?}, Theme: {:?}, Editor: {:?}, Path: {:?}, Reset Config: {}, Rebuild Cache: {}", 
+        cli_args.start, cli_args.theme, cli_args.editor, cli_args.path, cli_args.reset_config, cli_args.rebuild_cache);
+    
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
     init();
 
-    // Check for --reset-config flag
-    if input_arguments.len() > 1 && input_arguments[1] == "--reset-config" {
+    // Check for --reset-config flag (from CLI args)
+    if cli_args.reset_config {
         println!("Resetting configuration to defaults...");
         if let Err(e) = crate::config::reset_configuration() {
             eprintln!("Failed to reset configuration: {}", e);
@@ -859,6 +880,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     };
+    
+    // Compute effective configuration using precedence rules
+    let effective_config = match compute_effective_config(&cli_args, &settings) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to compute effective configuration: {}", e);
+            return Err(e.into());
+        }
+    };
+    
+    debug!("Using effective configuration: start_path={}, theme={:?}, editor={:?}",
+           effective_config.start_path.display(), effective_config.theme, effective_config.editor);
 
     let mut sort_type = SortType::ASC;
     let mut file_reader_content = FileContent::new(ps, ts);
@@ -866,11 +899,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
 
     let file_strings = get_file_path_data(
-        settings.start_path.clone(),
+        effective_config.start_path.to_string_lossy().to_string(),
         false,
         SortBy::Default,
         &sort_type,
-    )?; //let file_strings = convert_file_path_to_string(entries);
+    )?;
     let mut app = App::new(file_strings.clone());
 
     // Initialize config and theme after app creation
@@ -886,10 +919,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Started watching directory: {}", settings.start_path);
     }
 
-    // handle ide selection from arguments
-    if let Err(e) = app.handle_arguments(input_arguments) {
-        eprintln!("Error: {}", e);
-        return Ok(());
+    // Set editor from effective configuration (CLI args have precedence)
+    if let Some(editor) = effective_config.editor {
+        let ide_selection = match editor {
+            crate::cli::Editor::Nvim => app::IDE::NVIM,
+            crate::cli::Editor::Vscode => app::IDE::VSCODE,
+            crate::cli::Editor::Zed => app::IDE::ZED,
+        };
+        app.selected_id = Some(ide_selection);
+        debug!("Set editor from CLI: {:?}", editor);
     }
 
     let store = if Path::new(&settings.cache_directory).exists() {
