@@ -34,6 +34,7 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 mod utils;
 
 use crate::{
+    cli::CliArgs,
     directory_store::{
         build_directory_from_store, load_directory_from_file, save_directory_to_file,
         build_directory_from_store_async, CacheBuildProgress,
@@ -49,6 +50,7 @@ extern crate copypasta;
 use copypasta::{ClipboardContext, ClipboardProvider};
 
 mod app;
+mod cli;
 mod config;
 mod configuration;
 mod directory_store;
@@ -833,15 +835,35 @@ fn validate_file_path(file_path: Option<String>) -> Option<bool> {
     check_type
 }
 
+fn get_start_path_based_on_input(settings_start_path: String, args: Vec<String>) -> String{
+
+    if args.len() > 1 && args[1] == ".".to_string() {
+
+
+        let current_path = String::from(".");
+        return current_path;
+    }
+    settings_start_path 
+
+
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse command line arguments using clap
+    let cli_args = CliArgs::parse_args();
+    
+    // Log the effective CLI values
+    debug!("CLI Arguments: Start path: {:?}, Theme: {:?}, Editor: {:?}, Path: {:?}, Reset Config: {}, Rebuild Cache: {}", 
+        cli_args.start, cli_args.theme, cli_args.editor, cli_args.path, cli_args.reset_config, cli_args.rebuild_cache);
+    
     let input_arguments: Vec<String> = env::args().collect();
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
     init();
 
-    // Check for --reset-config flag
-    if input_arguments.len() > 1 && input_arguments[1] == "--reset-config" {
+    // Check for --reset-config flag (from CLI args)
+    if cli_args.reset_config {
         println!("Resetting configuration to defaults...");
         if let Err(e) = crate::config::reset_configuration() {
             eprintln!("Failed to reset configuration: {}", e);
@@ -867,6 +889,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let file_strings = get_file_path_data(
         settings.start_path.clone(),
+        //get_start_path_based_on_input(settings.start_path.clone(), input_arguments.clone()),
         false,
         SortBy::Default,
         &sort_type,
