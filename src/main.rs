@@ -856,7 +856,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!("CLI Arguments: Start path: {:?}, Theme: {:?}, Editor: {:?}, Path: {:?}, Reset Config: {}, Rebuild Cache: {}", 
         cli_args.start, cli_args.theme, cli_args.editor, cli_args.path, cli_args.reset_config, cli_args.rebuild_cache);
     
-    let input_arguments: Vec<String> = env::args().collect();
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
@@ -920,10 +919,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Started watching directory: {}", settings.start_path);
     }
 
-    // handle ide selection from arguments
-    if let Err(e) = app.handle_arguments(input_arguments) {
-        eprintln!("Error: {}", e);
-        return Ok(());
+    // Set editor from effective configuration (CLI args have precedence)
+    if let Some(editor) = effective_config.editor {
+        let ide_selection = match editor {
+            crate::cli::Editor::Nvim => app::IDE::NVIM,
+            crate::cli::Editor::Vscode => app::IDE::VSCODE,
+            crate::cli::Editor::Zed => app::IDE::ZED,
+        };
+        app.selected_id = Some(ide_selection);
+        debug!("Set editor from CLI: {:?}", editor);
     }
 
     let store = if Path::new(&settings.cache_directory).exists() {
