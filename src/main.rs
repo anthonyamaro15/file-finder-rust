@@ -34,7 +34,7 @@ use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 mod utils;
 
 use crate::{
-    cli::CliArgs,
+    cli::{CliArgs, compute_effective_config},
     directory_store::{
         build_directory_from_store, load_directory_from_file, save_directory_to_file,
         build_directory_from_store_async, CacheBuildProgress,
@@ -881,6 +881,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     };
+    
+    // Compute effective configuration using precedence rules
+    let effective_config = match compute_effective_config(&cli_args, &settings) {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Failed to compute effective configuration: {}", e);
+            return Err(e.into());
+        }
+    };
+    
+    debug!("Using effective configuration: start_path={}, theme={:?}, editor={:?}",
+           effective_config.start_path.display(), effective_config.theme, effective_config.editor);
 
     let mut sort_type = SortType::ASC;
     let mut file_reader_content = FileContent::new(ps, ts);
@@ -888,12 +900,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
 
     let file_strings = get_file_path_data(
-        settings.start_path.clone(),
-        //get_start_path_based_on_input(settings.start_path.clone(), input_arguments.clone()),
+        effective_config.start_path.to_string_lossy().to_string(),
         false,
         SortBy::Default,
         &sort_type,
-    )?; //let file_strings = convert_file_path_to_string(entries);
+    )?;
     let mut app = App::new(file_strings.clone());
 
     // Initialize config and theme after app creation
