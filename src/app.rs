@@ -44,6 +44,13 @@ pub struct SearchResult {
     pub original_index: usize,
 }
 
+#[derive(Debug, Clone)]
+pub enum FileChange {
+    Added { path: String, index: usize },
+    Removed { index: usize },
+    Modified { path: String, index: usize },
+}
+
 #[derive(Debug)]
 pub struct App {
     pub input: String,
@@ -113,6 +120,9 @@ pub struct App {
     // Configuration and theming
     pub settings: Settings,
     pub theme_colors: ThemeColors,
+    
+    // Selection preservation for file operations
+    pub preserved_selection_index: Option<usize>,
 }
 
 impl App {
@@ -211,6 +221,9 @@ impl App {
                 // Fallback to hardcoded theme if parsing fails
                 panic!("Failed to parse default theme")
             }),
+            
+            // Initialize selection preservation
+            preserved_selection_index: None,
         }
     }
 
@@ -481,10 +494,20 @@ impl App {
 
     /// Update filtered indexes and labels when file list changes
     pub fn update_file_references(&mut self) {
+        self.update_file_references_with_selection_preservation(None);
+    }
+
+    /// Update file references with optional selection preservation
+    pub fn update_file_references_with_selection_preservation(&mut self, preserve_selection_for: Option<String>) {
+        let old_selection_path = preserve_selection_for;
+        
         // Reset filtered indexes to show all files
         self.filtered_indexes.clear();
         self.file_read_only_label_list.clear();
 
+        // Track the new index for the previously selected item
+        let mut new_selection_index: Option<usize> = None;
+        
         for (index, file) in self.files.iter().enumerate() {
             let new_path = Path::new(file);
             let get_file_name = new_path
@@ -498,7 +521,17 @@ impl App {
 
             self.filtered_indexes.push(index);
             self.file_read_only_label_list.push(get_file_name);
+            
+            // Check if this is the previously selected item
+            if let Some(ref old_path) = old_selection_path {
+                if file == old_path {
+                    new_selection_index = Some(index);
+                }
+            }
         }
+        
+        // Store the new selection index for the main loop to use
+        self.preserved_selection_index = new_selection_index;
 
         // Clear any search input when navigating
         if !self.input.is_empty() && self.input_mode != InputMode::Editing {
@@ -508,6 +541,80 @@ impl App {
         // Invalidate cached list items when file list changes
         self.cached_list_items_valid = false;
 
+        // Update pagination when file list changes
+        self.update_pagination();
+    }
+
+    /// Optimized incremental update for file references
+    pub fn update_file_references_incremental(&mut self, changes: Vec<FileChange>) {
+        for change in changes {
+            match change {
+                FileChange::Added { path, index } => {
+                    // Insert new file at the specified index
+                    if index <= self.files.len() {
+                        self.files.insert(index, path.clone());
+                        
+                        // Update filtered indexes - shift all indexes >= insert position
+                        for filtered_index in &mut self.filtered_indexes {
+                            if *filtered_index >= index {
+                                *filtered_index += 1;
+                            }
+                        }
+                        self.filtered_indexes.insert(index, index);
+                        
+                        // Add the new file name to labels
+                        let new_path = Path::new(&path);
+                        let file_name = new_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|name| name.to_string())
+                            .unwrap_or_else(|| path.clone());
+                        self.file_read_only_label_list.insert(index, file_name);
+                    }
+                }
+                FileChange::Removed { index } => {
+                    // Remove file at the specified index
+                    if index < self.files.len() {
+                        self.files.remove(index);
+                        
+                        // Update filtered indexes - remove and shift
+                        self.filtered_indexes.retain(|&i| i != index);
+                        for filtered_index in &mut self.filtered_indexes {
+                            if *filtered_index > index {
+                                *filtered_index -= 1;
+                            }
+                        }
+                        
+                        // Remove from labels
+                        if index < self.file_read_only_label_list.len() {
+                            self.file_read_only_label_list.remove(index);
+                        }
+                    }
+                }
+                FileChange::Modified { path, index } => {
+                    // Update file at the specified index
+                    if index < self.files.len() {
+                        self.files[index] = path.clone();
+                        
+                        // Update the file name in labels
+                        let new_path = Path::new(&path);
+                        let file_name = new_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|name| name.to_string())
+                            .unwrap_or_else(|| path.clone());
+                        
+                        if index < self.file_read_only_label_list.len() {
+                            self.file_read_only_label_list[index] = file_name;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Invalidate cached list items when file list changes
+        self.cached_list_items_valid = false;
+        
         // Update pagination when file list changes
         self.update_pagination();
     }

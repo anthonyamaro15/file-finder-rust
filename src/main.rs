@@ -651,6 +651,17 @@ fn get_curr_path(path: String) -> String {
     vec_to_str
 }
 
+/// Get the current directory from the app's file list
+fn get_current_directory_from_app(app: &App) -> String {
+    if !app.files.is_empty() {
+        // Get the directory of the first file in the list
+        get_curr_path(app.files[0].clone())
+    } else {
+        // Fallback to current directory
+        ".".to_string()
+    }
+}
+
 fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
     // Check if source exists
     if !src.exists() {
@@ -1063,6 +1074,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Main loop
     loop {
+        // Check if we need to restore a preserved selection
+        if let Some(preserved_index) = app.preserved_selection_index.take() {
+            // Ensure the index is valid for the current file list
+            let valid_index = if app.files.is_empty() {
+                0
+            } else {
+                preserved_index.min(app.files.len() - 1)
+            };
+            state.select(Some(valid_index));
+            app.curr_index = Some(valid_index);
+        }
+        
         // Update status bar with current app state
         status_bar.update(&app);
         
@@ -2364,6 +2387,18 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
 
                             match handle_delete_based_on_type(selected) {
                                 Ok(_) => {
+                                    // Preserve selection by finding a nearby item after deletion
+                                    let next_selection_index = if selected_indx > 0 && selected_indx >= app.files.len() - 1 {
+                                        // If we deleted the last item, select the new last item
+                                        Some(app.files.len().saturating_sub(2))
+                                    } else if selected_indx < app.files.len() - 1 {
+                                        // Select the item that will take the deleted item's position
+                                        Some(selected_indx)
+                                    } else {
+                                        // Fallback to previous item or first item
+                                        Some(selected_indx.saturating_sub(1).min(app.files.len().saturating_sub(2)))
+                                    };
+                                    
                                     let file_path_list = get_file_path_data(
                                         settings.start_path.to_owned(),
                                         app.show_hidden_files,
@@ -2374,6 +2409,9 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                                     app.files = file_path_list.clone();
                                     app.read_only_files = file_path_list.clone();
                                     app.update_file_references();
+                                    
+                                    // Restore selection to a nearby item
+                                    app.preserved_selection_index = next_selection_index;
                                     app.input_mode = InputMode::Normal;
                                 }
                                 Err(e) => {
