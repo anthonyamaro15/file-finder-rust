@@ -43,6 +43,7 @@ use crate::{
     utils::init,
     status_bar::StatusBar,
     theme::OneDarkTheme,
+    errors::{FileOperationError, FileOperationResult, validation},
 };
 use log::{debug, logger, trace, warn};
 
@@ -348,38 +349,73 @@ fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     .split(popup_layout[1])[1]
 }
 
-fn delete_file(file: &str) -> anyhow::Result<()> {
-    match fs::remove_file(file) {
-        Ok(_) => {}
-        Err(e) => {
-            // TODO: show notification to user
-            println!("Error: {:?}", e);
+fn delete_file(file_path: &str) -> FileOperationResult<()> {
+    let path = Path::new(file_path);
+    
+    // Validate file exists
+    validation::validate_path_exists(path)?;
+    
+    // Validate permissions
+    validation::validate_permissions(path, "delete")?;
+    
+    // Attempt to delete the file
+    fs::remove_file(path).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(path, "Cannot delete file - check permissions")
+            }
+            io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
+            _ => FileOperationError::from(e)
         }
-    }
+    })?;
+    
     Ok(())
 }
 
-fn delete_dir(file: &str) -> anyhow::Result<()> {
-    match fs::remove_dir_all(file) {
-        Ok(_) => {}
-        Err(e) => {
-            println!("Error: {:?}", e);
+fn delete_dir(dir_path: &str) -> FileOperationResult<()> {
+    let path = Path::new(dir_path);
+    
+    // Validate directory exists
+    validation::validate_path_exists(path)?;
+    
+    // Validate permissions
+    validation::validate_permissions(path, "delete")?;
+    
+    // Attempt to delete the directory
+    fs::remove_dir_all(path).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(path, "Cannot delete directory - check permissions")
+            }
+            io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
+            _ => FileOperationError::from(e)
         }
-    }
-
+    })?;
+    
     Ok(())
 }
 
-fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
-    let metadata = fs::metadata(file)?;
-    let file_type = metadata.file_type();
-
-    if file_type.is_dir() {
-        delete_dir(file)?;
+fn handle_delete_based_on_type(file_path: &str) -> FileOperationResult<()> {
+    let path = Path::new(file_path);
+    
+    // Validate file exists
+    validation::validate_path_exists(path)?;
+    
+    let metadata = fs::metadata(path).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(path, "Cannot read file information")
+            }
+            io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
+            _ => FileOperationError::from(e)
+        }
+    })?;
+    
+    if metadata.is_dir() {
+        delete_dir(file_path)
     } else {
-        delete_file(file)?;
+        delete_file(file_path)
     }
-    Ok(())
 }
 
 fn get_file_path_data(
@@ -398,29 +434,64 @@ fn get_file_path_data(
     Ok(file_strings)
 }
 
-fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+fn create_new_dir(current_file_path: String, new_item: String) -> FileOperationResult<()> {
+    // Validate the directory name
+    validation::validate_filename(&new_item)?;
+    
     let append_path = format!("{}/{}", current_file_path, new_item);
-
-    // TODO: implications of using (create_dir) || (create_dir_all)
-    let response = match fs::create_dir(append_path) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            return Err(e.into());
+    let path = Path::new(&append_path);
+    
+    // Validate that the directory doesn't already exist
+    validation::validate_path_not_exists(path)?;
+    
+    // Validate parent directory permissions
+    validation::validate_permissions(path, "create")?;
+    
+    // Create the directory
+    fs::create_dir(path).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(path, "Cannot create directory - check permissions")
+            }
+            io::ErrorKind::AlreadyExists => FileOperationError::already_exists(path),
+            io::ErrorKind::NotFound => {
+                FileOperationError::file_not_found(Path::new(&current_file_path))
+            }
+            _ => FileOperationError::from(e)
         }
-    };
-    response
+    })?;
+    
+    Ok(())
 }
 
-fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
+fn create_new_file(current_file_path: String, file_name: String) -> FileOperationResult<()> {
+    // Validate the filename
+    validation::validate_filename(&file_name)?;
+    
     let append_path = format!("{}/{}", current_file_path, file_name);
-    let response = match File::create_new(append_path) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            return Err(e.into());
-            // kind: AlreadyExists
+    let path = Path::new(&append_path);
+    
+    // Validate that the file doesn't already exist
+    validation::validate_path_not_exists(path)?;
+    
+    // Validate parent directory permissions
+    validation::validate_permissions(path, "create")?;
+    
+    // Create the file
+    File::create_new(path).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(path, "Cannot create file - check permissions")
+            }
+            io::ErrorKind::AlreadyExists => FileOperationError::already_exists(path),
+            io::ErrorKind::NotFound => {
+                FileOperationError::file_not_found(Path::new(&current_file_path))
+            }
+            _ => FileOperationError::from(e)
         }
-    };
-    response
+    })?;
+    
+    Ok(())
 }
 
 fn is_file(path: String) -> bool {
@@ -521,25 +592,46 @@ fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
     create_new_file_name
 }
 
-fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+fn create_item_based_on_type(current_file_path: String, new_item: String) -> FileOperationResult<()> {
     if new_item.contains(".") {
-        let file_res = create_new_file(current_file_path, new_item);
-        file_res
+        create_new_file(current_file_path, new_item)
     } else {
-        let dir_res = create_new_dir(current_file_path, new_item);
-        dir_res
+        create_new_dir(current_file_path, new_item)
     }
 }
 
-fn handle_rename(app: &App) -> io::Result<()> {
+fn handle_rename(app: &App) -> FileOperationResult<()> {
+    // Validate the new filename
+    validation::validate_filename(&app.create_edit_file_name)?;
+    
     let curr_path = format!("{}/{}", app.current_path_to_edit, app.current_name_to_edit);
     let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
-
-    let result = match fs::rename(curr_path, new_path) {
-        Ok(res) => res,
-        Err(error) => return Err(error),
-    };
-    Ok(result)
+    
+    let old_path = Path::new(&curr_path);
+    let new_path_obj = Path::new(&new_path);
+    
+    // Validate the old file exists
+    validation::validate_path_exists(old_path)?;
+    
+    // Validate the new path doesn't already exist
+    validation::validate_path_not_exists(new_path_obj)?;
+    
+    // Validate permissions for rename operation
+    validation::validate_permissions(new_path_obj, "rename")?;
+    
+    // Attempt the rename
+    fs::rename(old_path, new_path_obj).map_err(|e| {
+        match e.kind() {
+            io::ErrorKind::PermissionDenied => {
+                FileOperationError::permission_denied(old_path, "Cannot rename - check permissions")
+            }
+            io::ErrorKind::NotFound => FileOperationError::file_not_found(old_path),
+            io::ErrorKind::AlreadyExists => FileOperationError::already_exists(new_path_obj),
+            _ => FileOperationError::from(e)
+        }
+    })?;
+    
+    Ok(())
 }
 
 fn check_if_exists(new_path: String) -> bool {
@@ -2162,14 +2254,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                                     }
                                     Err(e) => {
                                         app.is_create_edit_error = true;
-                                        match e.kind() {
-                                            ErrorKind::InvalidInput => {
-                                                app.error_message = "Invalid input".to_string();
-                                            }
-                                            _ => {
-                                                app.error_message = "Other error".to_string();
-                                            }
-                                        }
+                                        app.error_message = e.user_message();
                                     }
                                 }
                             } else {
@@ -2206,7 +2291,7 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                             let mut split_path = selected.split("/").collect::<Vec<&str>>();
                             split_path.pop();
                             let new_path = split_path.join("/");
-                            match create_item_based_on_type(
+                                match create_item_based_on_type(
                                 new_path,
                                 app.create_edit_file_name.clone(),
                             ) {
@@ -2225,16 +2310,10 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                                     app.update_file_references();
                                 }
                                 Err(e) => {
-                                    let error = e.downcast_ref::<io::Error>().unwrap();
-                                    match error.kind() {
-                                        ErrorKind::AlreadyExists => {
-                                            app.error_message = "File Already Exists".to_string();
-                                            app.is_create_edit_error = true;
-                                        }
-                                        _ => {}
-                                    }
-                                } // show error to user
-                            } // test
+                                    app.is_create_edit_error = true;
+                                    app.error_message = e.user_message();
+                                }
+                            }
                         }
                     }
                     _ => {}

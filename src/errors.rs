@@ -1,5 +1,6 @@
 use thiserror::Error;
 use std::io;
+use std::path::Path;
 
 /// Main application error type that encompasses all possible errors
 #[derive(Error, Debug)]
@@ -154,5 +155,355 @@ where
 {
     fn path_context<S: Into<String>>(self, message: S) -> AppResult<T> {
         self.map_err(|_| AppError::path(message))
+    }
+}
+
+/// Specific error type for file operations with detailed context
+#[derive(Error, Debug, Clone)]
+pub enum FileOperationError {
+    #[error("Permission denied: Cannot access '{path}'. {context}")]
+    PermissionDenied { path: String, context: String },
+    
+    #[error("File not found: '{path}' does not exist")]
+    FileNotFound { path: String },
+    
+    #[error("Directory not empty: '{path}' contains files and cannot be deleted")]
+    DirectoryNotEmpty { path: String },
+    
+    #[error("Invalid name: '{name}' is not valid. {reason}")]
+    InvalidName { name: String, reason: String },
+    
+    #[error("Already exists: '{path}' already exists")]
+    AlreadyExists { path: String },
+    
+    #[error("Invalid path: '{path}' is not a valid file system path")]
+    InvalidPath { path: String },
+    
+    #[error("Operation not supported: {operation} is not supported on '{path}'")]
+    UnsupportedOperation { operation: String, path: String },
+    
+    #[error("Disk full: Not enough space to complete operation on '{path}'")]
+    DiskFull { path: String },
+    
+    #[error("File too large: '{path}' is too large for this operation")]
+    FileTooLarge { path: String },
+    
+    #[error("Cross-device operation: Cannot move '{from}' to '{to}' (different filesystems)")]
+    CrossDevice { from: String, to: String },
+    
+    #[error("IO error: {message}")]
+    Io { message: String },
+}
+
+/// Result type alias for file operations
+pub type FileOperationResult<T> = Result<T, FileOperationError>;
+
+impl From<io::Error> for FileOperationError {
+    fn from(error: io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::PermissionDenied => Self::PermissionDenied {
+                path: "unknown".to_string(),
+                context: "Check file permissions and ownership".to_string(),
+            },
+            io::ErrorKind::NotFound => Self::FileNotFound {
+                path: "unknown".to_string(),
+            },
+            io::ErrorKind::AlreadyExists => Self::AlreadyExists {
+                path: "unknown".to_string(),
+            },
+            io::ErrorKind::StorageFull => Self::DiskFull {
+                path: "unknown".to_string(),
+            },
+            _ => Self::Io {
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+impl From<FileOperationError> for AppError {
+    fn from(error: FileOperationError) -> Self {
+        AppError::FileSystem(io::Error::new(
+            io::ErrorKind::Other,
+            error.to_string(),
+        ))
+    }
+}
+
+impl FileOperationError {
+    /// Create a permission denied error with context
+    pub fn permission_denied<P: AsRef<Path>>(path: P, context: &str) -> Self {
+        Self::PermissionDenied {
+            path: path.as_ref().display().to_string(),
+            context: context.to_string(),
+        }
+    }
+    
+    /// Create a file not found error
+    pub fn file_not_found<P: AsRef<Path>>(path: P) -> Self {
+        Self::FileNotFound {
+            path: path.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Create an already exists error
+    pub fn already_exists<P: AsRef<Path>>(path: P) -> Self {
+        Self::AlreadyExists {
+            path: path.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Create an invalid name error
+    pub fn invalid_name<S: Into<String>>(name: S, reason: &str) -> Self {
+        Self::InvalidName {
+            name: name.into(),
+            reason: reason.to_string(),
+        }
+    }
+    
+    /// Create a directory not empty error
+    pub fn directory_not_empty<P: AsRef<Path>>(path: P) -> Self {
+        Self::DirectoryNotEmpty {
+            path: path.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Create an invalid path error
+    pub fn invalid_path<P: AsRef<Path>>(path: P) -> Self {
+        Self::InvalidPath {
+            path: path.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Create an unsupported operation error
+    pub fn unsupported_operation<P: AsRef<Path>>(operation: &str, path: P) -> Self {
+        Self::UnsupportedOperation {
+            operation: operation.to_string(),
+            path: path.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Create a cross-device error
+    pub fn cross_device<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Self {
+        Self::CrossDevice {
+            from: from.as_ref().display().to_string(),
+            to: to.as_ref().display().to_string(),
+        }
+    }
+    
+    /// Get a user-friendly error message for UI display
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::PermissionDenied { path, context } => {
+                let file_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("Cannot access '{}': Permission denied. {}", file_name, context)
+            },
+            Self::FileNotFound { path } => {
+                let file_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("'{}' not found. The file or directory may have been moved or deleted.", file_name)
+            },
+            Self::DirectoryNotEmpty { path } => {
+                let dir_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("Cannot delete '{}': Directory is not empty. Delete contents first.", dir_name)
+            },
+            Self::InvalidName { name, reason } => {
+                format!("'{}' is not a valid name: {}", name, reason)
+            },
+            Self::AlreadyExists { path } => {
+                let file_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("'{}' already exists. Choose a different name.", file_name)
+            },
+            Self::InvalidPath { path } => {
+                format!("'{}' is not a valid file system path.", path)
+            },
+            Self::UnsupportedOperation { operation, path } => {
+                let file_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("{} is not supported on '{}'.", operation, file_name)
+            },
+            Self::DiskFull { path } => {
+                format!("Not enough disk space to complete the operation. Free up space and try again.")
+            },
+            Self::FileTooLarge { path } => {
+                let file_name = Path::new(path).file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path);
+                format!("'{}' is too large for this operation.", file_name)
+            },
+            Self::CrossDevice { from, to } => {
+                format!("Cannot move between different file systems. Copy and delete instead.")
+            },
+            Self::Io { message } => {
+                format!("File operation failed: {}", message)
+            },
+        }
+    }
+    
+    /// Get a short title for the error (for dialog titles)
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::PermissionDenied { .. } => "Permission Denied",
+            Self::FileNotFound { .. } => "File Not Found",
+            Self::DirectoryNotEmpty { .. } => "Directory Not Empty",
+            Self::InvalidName { .. } => "Invalid Name",
+            Self::AlreadyExists { .. } => "Already Exists",
+            Self::InvalidPath { .. } => "Invalid Path",
+            Self::UnsupportedOperation { .. } => "Operation Not Supported",
+            Self::DiskFull { .. } => "Disk Full",
+            Self::FileTooLarge { .. } => "File Too Large",
+            Self::CrossDevice { .. } => "Cross-Device Operation",
+            Self::Io { .. } => "File Error",
+        }
+    }
+    
+    /// Check if this error is recoverable (user can retry)
+    pub fn is_recoverable(&self) -> bool {
+        match self {
+            Self::PermissionDenied { .. } => false, // Need to fix permissions first
+            Self::FileNotFound { .. } => false, // File is gone
+            Self::DirectoryNotEmpty { .. } => true, // Can delete contents first
+            Self::InvalidName { .. } => true, // Can choose different name
+            Self::AlreadyExists { .. } => true, // Can choose different name
+            Self::InvalidPath { .. } => true, // Can choose different path
+            Self::UnsupportedOperation { .. } => false, // Operation not possible
+            Self::DiskFull { .. } => true, // Can free up space
+            Self::FileTooLarge { .. } => false, // Size won't change
+            Self::CrossDevice { .. } => true, // Can copy instead of move
+            Self::Io { .. } => true, // Might be temporary
+        }
+    }
+}
+
+/// Validation functions for file operations
+pub mod validation {
+    use super::*;
+    use std::path::Path;
+    
+    /// Validate a filename for creation/rename operations
+    pub fn validate_filename(name: &str) -> FileOperationResult<()> {
+        if name.is_empty() {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Name cannot be empty"
+            ));
+        }
+        
+        if name.len() > 255 {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Name too long (maximum 255 characters)"
+            ));
+        }
+        
+        // Check for invalid characters (Windows and Unix)
+        let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0'];
+        if name.chars().any(|c| invalid_chars.contains(&c)) {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Contains invalid characters: / \\ : * ? \" < > |"
+            ));
+        }
+        
+        // Check for reserved names (Windows)
+        let reserved_names = [
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        ];
+        let name_upper = name.to_uppercase();
+        if reserved_names.iter().any(|&reserved| {
+            name_upper == reserved || name_upper.starts_with(&format!("{}.", reserved))
+        }) {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Reserved system name"
+            ));
+        }
+        
+        // Check for names that are just dots
+        if name == "." || name == ".." {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Cannot use '.' or '..' as names"
+            ));
+        }
+        
+        // Check for trailing dots or spaces (Windows issue)
+        if name.ends_with('.') || name.ends_with(' ') {
+            return Err(FileOperationError::invalid_name(
+                name,
+                "Cannot end with dots or spaces"
+            ));
+        }
+        
+        Ok(())
+    }
+    
+    /// Validate that a path exists and is accessible
+    pub fn validate_path_exists<P: AsRef<Path>>(path: P) -> FileOperationResult<()> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(FileOperationError::file_not_found(path));
+        }
+        Ok(())
+    }
+    
+    /// Validate that a path doesn't exist (for creation operations)
+    pub fn validate_path_not_exists<P: AsRef<Path>>(path: P) -> FileOperationResult<()> {
+        let path = path.as_ref();
+        if path.exists() {
+            return Err(FileOperationError::already_exists(path));
+        }
+        Ok(())
+    }
+    
+    /// Validate that we have permission to perform an operation on a path
+    pub fn validate_permissions<P: AsRef<Path>>(path: P, operation: &str) -> FileOperationResult<()> {
+        let path = path.as_ref();
+        
+        // Check if parent directory exists and is writable for create operations
+        if operation == "create" || operation == "rename" {
+            if let Some(parent) = path.parent() {
+                if !parent.exists() {
+                    return Err(FileOperationError::file_not_found(parent));
+                }
+                
+                // Try to check if directory is writable by attempting to create a temp file
+                let temp_path = parent.join(".ff_permission_test");
+                if let Err(_) = std::fs::File::create(&temp_path) {
+                    return Err(FileOperationError::permission_denied(
+                        parent,
+                        "Cannot write to parent directory"
+                    ));
+                } else {
+                    // Clean up the temp file
+                    let _ = std::fs::remove_file(temp_path);
+                }
+            }
+        }
+        
+        // For delete operations, check if the file itself is writable
+        if operation == "delete" && path.exists() {
+            let metadata = std::fs::metadata(path)
+                .map_err(|_| FileOperationError::permission_denied(path, "Cannot read file metadata"))?;
+            
+            if metadata.permissions().readonly() {
+                return Err(FileOperationError::permission_denied(
+                    path,
+                    "File is read-only"
+                ));
+            }
+        }
+        
+        Ok(())
     }
 }
