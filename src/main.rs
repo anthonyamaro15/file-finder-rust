@@ -1569,6 +1569,11 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                 }
                 _ => {}
             }
+            
+            // Render error notification overlay if there's an active error
+            if status_bar.has_error() {
+                status_bar.render_error_notification(f, f.size());
+            }
         })?;
         
         // Handle copy progress messages
@@ -2357,19 +2362,28 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                         if let Some(selected_indx) = selected_index {
                             let selected = &app.files[selected_indx];
 
-                            handle_delete_based_on_type(selected).unwrap();
-
-                            let file_path_list = get_file_path_data(
-                                settings.start_path.to_owned(),
-                                app.show_hidden_files,
-                                SortBy::Default,
-                                &sort_type,
-                            )?;
-                            app.render_popup = false;
-                            app.files = file_path_list.clone();
-                            app.read_only_files = file_path_list.clone();
-                            app.update_file_references();
-                            app.input_mode = InputMode::Normal;
+                            match handle_delete_based_on_type(selected) {
+                                Ok(_) => {
+                                    let file_path_list = get_file_path_data(
+                                        settings.start_path.to_owned(),
+                                        app.show_hidden_files,
+                                        SortBy::Default,
+                                        &sort_type,
+                                    )?;
+                                    app.render_popup = false;
+                                    app.files = file_path_list.clone();
+                                    app.read_only_files = file_path_list.clone();
+                                    app.update_file_references();
+                                    app.input_mode = InputMode::Normal;
+                                }
+                                Err(e) => {
+                                    // Show error in status bar
+                                    status_bar.show_error(e.user_message(), None);
+                                    warn!("Delete operation failed: {}", e.user_message());
+                                    app.render_popup = false;
+                                    app.input_mode = InputMode::Normal;
+                                }
+                            }
                         }
                     }
                     _ => {}

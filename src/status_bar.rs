@@ -17,6 +17,8 @@ pub struct StatusBar {
     pub total_size: u64,
     pub selected_item_info: String,
     pub system_info: String,
+    pub error_message: Option<String>,
+    pub error_display_time: Option<std::time::Instant>,
 }
 
 impl StatusBar {
@@ -28,6 +30,8 @@ impl StatusBar {
             total_size: 0,
             selected_item_info: String::new(),
             system_info: Self::get_system_info(),
+            error_message: None,
+            error_display_time: None,
         }
     }
 
@@ -36,6 +40,7 @@ impl StatusBar {
         self.update_current_directory(app);
         self.update_selected_item_info(app);
         self.calculate_total_size(app);
+        self.update_error_display();
     }
 
     fn update_file_counts(&mut self, app: &App) {
@@ -232,8 +237,81 @@ impl StatusBar {
         frame.render_widget(selected_widget, chunks[1]);
     }
 
+    /// Show an error message for a specified duration (default: 3 seconds)
+    pub fn show_error(&mut self, message: String, duration_secs: Option<u64>) {
+        self.error_message = Some(message);
+        self.error_display_time = Some(std::time::Instant::now());
+    }
+    
+    /// Clear the current error message
+    pub fn clear_error(&mut self) {
+        self.error_message = None;
+        self.error_display_time = None;
+    }
+    
+    /// Update error display (auto-hide after timeout)
+    fn update_error_display(&mut self) {
+        if let (Some(_), Some(display_time)) = (&self.error_message, self.error_display_time) {
+            // Auto-hide error after 3 seconds
+            if display_time.elapsed() > std::time::Duration::from_secs(3) {
+                self.clear_error();
+            }
+        }
+    }
+    
+    /// Check if there's an active error message
+    pub fn has_error(&self) -> bool {
+        self.error_message.is_some()
+    }
+    
+    /// Render error notification as an overlay
+    pub fn render_error_notification(&self, frame: &mut Frame, area: Rect) {
+        if let Some(ref error_msg) = self.error_message {
+            // Calculate popup size (60% width, minimum height for message)
+            let popup_width = (area.width * 6) / 10;
+            let popup_height = 5;
+            
+            let popup_x = (area.width - popup_width) / 2;
+            let popup_y = 2; // Show near top of screen
+            
+            let popup_area = Rect {
+                x: popup_x,
+                y: popup_y,
+                width: popup_width,
+                height: popup_height,
+            };
+            
+            // Clear the area
+            let clear_widget = ratatui::widgets::Clear;
+            frame.render_widget(clear_widget, popup_area);
+            
+            // Render error message
+            let error_block = Paragraph::new(error_msg.clone())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("❌ Error")
+                        .style(Style::default().fg(Color::Red))
+                )
+                .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+                .wrap(ratatui::widgets::Wrap { trim: true });
+            
+            frame.render_widget(error_block, popup_area);
+        }
+    }
+
     pub fn get_status_text(&self, app: &App) -> Vec<Line> {
         let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode);
+        
+        // If there's an error, show it in the status line
+        if let Some(ref error_msg) = self.error_message {
+            return vec![
+                Line::from(vec![
+                    Span::styled("❌ ERROR: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(error_msg.clone(), Style::default().fg(Color::White)),
+                ])
+            ];
+        }
         
         vec![
             Line::from(vec![
