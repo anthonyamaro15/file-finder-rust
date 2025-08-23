@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Instant;
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -117,6 +118,10 @@ pub struct App {
     pub cache_loading_complete: bool,
     pub completed_cache_store: Option<crate::directory_store::DirectoryStore>,
 
+    // Cache build timing
+    pub cache_build_started_at: Option<Instant>,
+    pub cache_build_elapsed_ms: Option<u128>,
+
     // Configuration and theming
     pub settings: Settings,
     pub theme_colors: ThemeColors,
@@ -214,6 +219,10 @@ impl App {
             cache_current_directory: String::new(),
             cache_loading_complete: false,
             completed_cache_store: None,
+
+            // Cache build timing
+            cache_build_started_at: None,
+            cache_build_elapsed_ms: None,
 
             // Load default configuration - this will be replaced with proper loading
             settings: Settings::default(),
@@ -851,12 +860,15 @@ impl App {
     pub fn start_cache_loading(
         &mut self,
         receiver: std::sync::mpsc::Receiver<crate::directory_store::CacheBuildProgress>,
+        started_at: Instant,
     ) {
         self.input_mode = InputMode::CacheLoading;
         self.cache_loading_progress = Some(receiver);
         self.cache_directories_processed = 0;
         self.cache_current_directory = String::new();
         self.cache_loading_complete = false;
+        self.cache_build_started_at = Some(started_at);
+        self.cache_build_elapsed_ms = None;
     }
 
     /// Process cache loading progress messages
@@ -877,6 +889,18 @@ impl App {
                         self.completed_cache_store = Some(store);
                         self.cache_loading_complete = true;
                         self.cache_loading_progress = None;
+
+                        // Compute elapsed time if we have a start timestamp
+                        if let Some(started) = self.cache_build_started_at.take() {
+                            let elapsed = started.elapsed();
+                            self.cache_build_elapsed_ms = Some(elapsed.as_millis());
+                            debug!(
+                                "Cache build completed in {:.3}s ({} ms) - processed {} directories",
+                                elapsed.as_secs_f64(),
+                                elapsed.as_millis(),
+                                self.cache_directories_processed
+                            );
+                        }
                         return true; // Cache loading is complete
                     }
                     crate::directory_store::CacheBuildProgress::Error(error_msg) => {

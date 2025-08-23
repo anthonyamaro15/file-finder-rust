@@ -1035,7 +1035,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Set editor from CLI: {:?}", editor);
     }
 
-    let store = if Path::new(&settings.cache_directory).exists() {
+    let store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         let res = load_directory_from_file(&settings.cache_directory.to_owned()).unwrap();
         println!("Loading directory cache from file");
         res
@@ -1043,13 +1043,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Starting asynchronous directory cache build...");
 
         // Start async cache building
+        let start_time = std::time::Instant::now();
         let rx = build_directory_from_store_async(
             settings.start_path.clone(),
             settings.ignore_directories.clone(),
         );
 
-        // Set up the app to display loading progress
-        app.start_cache_loading(rx);
+        // Set up the app to display loading progress and record start time
+        app.start_cache_loading(rx, start_time);
 
         // Return empty store for now - it will be populated when cache building completes
         crate::directory_store::DirectoryStore {
@@ -1572,6 +1573,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "Successfully saved cache to file: {}",
                                 settings.cache_directory
                             );
+                            if let Some(ms) = app.cache_build_elapsed_ms {
+                                println!("Directory cache built and saved in {} ms", ms);
+                            }
                         }
                         Err(e) => {
                             debug!("Failed to save cache to file: {}", e);
