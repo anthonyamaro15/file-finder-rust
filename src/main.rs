@@ -2080,6 +2080,20 @@ let new_preview_files = get_file_path_data(preview_list_path.unwrap(), false, So
                             }
                         }
                     }
+
+                    KeyCode::Char('o') => {
+                                if let Some(index) = state.selected() {
+
+
+                                    Command::new("open")
+                                    .arg(&app.files[index])
+                                    .spawn()
+                                    .expect("failed to open file");
+
+                                    break;
+                                }
+
+                            }
                     KeyCode::Char('d') => {
                         app.render_popup = true;
                         app.input_mode = InputMode::WatchDelete;
