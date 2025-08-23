@@ -2,7 +2,6 @@ mod common;
 
 use file_finder::app::{App, InputMode, IDE};
 use file_finder::directory_store::DirectoryStore;
-use common::*;
 
 #[cfg(test)]
 mod app_creation_tests {
@@ -116,18 +115,15 @@ mod input_handling_tests {
 
     #[test]
     fn test_enter_char_at_end() {
-        let files = vec![
-            "/path/test.txt".to_string(),
-            "/path/example.rs".to_string(),
-        ];
+        let files = vec!["/path/test.txt".to_string(), "/path/example.rs".to_string()];
         let mut app = App::new(files);
         let store = DirectoryStore::new();
-        
+
         app.input = "test".to_string();
         app.character_index = 4;
 
         app.enter_char('s', store);
-        
+
         assert_eq!(app.input, "tests");
         assert_eq!(app.character_index, 5);
     }
@@ -137,12 +133,12 @@ mod input_handling_tests {
         let files = vec!["/path/test.txt".to_string()];
         let mut app = App::new(files);
         let store = DirectoryStore::new();
-        
+
         app.input = "tst".to_string();
         app.character_index = 1;
 
         app.enter_char('e', store);
-        
+
         assert_eq!(app.input, "test");
         assert_eq!(app.character_index, 2);
     }
@@ -152,12 +148,12 @@ mod input_handling_tests {
         let files = vec!["/path/test.txt".to_string()];
         let mut app = App::new(files);
         let store = DirectoryStore::new();
-        
+
         app.input = "test".to_string();
         app.character_index = 2;
 
         app.delete_char(store);
-        
+
         assert_eq!(app.input, "tst");
         assert_eq!(app.character_index, 1);
     }
@@ -167,12 +163,12 @@ mod input_handling_tests {
         let files = vec!["/path/test.txt".to_string()];
         let mut app = App::new(files);
         let store = DirectoryStore::new();
-        
+
         app.input = "test".to_string();
         app.character_index = 0;
 
         app.delete_char(store);
-        
+
         assert_eq!(app.input, "test"); // Should not delete when at start
         assert_eq!(app.character_index, 0);
     }
@@ -216,10 +212,7 @@ mod filtering_tests {
 
     #[test]
     fn test_filter_files_empty_input() {
-        let files = vec![
-            "/path/test.txt".to_string(),
-            "/path/example.rs".to_string(),
-        ];
+        let files = vec!["/path/test.txt".to_string(), "/path/example.rs".to_string()];
         let mut app = App::new(files);
         let store = DirectoryStore::new();
 
@@ -324,10 +317,10 @@ mod state_management_tests {
     #[test]
     fn test_submit_multiple_messages() {
         let mut app = App::new(vec![]);
-        
+
         app.input = "first message".to_string();
         app.submit_message();
-        
+
         app.input = "second message".to_string();
         app.submit_message();
 

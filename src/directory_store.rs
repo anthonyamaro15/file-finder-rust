@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::mpsc;
 use std::thread;
 use walkdir::WalkDir;
 
@@ -86,8 +86,13 @@ pub fn load_directory_from_file(path: &str) -> io::Result<DirectoryStore> {
 // Progress message for directory cache building
 #[derive(Debug, Clone)]
 pub enum CacheBuildProgress {
-    Progress { directories_found: usize, current_path: String },
-    Completed { store: DirectoryStore },
+    Progress {
+        directories_found: usize,
+        current_path: String,
+    },
+    Completed {
+        store: DirectoryStore,
+    },
     Error(String),
 }
 
@@ -97,13 +102,13 @@ pub fn build_directory_from_store_async(
     ignore_directories: Vec<String>,
 ) -> mpsc::Receiver<CacheBuildProgress> {
     let (tx, rx) = mpsc::channel();
-    
+
     thread::spawn(move || {
         let mut store = DirectoryStore::new();
         let mut count = 0;
         const UPDATE_INTERVAL: usize = 100; // Update progress every 100 directories
         let mut update_counter = 0;
-        
+
         for entry in WalkDir::new(&root_dir).min_depth(1) {
             match entry {
                 Ok(entry) => {
@@ -125,7 +130,7 @@ pub fn build_directory_from_store_async(
                             store.insert(entry.path().to_str().unwrap());
                             count += 1;
                             update_counter += 1;
-                            
+
                             // Send progress update periodically
                             if update_counter >= UPDATE_INTERVAL {
                                 let _ = tx.send(CacheBuildProgress::Progress {
@@ -143,16 +148,16 @@ pub fn build_directory_from_store_async(
                 }
             }
         }
-        
+
         // Send final progress update
         let _ = tx.send(CacheBuildProgress::Progress {
             directories_found: count,
             current_path: "Finalizing...".to_string(),
         });
-        
+
         // Send completion message
         let _ = tx.send(CacheBuildProgress::Completed { store });
     });
-    
+
     rx
 }

@@ -7,7 +7,7 @@ use std::{
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{AppResult, AppError};
+use crate::errors::{AppError, AppResult};
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 
@@ -30,7 +30,7 @@ impl Configuration {
         };
 
         config.set_default_ignore_directories();
-        
+
         // Use a fallback if home_dir() returns None
         let home_dir = match home_dir() {
             Some(dir) => dir,
@@ -39,7 +39,7 @@ impl Configuration {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             }
         };
-        
+
         let append_config_to_cache =
             format!("{}/.config/ff/cache_directory.json", home_dir.display());
         let append_config_to_settings = format!("{}/.config/ff/settings.json", home_dir.display());
@@ -76,10 +76,15 @@ impl Configuration {
     }
     pub fn handle_settings_configuration(&mut self) -> AppResult<()> {
         let append_config_dir = format!("{}/.config/ff", self.root_dir);
-        let config_dir_exists = Path::new(&append_config_dir).try_exists()
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to check if config directory exists '{}': {}", append_config_dir, e)
-            })?;
+        let config_dir_exists =
+            Path::new(&append_config_dir)
+                .try_exists()
+                .map_err(|e| AppError::Configuration {
+                    message: format!(
+                        "Failed to check if config directory exists '{}': {}",
+                        append_config_dir, e
+                    ),
+                })?;
 
         if config_dir_exists {
             // Try to load existing settings, but handle errors gracefully
@@ -103,52 +108,51 @@ impl Configuration {
             // Create directory and files since they don't exist
             self.create_files()?;
         }
-        
+
         Ok(())
     }
 
     fn create_files(&self) -> AppResult<()> {
         let config_root_dir = format!("{}/.config/ff", self.root_dir);
-        fs::create_dir_all(&config_root_dir)
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to create config directory '{}': {}", config_root_dir, e)
-            })?;
+        fs::create_dir_all(&config_root_dir).map_err(|e| AppError::Configuration {
+            message: format!(
+                "Failed to create config directory '{}': {}",
+                config_root_dir, e
+            ),
+        })?;
 
         // only create file if it does not exist
         if !Path::new(&self.settings_path).exists() {
             self.write_settings_to_file()?;
         }
-        
+
         Ok(())
     }
 
     pub fn write_settings_to_file(&self) -> AppResult<()> {
-        let file = File::create(self.settings_path.to_owned())
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to create settings file: {}", e)
+        let file =
+            File::create(self.settings_path.to_owned()).map_err(|e| AppError::Configuration {
+                message: format!("Failed to create settings file: {}", e),
             })?;
-        
+
         let writer = BufWriter::new(file);
-        serde_json::to_writer(writer, self)
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to write settings to file: {}", e)
-            })?;
-        
+        serde_json::to_writer(writer, self).map_err(|e| AppError::Configuration {
+            message: format!("Failed to write settings to file: {}", e),
+        })?;
+
         Ok(())
     }
 
     pub fn load_settings_from_file(&self, path: &str) -> AppResult<Configuration> {
-        let file = File::open(path)
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to open settings file '{}': {}", path, e)
-            })?;
-        
+        let file = File::open(path).map_err(|e| AppError::Configuration {
+            message: format!("Failed to open settings file '{}': {}", path, e),
+        })?;
+
         let reader = BufReader::new(file);
-        let settings = serde_json::from_reader(reader)
-            .map_err(|e| AppError::Configuration {
-                message: format!("Failed to parse settings file '{}': {}", path, e)
-            })?;
-        
+        let settings = serde_json::from_reader(reader).map_err(|e| AppError::Configuration {
+            message: format!("Failed to parse settings file '{}': {}", path, e),
+        })?;
+
         Ok(settings)
     }
 }

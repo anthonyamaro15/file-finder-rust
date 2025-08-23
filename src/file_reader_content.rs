@@ -1,4 +1,9 @@
-use std::{fs, io::{self, Read}, iter::zip, path::Path};
+use std::{
+    fs,
+    io::{self, Read},
+    iter::zip,
+    path::Path,
+};
 
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
@@ -83,11 +88,13 @@ impl FileContent<'_> {
         if extension_type.is_none() {
             return content;
         }
-        
+
         let extension = extension_type.unwrap();
-        
+
         // Try to find syntax by extension, with fallback options
-        let syntax = self.syntax_set.find_syntax_by_extension(&extension)
+        let syntax = self
+            .syntax_set
+            .find_syntax_by_extension(&extension)
             .or_else(|| {
                 // Try some common mappings for extensions that might not be directly supported
                 match extension.as_str() {
@@ -95,22 +102,22 @@ impl FileContent<'_> {
                     "tsx" => self.syntax_set.find_syntax_by_extension("jsx"),
                     "vue" => self.syntax_set.find_syntax_by_extension("html"),
                     "svelte" => self.syntax_set.find_syntax_by_extension("html"),
-                    _ => None
+                    _ => None,
                 }
             })
             .or_else(|| Some(self.syntax_set.find_syntax_plain_text()));
-            
+
         if let Some(syntax) = syntax {
             let mut res = String::from("");
             let mut spans = vec![];
             let syntax_set = self.syntax_set.clone();
             let theme = self.theme_set.themes["base16-ocean.dark"].clone();
             let mut h = HighlightLines::new(syntax, &theme);
-            
+
             for line in LinesWithEndings::from(&content) {
                 // LinesWithEndings enables use of newlines mode
                 let mut lines: Vec<Span> = vec![];
-                
+
                 // Handle potential highlighting errors gracefully
                 let ranges = match h.highlight_line(line, &syntax_set) {
                     Ok(ranges) => ranges,
@@ -138,7 +145,8 @@ impl FileContent<'_> {
         } else {
             // If no syntax found, return content as-is and don't set highlighted_content
             self.is_error = true;
-            self.error_message = format!("No syntax highlighting available for .{} files", extension);
+            self.error_message =
+                format!("No syntax highlighting available for .{} files", extension);
             content
         }
     }
@@ -147,15 +155,16 @@ impl FileContent<'_> {
         // Check if this is an image file first to avoid trying to read binary data as text
         let file_type = self.get_file_extension(path.clone());
         if matches!(file_type, FileType::Image | FileType::Binary) {
-            return format!("Cannot display {} file as text", 
+            return format!(
+                "Cannot display {} file as text",
                 match file_type {
                     FileType::Image => "image",
                     FileType::Binary => "binary",
-                    _ => "unknown"
+                    _ => "unknown",
                 }
             );
         }
-        
+
         let content = match fs::read_to_string(path) {
             Ok(file_content) => file_content,
             Err(err) => {
@@ -191,34 +200,30 @@ impl FileContent<'_> {
 
                 match ext.as_str() {
                     // Source code files
-                    "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "cc" | "cxx" | 
-                    "h" | "hpp" | "java" | "go" | "php" | "rb" | "scala" | "kt" | "swift" | 
-                    "dart" | "css" | "scss" | "less" | "html" | "htm" | "xml" | "vue" | 
-                    "svelte" | "sql" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" => {
+                    "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "cc" | "cxx"
+                    | "h" | "hpp" | "java" | "go" | "php" | "rb" | "scala" | "kt" | "swift"
+                    | "dart" | "css" | "scss" | "less" | "html" | "htm" | "xml" | "vue"
+                    | "svelte" | "sql" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" => {
                         FileType::SourceCode
                     }
-                    
+
                     // Markdown and documentation
-                    "md" | "markdown" | "rst" | "adoc" | "asciidoc" => {
-                        FileType::Markdown
-                    }
-                    
+                    "md" | "markdown" | "rst" | "adoc" | "asciidoc" => FileType::Markdown,
+
                     // Text files
-                    "txt" | "log" | "logs" | "out" | "err" | "readme" | "license" | "authors" | 
-                    "changelog" | "news" | "todo" | "notes" => {
-                        FileType::TextFile
-                    }
-                    
+                    "txt" | "log" | "logs" | "out" | "err" | "readme" | "license" | "authors"
+                    | "changelog" | "news" | "todo" | "notes" => FileType::TextFile,
+
                     // Configuration files
-                    "toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "cfg" | "env" | 
-                    "properties" | "plist" | "dockerfile" | "makefile" | "cmake" => {
+                    "toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "cfg" | "env"
+                    | "properties" | "plist" | "dockerfile" | "makefile" | "cmake" => {
                         FileType::ConfigFile
                     }
-                    
+
                     // Data files
                     "json" => FileType::JSON,
                     "csv" | "tsv" => FileType::CSV,
-                    
+
                     // Archive files
                     "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "txz" => {
                         if ext == "zip" {
@@ -227,19 +232,15 @@ impl FileContent<'_> {
                             FileType::Archive
                         }
                     }
-                    
+
                     // Image files
-                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "svg" | "webp" | 
-                    "ico" | "icns" => {
-                        FileType::Image
-                    }
-                    
+                    "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "svg" | "webp"
+                    | "ico" | "icns" => FileType::Image,
+
                     // Binary and executable files
-                    "exe" | "dll" | "so" | "dylib" | "bin" | "app" | "deb" | "rpm" | "dmg" | 
-                    "iso" | "img" | "msi" => {
-                        FileType::Binary
-                    }
-                    
+                    "exe" | "dll" | "so" | "dylib" | "bin" | "app" | "deb" | "rpm" | "dmg"
+                    | "iso" | "img" | "msi" => FileType::Binary,
+
                     _ => {
                         // Check if it's a known binary file by content or treat as text
                         self.detect_file_type_by_content(&path)
@@ -248,10 +249,11 @@ impl FileContent<'_> {
             }
             None => {
                 // Files without extension - check common names or content
-                let filename = Path::new(&path).file_name()
+                let filename = Path::new(&path)
+                    .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("");
-                    
+
                 match filename.to_lowercase().as_str() {
                     "makefile" | "dockerfile" | "rakefile" | "gemfile" | "procfile" => {
                         FileType::ConfigFile
@@ -259,12 +261,12 @@ impl FileContent<'_> {
                     "readme" | "license" | "authors" | "changelog" | "news" | "todo" => {
                         FileType::TextFile
                     }
-                    _ => self.detect_file_type_by_content(&path)
+                    _ => self.detect_file_type_by_content(&path),
                 }
             }
         }
     }
-    
+
     /// Detect file type by examining file content for files without clear extensions
     fn detect_file_type_by_content(&self, path: &str) -> FileType {
         if let Ok(mut file) = fs::File::open(path) {
@@ -277,11 +279,11 @@ impl FileContent<'_> {
                         .iter()
                         .filter(|&&b| b < 32 && b != 9 && b != 10 && b != 13)
                         .count();
-                    
+
                     if null_count > 0 || non_printable_count as f32 / bytes_read as f32 > 0.1 {
                         return FileType::Binary;
                     }
-                    
+
                     // Check for common file signatures
                     if buffer.starts_with(b"\x89PNG") {
                         return FileType::Image;
@@ -298,7 +300,7 @@ impl FileContent<'_> {
                 }
             }
         }
-        
+
         // Default to text file if we can't determine otherwise
         FileType::TextFile
     }
