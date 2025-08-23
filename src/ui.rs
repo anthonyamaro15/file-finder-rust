@@ -59,7 +59,7 @@ impl Ui {
     ) {
         // Create enhanced title with search feedback
         let list_title = self.generate_list_title(app);
-        
+
         // Generate list items based on search mode
         let filtered_read_only_items = self.generate_list_items(app);
 
@@ -81,7 +81,7 @@ impl Ui {
                             } else {
                                 OneDarkTheme::local_search()
                             }
-                        },
+                        }
                         _ => OneDarkTheme::inactive_border(),
                     }),
             )
@@ -133,23 +133,25 @@ impl Ui {
 
         f.render_stateful_widget(list_preview_block, inner_layout[1], state);
     }
-    
+
     /// Generate an enhanced title that shows search feedback
     fn generate_list_title(&self, app: &App) -> String {
         if app.copy_in_progress {
             if app.copy_total_files > 0 {
                 let percentage = (app.copy_files_processed * 100) / app.copy_total_files;
-                return format!("📦 Copying... {}% ({}/{})", 
-                    percentage, app.copy_files_processed, app.copy_total_files);
+                return format!(
+                    "📦 Copying... {}% ({}/{})",
+                    percentage, app.copy_files_processed, app.copy_total_files
+                );
             } else {
                 return "📦 Preparing copy...".to_string();
             }
         }
-        
+
         if app.loading {
             return "⏳ Loading...".to_string();
         }
-        
+
         if app.input_mode == InputMode::Editing && !app.input.is_empty() {
             if app.global_search_mode {
                 let count = app.search_results.len();
@@ -163,7 +165,7 @@ impl Ui {
             format!("Files ({})", total)
         }
     }
-    
+
     /// Generate list items based on current search state (optimized with pagination)
     fn generate_list_items(&self, app: &App) -> Vec<ListItem> {
         let search_term = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
@@ -177,7 +179,7 @@ impl Ui {
         } else {
             ""
         };
-        
+
         if app.global_search_mode && !app.search_results.is_empty() {
             // Show global search results with highlighted search terms
             app.search_results
@@ -185,33 +187,32 @@ impl Ui {
                 .take(50) // Limit to top 50 results for performance
                 .map(|result| {
                     let icon = if result.is_directory { "📁" } else { "📄" };
-                    
+
                     if !search_term.is_empty() {
                         // Create highlighted filename with search term
                         let highlighted_line = highlight_search_term(
                             &result.display_name,
                             search_term,
                             OneDarkTheme::normal(),
-                            OneDarkTheme::search_highlight()
+                            OneDarkTheme::search_highlight(),
                         );
-                        
+
                         // Add icon and score to the highlighted line
-                        let mut spans = vec![
-                            ratatui::text::Span::styled(
-                                format!("{} ", icon),
-                                OneDarkTheme::normal()
-                            )
-                        ];
+                        let mut spans = vec![ratatui::text::Span::styled(
+                            format!("{} ", icon),
+                            OneDarkTheme::normal(),
+                        )];
                         spans.extend(highlighted_line.spans);
                         spans.push(ratatui::text::Span::styled(
                             format!(" ({})", result.score),
-                            OneDarkTheme::info()
+                            OneDarkTheme::info(),
                         ));
-                        
+
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
                         // Fallback to simple text
-                        let display_text = format!("{} {} ({})", icon, result.display_name, result.score);
+                        let display_text =
+                            format!("{} {} ({})", icon, result.display_name, result.score);
                         ListItem::from(display_text)
                     }
                 })
@@ -219,7 +220,7 @@ impl Ui {
         } else {
             // Use pagination for large directories to improve performance
             let page_items = app.get_current_page_items();
-            
+
             page_items
                 .iter()
                 .map(|&file_index| {
@@ -228,36 +229,35 @@ impl Ui {
                     let file_path = &app.files[file_index];
                     let is_dir = Path::new(file_path).is_dir();
                     let icon = if is_dir { "📁" } else { "📄" };
-                    
+
                     if app.input_mode == InputMode::Editing && !search_term.is_empty() {
                         // Local search with highlighting
-                        let score = app.search_results
+                        let score = app
+                            .search_results
                             .iter()
                             .find(|r| r.original_index == file_index)
                             .map(|r| r.score)
                             .unwrap_or(0);
-                        
+
                         // Create highlighted filename with search term
                         let highlighted_line = highlight_search_term(
                             file_name,
                             search_term,
                             OneDarkTheme::normal(),
-                            OneDarkTheme::search_highlight()
+                            OneDarkTheme::search_highlight(),
                         );
-                        
+
                         // Add icon and score to the highlighted line
-                        let mut spans = vec![
-                            ratatui::text::Span::styled(
-                                format!("{} ", icon),
-                                OneDarkTheme::normal()
-                            )
-                        ];
+                        let mut spans = vec![ratatui::text::Span::styled(
+                            format!("{} ", icon),
+                            OneDarkTheme::normal(),
+                        )];
                         spans.extend(highlighted_line.spans);
                         spans.push(ratatui::text::Span::styled(
                             format!(" ({})", score),
-                            OneDarkTheme::info()
+                            OneDarkTheme::info(),
                         ));
-                        
+
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
                         // Normal display without highlighting

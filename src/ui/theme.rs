@@ -37,14 +37,14 @@ impl OneDarkTheme {
     pub fn disabled() -> ratatui::style::Style {
         ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray)
     }
-    
+
     pub fn search_highlight() -> ratatui::style::Style {
         ratatui::style::Style::default()
             .fg(ratatui::style::Color::Black)
             .bg(ratatui::style::Color::Yellow)
             .add_modifier(ratatui::style::Modifier::BOLD)
     }
-    
+
     pub fn info() -> ratatui::style::Style {
         ratatui::style::Style::default().fg(ratatui::style::Color::Cyan)
     }

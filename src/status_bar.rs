@@ -1,14 +1,14 @@
+use crate::app::{App, InputMode};
+use crate::SortBy;
+use ratatui::{
+    prelude::*,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
 use std::env;
 use std::fs;
 use std::path::Path;
-use ratatui::{
-    prelude::*,
-    widgets::{Block, Borders, Paragraph},
-    style::{Color, Modifier, Style},
-    text::{Line, Span}
-};
-use crate::app::{App, InputMode};
-use crate::SortBy;
 
 pub struct StatusBar {
     pub file_count: usize,
@@ -80,10 +80,10 @@ impl StatusBar {
             if index < app.files.len() {
                 let selected_path = &app.files[index];
                 let path = Path::new(selected_path);
-                
+
                 if let Some(file_name) = path.file_name() {
                     let name = file_name.to_string_lossy();
-                    
+
                     if let Ok(metadata) = fs::metadata(selected_path) {
                         let file_type = if metadata.is_file() {
                             "File"
@@ -92,7 +92,7 @@ impl StatusBar {
                         } else {
                             "Other"
                         };
-                        
+
                         let size = Self::format_file_size(metadata.len());
                         self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
                     } else {
@@ -111,7 +111,7 @@ impl StatusBar {
 
     fn calculate_total_size(&mut self, app: &App) {
         let mut total = 0u64;
-        
+
         for path in &app.files {
             if let Ok(metadata) = fs::metadata(path) {
                 if metadata.is_file() {
@@ -119,7 +119,7 @@ impl StatusBar {
                 }
             }
         }
-        
+
         self.total_size = total;
     }
 
@@ -133,12 +133,12 @@ impl StatusBar {
         const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
         let mut size = size as f64;
         let mut unit_index = 0;
-        
+
         while size >= 1024.0 && unit_index < UNITS.len() - 1 {
             size /= 1024.0;
             unit_index += 1;
         }
-        
+
         if unit_index == 0 {
             format!("{} {}", size as u64, UNITS[unit_index])
         } else {
@@ -165,11 +165,11 @@ impl StatusBar {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(15),  // Mode indicator
-                Constraint::Min(20),     // Directory path
-                Constraint::Length(25),  // File counts
-                Constraint::Length(15),  // Total size
-                Constraint::Length(20),  // System info
+                Constraint::Length(15), // Mode indicator
+                Constraint::Min(20),    // Directory path
+                Constraint::Length(25), // File counts
+                Constraint::Length(15), // Total size
+                Constraint::Length(20), // System info
             ])
             .split(area);
 
@@ -183,11 +183,15 @@ impl StatusBar {
 
         // Current directory
         let dir_text = if self.current_directory.len() > chunks[1].width as usize - 4 {
-            format!("...{}", &self.current_directory[self.current_directory.len() - (chunks[1].width as usize - 7)..])
+            format!(
+                "...{}",
+                &self.current_directory
+                    [self.current_directory.len() - (chunks[1].width as usize - 7)..]
+            )
         } else {
             self.current_directory.clone()
         };
-        
+
         let dir_widget = Paragraph::new(dir_text)
             .block(Block::default().borders(Borders::ALL).title("Directory"))
             .style(Style::default().fg(Color::White));
@@ -222,8 +226,8 @@ impl StatusBar {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Main status line
-                Constraint::Length(3),  // Selected item info
+                Constraint::Length(3), // Main status line
+                Constraint::Length(3), // Selected item info
             ])
             .split(area);
 
@@ -242,13 +246,13 @@ impl StatusBar {
         self.error_message = Some(message);
         self.error_display_time = Some(std::time::Instant::now());
     }
-    
+
     /// Clear the current error message
     pub fn clear_error(&mut self) {
         self.error_message = None;
         self.error_display_time = None;
     }
-    
+
     /// Update error display (auto-hide after timeout)
     fn update_error_display(&mut self) {
         if let (Some(_), Some(display_time)) = (&self.error_message, self.error_display_time) {
@@ -258,73 +262,81 @@ impl StatusBar {
             }
         }
     }
-    
+
     /// Check if there's an active error message
     pub fn has_error(&self) -> bool {
         self.error_message.is_some()
     }
-    
+
     /// Render error notification as an overlay
     pub fn render_error_notification(&self, frame: &mut Frame, area: Rect) {
         if let Some(ref error_msg) = self.error_message {
             // Calculate popup size (60% width, minimum height for message)
             let popup_width = (area.width * 6) / 10;
             let popup_height = 5;
-            
+
             let popup_x = (area.width - popup_width) / 2;
             let popup_y = 2; // Show near top of screen
-            
+
             let popup_area = Rect {
                 x: popup_x,
                 y: popup_y,
                 width: popup_width,
                 height: popup_height,
             };
-            
+
             // Clear the area
             let clear_widget = ratatui::widgets::Clear;
             frame.render_widget(clear_widget, popup_area);
-            
+
             // Render error message
             let error_block = Paragraph::new(error_msg.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
                         .title("❌ Error")
-                        .style(Style::default().fg(Color::Red))
+                        .style(Style::default().fg(Color::Red)),
                 )
                 .style(Style::default().fg(Color::White).bg(Color::DarkGray))
                 .wrap(ratatui::widgets::Wrap { trim: true });
-            
+
             frame.render_widget(error_block, popup_area);
         }
     }
 
     pub fn get_status_text(&self, app: &App) -> Vec<Line> {
         let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode);
-        
+
         // If there's an error, show it in the status line
         if let Some(ref error_msg) = self.error_message {
-            return vec![
-                Line::from(vec![
-                    Span::styled("❌ ERROR: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                    Span::styled(error_msg.clone(), Style::default().fg(Color::White)),
-                ])
-            ];
+            return vec![Line::from(vec![
+                Span::styled(
+                    "❌ ERROR: ",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(error_msg.clone(), Style::default().fg(Color::White)),
+            ])];
         }
-        
-        vec![
-            Line::from(vec![
-                Span::styled(format!("[{}]", mode_text), Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
-                Span::styled(&self.current_directory, Style::default().fg(Color::White)),
-                Span::raw(" | "),
-                Span::styled(format!("{}F/{}D", self.file_count, self.directory_count), Style::default().fg(Color::Cyan)),
-                Span::raw(" | "),
-                Span::styled(Self::format_file_size(self.total_size), Style::default().fg(Color::Yellow)),
-                Span::raw(" | "),
-                Span::styled(&self.system_info, Style::default().fg(Color::Gray)),
-            ])
-        ]
+
+        vec![Line::from(vec![
+            Span::styled(
+                format!("[{}]", mode_text),
+                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(&self.current_directory, Style::default().fg(Color::White)),
+            Span::raw(" | "),
+            Span::styled(
+                format!("{}F/{}D", self.file_count, self.directory_count),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw(" | "),
+            Span::styled(
+                Self::format_file_size(self.total_size),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" | "),
+            Span::styled(&self.system_info, Style::default().fg(Color::Gray)),
+        ])]
     }
 }

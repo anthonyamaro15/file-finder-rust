@@ -3,7 +3,6 @@ mod common;
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
-use common::*;
 
 #[cfg(test)]
 mod file_creation_tests {
@@ -25,7 +24,10 @@ mod file_creation_tests {
         }
     }
 
-    fn create_item_based_on_type(current_file_path: String, new_item: String) -> anyhow::Result<()> {
+    fn create_item_based_on_type(
+        current_file_path: String,
+        new_item: String,
+    ) -> anyhow::Result<()> {
         if new_item.contains(".") {
             create_new_file(current_file_path, new_item)
         } else {
@@ -40,7 +42,7 @@ mod file_creation_tests {
         let file_name = "test.txt".to_string();
 
         let result = create_new_file(temp_path.clone(), file_name.clone());
-        
+
         assert!(result.is_ok());
         assert!(Path::new(&format!("{}/{}", temp_path, file_name)).exists());
     }
@@ -57,7 +59,7 @@ mod file_creation_tests {
 
         // Try to create it again
         let result = create_new_file(temp_path, file_name);
-        
+
         assert!(result.is_err());
     }
 
@@ -68,7 +70,7 @@ mod file_creation_tests {
         let dir_name = "new_directory".to_string();
 
         let result = create_new_dir(temp_path.clone(), dir_name.clone());
-        
+
         assert!(result.is_ok());
         assert!(Path::new(&format!("{}/{}", temp_path, dir_name)).is_dir());
     }
@@ -85,7 +87,7 @@ mod file_creation_tests {
 
         // Try to create it again
         let result = create_new_dir(temp_path, dir_name);
-        
+
         assert!(result.is_err());
     }
 
@@ -96,7 +98,7 @@ mod file_creation_tests {
         let item_name = "document.txt".to_string();
 
         let result = create_item_based_on_type(temp_path.clone(), item_name.clone());
-        
+
         assert!(result.is_ok());
         assert!(Path::new(&format!("{}/{}", temp_path, item_name)).is_file());
     }
@@ -108,7 +110,7 @@ mod file_creation_tests {
         let item_name = "new_folder".to_string();
 
         let result = create_item_based_on_type(temp_path.clone(), item_name.clone());
-        
+
         assert!(result.is_ok());
         assert!(Path::new(&format!("{}/{}", temp_path, item_name)).is_dir());
     }
@@ -154,7 +156,7 @@ mod file_deletion_tests {
         assert!(file_path.exists());
 
         let result = delete_file(file_path.to_str().unwrap());
-        
+
         assert!(result.is_ok());
         assert!(!file_path.exists());
     }
@@ -165,7 +167,7 @@ mod file_deletion_tests {
         let file_path = temp_dir.path().join("nonexistent.txt");
 
         let result = delete_file(file_path.to_str().unwrap());
-        
+
         assert!(result.is_err());
     }
 
@@ -176,11 +178,12 @@ mod file_deletion_tests {
 
         // Create a test directory with files
         fs::create_dir(&dir_path).expect("Failed to create test directory");
-        fs::write(dir_path.join("file.txt"), "content").expect("Failed to create file in directory");
+        fs::write(dir_path.join("file.txt"), "content")
+            .expect("Failed to create file in directory");
         assert!(dir_path.exists());
 
         let result = delete_dir(dir_path.to_str().unwrap());
-        
+
         assert!(result.is_ok());
         assert!(!dir_path.exists());
     }
@@ -191,7 +194,7 @@ mod file_deletion_tests {
         let dir_path = temp_dir.path().join("nonexistent_dir");
 
         let result = delete_dir(dir_path.to_str().unwrap());
-        
+
         assert!(result.is_err());
     }
 
@@ -205,7 +208,7 @@ mod file_deletion_tests {
         assert!(file_path.exists());
 
         let result = handle_delete_based_on_type(file_path.to_str().unwrap());
-        
+
         assert!(result.is_ok());
         assert!(!file_path.exists());
     }
@@ -217,11 +220,12 @@ mod file_deletion_tests {
 
         // Create a test directory with files
         fs::create_dir(&dir_path).expect("Failed to create test directory");
-        fs::write(dir_path.join("file.txt"), "content").expect("Failed to create file in directory");
+        fs::write(dir_path.join("file.txt"), "content")
+            .expect("Failed to create file in directory");
         assert!(dir_path.exists());
 
         let result = handle_delete_based_on_type(dir_path.to_str().unwrap());
-        
+
         assert!(result.is_ok());
         assert!(!dir_path.exists());
     }
@@ -246,22 +250,28 @@ mod file_rename_tests {
     fn test_rename_file_success() {
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         // Create a test file
         let old_name = "old_file.txt";
         let new_name = "new_file.txt";
         let file_content = "test content";
-        
-        fs::write(temp_dir.path().join(old_name), file_content).expect("Failed to create test file");
 
-        let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path.clone());
-        
+        fs::write(temp_dir.path().join(old_name), file_content)
+            .expect("Failed to create test file");
+
+        let result = handle_rename(
+            old_name.to_string(),
+            new_name.to_string(),
+            temp_path.clone(),
+        );
+
         assert!(result.is_ok());
         assert!(!Path::new(&format!("{}/{}", temp_path, old_name)).exists());
         assert!(Path::new(&format!("{}/{}", temp_path, new_name)).exists());
-        
+
         // Verify content is preserved
-        let content = fs::read_to_string(temp_dir.path().join(new_name)).expect("Failed to read renamed file");
+        let content = fs::read_to_string(temp_dir.path().join(new_name))
+            .expect("Failed to read renamed file");
         assert_eq!(content, file_content);
     }
 
@@ -269,23 +279,29 @@ mod file_rename_tests {
     fn test_rename_directory_success() {
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         // Create a test directory with content
         let old_name = "old_dir";
         let new_name = "new_dir";
-        
+
         let old_dir_path = temp_dir.path().join(old_name);
         fs::create_dir(&old_dir_path).expect("Failed to create test directory");
-        fs::write(old_dir_path.join("file.txt"), "content").expect("Failed to create file in directory");
+        fs::write(old_dir_path.join("file.txt"), "content")
+            .expect("Failed to create file in directory");
 
-        let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path.clone());
-        
+        let result = handle_rename(
+            old_name.to_string(),
+            new_name.to_string(),
+            temp_path.clone(),
+        );
+
         assert!(result.is_ok());
         assert!(!Path::new(&format!("{}/{}", temp_path, old_name)).exists());
         assert!(Path::new(&format!("{}/{}", temp_path, new_name)).exists());
-        
+
         // Verify content is preserved
-        let content = fs::read_to_string(temp_dir.path().join(new_name).join("file.txt")).expect("Failed to read file in renamed directory");
+        let content = fs::read_to_string(temp_dir.path().join(new_name).join("file.txt"))
+            .expect("Failed to read file in renamed directory");
         assert_eq!(content, "content");
     }
 
@@ -293,12 +309,12 @@ mod file_rename_tests {
     fn test_rename_file_not_exists() {
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         let old_name = "nonexistent.txt";
         let new_name = "new_file.txt";
 
         let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path);
-        
+
         assert!(result.is_err());
     }
 
@@ -306,16 +322,18 @@ mod file_rename_tests {
     fn test_rename_target_already_exists() {
         let temp_dir = tempdir().expect("Failed to create temp directory");
         let temp_path = temp_dir.path().to_string_lossy().to_string();
-        
+
         // Create both source and target files
         let old_name = "source.txt";
         let new_name = "target.txt";
-        
-        fs::write(temp_dir.path().join(old_name), "source content").expect("Failed to create source file");
-        fs::write(temp_dir.path().join(new_name), "target content").expect("Failed to create target file");
+
+        fs::write(temp_dir.path().join(old_name), "source content")
+            .expect("Failed to create source file");
+        fs::write(temp_dir.path().join(new_name), "target content")
+            .expect("Failed to create target file");
 
         let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path);
-        
+
         // On most systems, rename should succeed and overwrite the target
         // But we'll check that one of them doesn't exist anymore
         assert!(result.is_ok());
@@ -325,9 +343,9 @@ mod file_rename_tests {
 #[cfg(test)]
 mod file_copy_tests {
     use super::*;
+    use rayon::prelude::*;
     use std::io::{self, ErrorKind};
     use walkdir::WalkDir;
-    use rayon::prelude::*;
 
     fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
         if src.is_file() {
@@ -377,14 +395,14 @@ mod file_copy_tests {
         fs::write(&src_file, file_content).expect("Failed to create source file");
 
         let result = copy_dir_file_helper(&src_file, &dst_file);
-        
+
         assert!(result.is_ok());
         assert!(dst_file.exists());
-        
+
         // Verify content
         let copied_content = fs::read_to_string(&dst_file).expect("Failed to read copied file");
         assert_eq!(copied_content, file_content);
-        
+
         // Verify original still exists
         assert!(src_file.exists());
     }
@@ -399,21 +417,23 @@ mod file_copy_tests {
         fs::create_dir_all(&src_dir).expect("Failed to create source directory");
         fs::create_dir_all(src_dir.join("subdir")).expect("Failed to create subdirectory");
         fs::write(src_dir.join("file1.txt"), "content1").expect("Failed to create file1");
-        fs::write(src_dir.join("subdir").join("file2.txt"), "content2").expect("Failed to create file2");
+        fs::write(src_dir.join("subdir").join("file2.txt"), "content2")
+            .expect("Failed to create file2");
 
         let result = copy_dir_file_helper(&src_dir, &dst_dir);
-        
+
         assert!(result.is_ok());
         assert!(dst_dir.exists());
         assert!(dst_dir.join("file1.txt").exists());
         assert!(dst_dir.join("subdir").join("file2.txt").exists());
-        
+
         // Verify content
         let content1 = fs::read_to_string(dst_dir.join("file1.txt")).expect("Failed to read file1");
-        let content2 = fs::read_to_string(dst_dir.join("subdir").join("file2.txt")).expect("Failed to read file2");
+        let content2 = fs::read_to_string(dst_dir.join("subdir").join("file2.txt"))
+            .expect("Failed to read file2");
         assert_eq!(content1, "content1");
         assert_eq!(content2, "content2");
-        
+
         // Verify original still exists
         assert!(src_dir.exists());
         assert!(src_dir.join("file1.txt").exists());
@@ -426,7 +446,7 @@ mod file_copy_tests {
         let dst_file = temp_dir.path().join("destination.txt");
 
         let result = copy_dir_file_helper(&src_file, &dst_file);
-        
+
         // The copy operation should fail when source doesn't exist
         // On some systems, fs::copy might return 0 bytes but succeed
         // Let's check that either it errors OR the destination doesn't exist
@@ -441,7 +461,7 @@ mod file_copy_tests {
     fn test_generate_copy_file_dir_name() {
         let curr_path = "/home/user/document.txt".to_string();
         let new_path = "/home/user/backup".to_string();
-        
+
         let result = generate_copy_file_dir_name(curr_path, new_path);
         assert_eq!(result, "/home/user/backup/copy_document.txt");
     }
@@ -450,7 +470,7 @@ mod file_copy_tests {
     fn test_generate_copy_dir_name() {
         let curr_path = "/home/user/important_folder".to_string();
         let new_path = "/home/user/backup".to_string();
-        
+
         let result = generate_copy_file_dir_name(curr_path, new_path);
         assert_eq!(result, "/home/user/backup/copy_important_folder");
     }
@@ -477,7 +497,7 @@ mod path_validation_tests {
 
         // Create the file
         fs::write(&file_path, "content").expect("Failed to create test file");
-        
+
         // Now it should exist
         assert!(check_if_exists(file_path.to_string_lossy().to_string()));
     }
@@ -492,7 +512,7 @@ mod path_validation_tests {
 
         // Create the directory
         fs::create_dir(&dir_path).expect("Failed to create test directory");
-        
+
         // Now it should exist
         assert!(check_if_exists(dir_path.to_string_lossy().to_string()));
     }

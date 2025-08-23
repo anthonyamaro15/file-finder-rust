@@ -1,9 +1,9 @@
 mod common;
 
-use std::path::PathBuf;
-use std::fs;
-use tempfile::tempdir;
 use common::*;
+use std::fs;
+use std::path::PathBuf;
+use tempfile::tempdir;
 
 // We need to make the functions in main.rs accessible for testing
 // For now, I'll test the logic by creating similar functions
@@ -110,10 +110,19 @@ mod sorting_tests {
         }
 
         let sorted = sort_entries_by_type(SortBy::Name, SortType::ASC, entries.clone());
-        
-        assert_eq!(sorted[0].file_name().unwrap().to_str().unwrap(), "apple.txt");
-        assert_eq!(sorted[1].file_name().unwrap().to_str().unwrap(), "banana.txt");
-        assert_eq!(sorted[2].file_name().unwrap().to_str().unwrap(), "zebra.txt");
+
+        assert_eq!(
+            sorted[0].file_name().unwrap().to_str().unwrap(),
+            "apple.txt"
+        );
+        assert_eq!(
+            sorted[1].file_name().unwrap().to_str().unwrap(),
+            "banana.txt"
+        );
+        assert_eq!(
+            sorted[2].file_name().unwrap().to_str().unwrap(),
+            "zebra.txt"
+        );
     }
 
     #[test]
@@ -123,7 +132,7 @@ mod sorting_tests {
 
         let mut entries = vec![
             base_path.join("apple.txt"),
-            base_path.join("zebra.txt"), 
+            base_path.join("zebra.txt"),
             base_path.join("banana.txt"),
         ];
 
@@ -133,10 +142,19 @@ mod sorting_tests {
         }
 
         let sorted = sort_entries_by_type(SortBy::Name, SortType::DESC, entries.clone());
-        
-        assert_eq!(sorted[0].file_name().unwrap().to_str().unwrap(), "zebra.txt");
-        assert_eq!(sorted[1].file_name().unwrap().to_str().unwrap(), "banana.txt");
-        assert_eq!(sorted[2].file_name().unwrap().to_str().unwrap(), "apple.txt");
+
+        assert_eq!(
+            sorted[0].file_name().unwrap().to_str().unwrap(),
+            "zebra.txt"
+        );
+        assert_eq!(
+            sorted[1].file_name().unwrap().to_str().unwrap(),
+            "banana.txt"
+        );
+        assert_eq!(
+            sorted[2].file_name().unwrap().to_str().unwrap(),
+            "apple.txt"
+        );
     }
 
     #[test]
@@ -156,7 +174,7 @@ mod sorting_tests {
         fs::write(&entries[2], "x".repeat(10)).expect("Failed to create small file");
 
         let sorted = sort_entries_by_type(SortBy::Size, SortType::ASC, entries.clone());
-        
+
         // Should be sorted by size: small, medium, large
         assert!(sorted[0].metadata().unwrap().len() < sorted[1].metadata().unwrap().len());
         assert!(sorted[1].metadata().unwrap().len() < sorted[2].metadata().unwrap().len());
@@ -179,10 +197,19 @@ mod sorting_tests {
         }
 
         let sorted = sort_entries_by_type(SortBy::Name, SortType::ASC, entries.clone());
-        
-        assert_eq!(sorted[0].file_name().unwrap().to_str().unwrap(), "Apple.txt");
-        assert_eq!(sorted[1].file_name().unwrap().to_str().unwrap(), "banana.txt");
-        assert_eq!(sorted[2].file_name().unwrap().to_str().unwrap(), "Cherry.txt");
+
+        assert_eq!(
+            sorted[0].file_name().unwrap().to_str().unwrap(),
+            "Apple.txt"
+        );
+        assert_eq!(
+            sorted[1].file_name().unwrap().to_str().unwrap(),
+            "banana.txt"
+        );
+        assert_eq!(
+            sorted[2].file_name().unwrap().to_str().unwrap(),
+            "Cherry.txt"
+        );
     }
 }
 
@@ -232,13 +259,13 @@ mod path_handling_tests {
     fn test_is_file_detection() {
         let temp_dir = setup_simple_test_directory().expect("Failed to create test directory");
         let base_path = temp_dir.path();
-        
+
         let file_path = base_path.join("test.txt");
         let dir_path = base_path.join("test_dir");
-        
+
         fs::write(&file_path, "test content").expect("Failed to create test file");
         fs::create_dir(&dir_path).expect("Failed to create test directory");
-        
+
         assert!(is_file(file_path.to_string_lossy().to_string()));
         assert!(!is_file(dir_path.to_string_lossy().to_string()));
         assert!(!is_file("/nonexistent/path".to_string()));
@@ -247,8 +274,8 @@ mod path_handling_tests {
 
 #[cfg(test)]
 mod string_conversion_tests {
-    use super::*;
     use super::sorting_tests::{SortBy, SortType};
+    use super::*;
 
     fn convert_file_path_to_string(
         entries: Vec<PathBuf>,
@@ -257,7 +284,7 @@ mod string_conversion_tests {
         _sort_type: SortType,
     ) -> Vec<String> {
         let mut file_strings: Vec<String> = Vec::new();
-        
+
         for entry in entries {
             if entry.is_dir() {
                 let file = entry.into_os_string().to_str().unwrap().to_string();
@@ -270,7 +297,7 @@ mod string_conversion_tests {
                 }
             }
         }
-        
+
         file_strings
     }
 
@@ -278,33 +305,33 @@ mod string_conversion_tests {
     fn test_convert_paths_show_all() {
         let temp_dir = setup_test_directory().expect("Failed to create test directory");
         let base_path = temp_dir.path();
-        
+
         let entries = vec![
             base_path.join("file1.txt"),
             base_path.join(".hidden_file"),
             base_path.join("subdir1"),
         ];
-        
+
         let result = convert_file_path_to_string(entries, true, SortBy::Default, SortType::ASC);
-        
+
         // Should include hidden files when show_hidden is true
         assert_eq!(result.len(), 3);
         assert!(result.iter().any(|path| path.contains(".hidden_file")));
     }
 
-    #[test] 
+    #[test]
     fn test_convert_paths_hide_hidden() {
         let temp_dir = setup_test_directory().expect("Failed to create test directory");
         let base_path = temp_dir.path();
-        
+
         let entries = vec![
             base_path.join("file1.txt"),
             base_path.join(".hidden_file"),
             base_path.join("subdir1"),
         ];
-        
+
         let result = convert_file_path_to_string(entries, false, SortBy::Default, SortType::ASC);
-        
+
         // Should not include hidden files when show_hidden is false
         assert_eq!(result.len(), 2);
         assert!(!result.iter().any(|path| path.contains(".hidden_file")));
@@ -321,7 +348,10 @@ mod utility_tests {
         format!("{}/copy_{}", new_path, file_name)
     }
 
-    fn create_item_based_on_type(current_file_path: String, new_item: String) -> Result<bool, Box<dyn std::error::Error>> {
+    fn create_item_based_on_type(
+        current_file_path: String,
+        new_item: String,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         if new_item.contains(".") {
             // It's a file
             Ok(true)
@@ -335,7 +365,7 @@ mod utility_tests {
     fn test_generate_copy_file_dir_name() {
         let curr_path = "/home/user/document.txt".to_string();
         let new_path = "/home/user/backup".to_string();
-        
+
         let result = generate_copy_file_dir_name(curr_path, new_path);
         assert_eq!(result, "/home/user/backup/copy_document.txt");
     }
@@ -344,7 +374,7 @@ mod utility_tests {
     fn test_create_item_based_on_type_file() {
         let current_path = "/tmp".to_string();
         let new_item = "test.txt".to_string();
-        
+
         let result = create_item_based_on_type(current_path, new_item).unwrap();
         assert!(result); // Should be true for files
     }
@@ -353,7 +383,7 @@ mod utility_tests {
     fn test_create_item_based_on_type_directory() {
         let current_path = "/tmp".to_string();
         let new_item = "new_directory".to_string();
-        
+
         let result = create_item_based_on_type(current_path, new_item).unwrap();
         assert!(!result); // Should be false for directories
     }
