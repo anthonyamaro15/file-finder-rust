@@ -890,6 +890,7 @@ dependencies = [
  "ignore",
  "image",
  "indicatif",
+ "libc",
  "log",
  "notify",
  "num_cpus",

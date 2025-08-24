@@ -9,6 +9,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{mpsc, Arc, Mutex},
+    sync::atomic::{AtomicUsize, Ordering},
     thread,
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
@@ -571,11 +572,18 @@ fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> Str
 
 fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
     let get_info = Path::new(&curr_path);
+    let file_name = get_info.file_name().unwrap().to_str().unwrap().to_string();
 
-    let file_name = get_info.file_name().unwrap().to_str().unwrap();
-
-    let create_new_file_name = format!("{}/copy_{}", new_path, file_name);
-    create_new_file_name
+    // Generate a unique name by prefixing copy_ repeatedly until it does not exist
+    let mut copies = 1usize;
+    loop {
+        let prefix = "copy_".repeat(copies);
+        let candidate = format!("{}/{}{}", new_path, prefix, file_name);
+        if !Path::new(&candidate).exists() {
+            return candidate;
+        }
+        copies += 1;
+    }
 }
 
 fn create_item_based_on_type(
@@ -752,6 +760,52 @@ enum CopyMessage {
     Error(String),
 }
 
+// Fast file copy helpers optimized for macOS/APFS
+#[cfg(target_os = "macos")]
+fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
+    // Allow disabling clonefile/copyfile via env for baseline comparisons
+    let disable_clone = std::env::var("FF_DISABLE_CLONEFILE").ok().filter(|v| v == "1").is_some();
+    if !disable_clone {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt};
+        unsafe {
+            let src_c = CString::new(src.as_os_str().as_bytes())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+            let dst_c = CString::new(dst.as_os_str().as_bytes())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+            // 1) Try APFS clone-on-write for same-volume instant copy
+            if libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) == 0 {
+                return Ok(());
+            }
+
+            // 2) Fallback to kernel-optimized copy with metadata preservation
+            // Compose flags equivalent to COPYFILE_ALL (ACL | STAT | XATTR | DATA | SECURITY)
+            let flags = libc::COPYFILE_ACL
+                | libc::COPYFILE_STAT
+                | libc::COPYFILE_XATTR
+                | libc::COPYFILE_DATA
+                | libc::COPYFILE_SECURITY;
+            if libc::copyfile(
+                src_c.as_ptr(),
+                dst_c.as_ptr(),
+                std::ptr::null_mut(),
+                flags,
+            ) == 0
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    // 3) Last resort (or when disabled)
+    std::fs::copy(src, dst).map(|_| ())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
+    std::fs::copy(src, dst).map(|_| ())
+}
+
 // Async copy function with progress tracking
 fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<CopyMessage> {
     let (tx, rx) = mpsc::channel();
@@ -799,8 +853,8 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                     .to_string(),
             });
 
-            match fs::copy(&src, &new_src) {
-                Ok(_) => {
+            match fast_copy_file(&src, &new_src) {
+                Ok(()) => {
                     let _ = tx.send(CopyMessage::Progress {
                         files_processed: 1,
                         total_files: 1,
@@ -820,7 +874,7 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 )),
             }
         } else if src.is_dir() {
-            // Directory copy - single pass with file counting and copying
+            // Directory copy - parallelized with batched progress updates
             if let Err(e) = fs::create_dir_all(&new_src) {
                 let _ = tx.send(CopyMessage::Error(format!(
                     "Failed to create destination directory: {}",
@@ -829,7 +883,7 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 return;
             }
 
-            // Collect all entries in one pass
+            // Collect all entries once
             let all_entries: Vec<_> = WalkDir::new(&src)
                 .into_iter()
                 .filter_map(|entry| match entry {
@@ -841,78 +895,86 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 })
                 .collect();
 
-            // Count files for progress tracking
-            let total_files = all_entries
+            // Create all directories first
+            for entry in all_entries.iter().filter(|e| e.path().is_dir()) {
+                let rel = match entry.path().strip_prefix(&src) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = tx.send(CopyMessage::Error(format!(
+                            "Failed to strip prefix: {}",
+                            e
+                        )));
+                        return;
+                    }
+                };
+                if let Err(e) = fs::create_dir_all(new_src.join(rel)) {
+                    let _ = tx.send(CopyMessage::Error(format!(
+                        "Failed to create directory '{}': {}",
+                        new_src.join(rel).display(),
+                        e
+                    )));
+                    return;
+                }
+            }
+
+            // Prepare files list
+            let files: Vec<_> = all_entries
                 .iter()
-                .filter(|entry| entry.path().is_file())
-                .count();
+                .filter(|e| e.path().is_file())
+                .map(|e| e.path().to_path_buf())
+                .collect();
 
-            let files_processed = Arc::new(Mutex::new(0usize));
+            let total_files = files.len();
+            let processed = AtomicUsize::new(0);
             let progress_tx = tx.clone();
-            let progress_counter = files_processed.clone();
-
-            // Process entries with batched progress updates
-            let mut update_counter = 0;
             const UPDATE_INTERVAL: usize = 10; // Update progress every 10 files
 
-            all_entries.into_iter().try_for_each(|entry| {
-                let entry_path = entry.path();
-                let relative_path = entry_path
-                    .strip_prefix(&src)
-                    .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
-                let dst_path = new_src.join(relative_path);
+            // Limit concurrency: FF_COPY_THREADS overrides default (4). If set to 1, this simulates serial copy.
+            let threads = std::env::var("FF_COPY_THREADS")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n >= 1 && n <= 64)
+                .unwrap_or(4);
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let par_result: Result<(), anyhow::Error> = pool.install(|| {
+                files.par_iter().try_for_each(|entry_path| -> anyhow::Result<()> {
+                    let rel = entry_path
+                        .strip_prefix(&src)
+                        .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
+                    let dst_path = new_src.join(rel);
 
-                if entry_path.is_dir() {
-                    fs::create_dir_all(&dst_path).map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to create directory '{}': {}",
-                            dst_path.display(),
-                            e
-                        )
-                    })?;
-                } else if entry_path.is_file() {
                     if let Some(parent) = dst_path.parent() {
-                        fs::create_dir_all(parent).map_err(|e| {
-                            anyhow::anyhow!("Failed to create parent directory: {}", e)
-                        })?;
+                        fs::create_dir_all(parent)
+                            .map_err(|e| anyhow::anyhow!("Failed to create parent directory: {}", e))?;
                     }
 
-                    fs::copy(entry_path, &dst_path).map_err(|e| {
+                    fast_copy_file(entry_path, &dst_path).map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to copy file '{}' to '{}': {}",
+                            "Failed to copy '{}' -> '{}': {}",
                             entry_path.display(),
                             dst_path.display(),
                             e
                         )
                     })?;
 
-                    // Update progress counter and send batched updates
-                    {
-                        let mut count = progress_counter.lock().unwrap();
-                        *count += 1;
-                        update_counter += 1;
-
-                        // Send progress update every UPDATE_INTERVAL files or for the last file
-                        if update_counter >= UPDATE_INTERVAL || *count == total_files {
-                            let _ = progress_tx.send(CopyMessage::Progress {
-                                files_processed: *count,
-                                total_files,
-                                current_file: entry_path
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                            });
-                            update_counter = 0;
-                        }
+                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if count % UPDATE_INTERVAL == 0 || count == total_files {
+                        let _ = progress_tx.send(CopyMessage::Progress {
+                            files_processed: count,
+                            total_files,
+                            current_file: entry_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                        });
                     }
-                } else {
-                    // Skip special files (symlinks, devices, etc.)
-                    warn!("Skipping unsupported file type: {}", entry_path.display());
-                }
 
-                Ok::<(), anyhow::Error>(())
-            })
+                    Ok(())
+                })
+            });
+
+            par_result
         } else {
             Err(anyhow::anyhow!(
                 "Source is neither a file nor a directory: {}",
@@ -1467,63 +1529,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Handle copy progress messages
         if let Some(ref rx) = copy_receiver {
-            // Use try_recv to avoid blocking the UI
-            match rx.try_recv() {
-                Ok(CopyMessage::Progress {
-                    files_processed,
-                    total_files,
-                    current_file,
-                }) => {
-                    app.copy_files_processed = files_processed;
-                    app.copy_total_files = total_files;
-                    app.copy_progress_message = format!("Copying: {}", current_file);
-                }
-                Ok(CopyMessage::Completed { success, message }) => {
-                    if success {
-                        debug!("Copy completed: {}", message);
-
-                        // Refresh file lists to show the copied item
-                        if let Ok(file_path_list) = get_file_path_data(
-                            settings.start_path.to_owned(),
-                            app.show_hidden_files,
-                            SortBy::Default,
-                            &sort_type,
-                        ) {
-                            app.files = file_path_list.clone();
-                            app.read_only_files = file_path_list;
-                            app.update_file_references();
-                        }
-                    } else {
-                        warn!("Copy failed: {}", message);
+            // Drain all pending messages so we only render the most recent state.
+            // This avoids a huge backlog of progress updates that would otherwise
+            // make the UI appear to take minutes for large trees.
+            let mut last_msg: Option<CopyMessage> = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => last_msg = Some(msg),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        // Copy thread finished, reset state
+                        app.copy_in_progress = false;
+                        app.copy_progress_message.clear();
+                        app.copy_files_processed = 0;
+                        app.copy_total_files = 0;
+                        copy_receiver = None;
+                        last_msg = None;
+                        break;
                     }
+                }
+            }
 
-                    // Reset copy state
-                    app.copy_in_progress = false;
-                    app.copy_progress_message.clear();
-                    app.copy_files_processed = 0;
-                    app.copy_total_files = 0;
-                    copy_receiver = None;
-                }
-                Ok(CopyMessage::Error(error_msg)) => {
-                    warn!("Copy operation failed: {}", error_msg);
+            if let Some(msg) = last_msg {
+                match msg {
+                    CopyMessage::Progress {
+                        files_processed,
+                        total_files,
+                        current_file,
+                    } => {
+                        app.copy_files_processed = files_processed;
+                        app.copy_total_files = total_files;
+                        app.copy_progress_message = format!("Copying: {}", current_file);
+                    }
+                    CopyMessage::Completed { success, message } => {
+                        if success {
+                            debug!("Copy completed: {}", message);
 
-                    // Reset copy state
-                    app.copy_in_progress = false;
-                    app.copy_progress_message = format!("Copy failed: {}", error_msg);
-                    app.copy_files_processed = 0;
-                    app.copy_total_files = 0;
-                    copy_receiver = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // No new messages, continue
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    // Copy thread finished, reset state
-                    app.copy_in_progress = false;
-                    app.copy_progress_message.clear();
-                    app.copy_files_processed = 0;
-                    app.copy_total_files = 0;
-                    copy_receiver = None;
+                            // Refresh file lists to show the copied item in the CURRENT directory
+                            let refresh_dir: String = if !app.files.is_empty() {
+                                // Derive current directory from the first listed item
+                                get_curr_path(app.files[0].clone())
+                            } else {
+                                // Fallback to configured start path
+                                settings.start_path.to_owned()
+                            };
+
+                            if let Ok(file_path_list) = get_file_path_data(
+                                refresh_dir,
+                                app.show_hidden_files,
+                                SortBy::Default,
+                                &sort_type,
+                            ) {
+                                app.files = file_path_list.clone();
+                                app.read_only_files = file_path_list;
+                                app.update_file_references();
+                            }
+                        } else {
+                            warn!("Copy failed: {}", message);
+                        }
+
+                        // Reset copy state
+                        app.copy_in_progress = false;
+                        app.copy_progress_message.clear();
+                        app.copy_files_processed = 0;
+                        app.copy_total_files = 0;
+                        copy_receiver = None;
+                    }
+                    CopyMessage::Error(error_msg) => {
+                        warn!("Copy operation failed: {}", error_msg);
+
+                        // Reset copy state
+                        app.copy_in_progress = false;
+                        app.copy_progress_message = format!("Copy failed: {}", error_msg);
+                        app.copy_files_processed = 0;
+                        app.copy_total_files = 0;
+                        copy_receiver = None;
+                    }
                 }
             }
         }
@@ -1531,9 +1612,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Process file system events
         let fs_events = app.process_file_system_events();
         if !fs_events.is_empty() {
-            // File system changes detected, refresh the file list
+            // File system changes detected, refresh the CURRENT directory (not the start path)
+            let refresh_dir: String = if !app.files.is_empty() {
+                get_curr_path(app.files[0].clone())
+            } else {
+                settings.start_path.to_owned()
+            };
+
             if let Ok(file_path_list) = get_file_path_data(
-                settings.start_path.to_owned(),
+                refresh_dir,
                 app.show_hidden_files,
                 SortBy::Default,
                 &sort_type,
