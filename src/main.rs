@@ -962,6 +962,10 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::symlink;
+                            // If destination exists (e.g., another thread created it), remove it first to avoid EEXIST
+                            if dst_path.exists() {
+                                let _ = fs::remove_file(&dst_path);
+                            }
                             symlink(&target, &dst_path).map_err(|e| {
                                 anyhow::anyhow!(
                                     "Failed to create symlink '{}' -> '{}' : {}",
@@ -1039,6 +1043,92 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
     });
 
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<(), String> {
+        // Wait up to 5 seconds for completion
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(CopyMessage::Completed { success, message }) => {
+                    if success { return Ok(()); }
+                    return Err(format!("Copy failed: {}", message));
+                }
+                Ok(CopyMessage::Error(e)) => return Err(e),
+                Ok(_) => {
+                    if std::time::Instant::now() > deadline { return Err("Timeout waiting for copy".into()); }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if std::time::Instant::now() > deadline { return Err("Timeout waiting for copy".into()); }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Channel disconnected".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn copies_single_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_file = tmp.path().join("a.txt");
+        std::fs::write(&src_file, b"hello").unwrap();
+        let dst_file = tmp.path().join("out.txt");
+
+        let rx = copy_dir_file_with_progress(&src_file, &dst_file);
+        drain_until_complete(rx).expect("copy should complete");
+
+        let out = std::fs::read(&dst_file).unwrap();
+        assert_eq!(out, b"hello");
+    }
+
+    #[test]
+    fn copies_directory_with_symlink_and_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dst_dir = tmp.path().join("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let real = src_dir.join("real.txt");
+        std::fs::write(&real, b"data").unwrap();
+        let sub = src_dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        // Create a symlink inside sub -> ../real.txt
+        let link_path = sub.join("ln.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(Path::new("../real.txt"), &link_path).unwrap();
+        #[cfg(not(unix))]
+        {
+            // On non-unix, simulate by creating another real file; fallback behavior copies target contents
+            std::fs::write(&link_path, b"data").unwrap();
+        }
+
+        let rx = copy_dir_file_with_progress(&src_dir, &dst_dir);
+        drain_until_complete(rx).expect("dir copy should complete");
+
+        // Verify real file exists
+        assert!(dst_dir.join("real.txt").is_file());
+
+        // Verify link handling
+        let copied_link = dst_dir.join("sub/ln.txt");
+        #[cfg(unix)]
+        {
+            let meta = std::fs::symlink_metadata(&copied_link).unwrap();
+            assert!(meta.file_type().is_symlink(), "expected symlink to be preserved");
+            let target = std::fs::read_link(&copied_link).unwrap();
+            assert_eq!(target, Path::new("../real.txt"));
+        }
+        #[cfg(not(unix))]
+        {
+            // best-effort: we copied the target contents
+            assert!(copied_link.is_file());
+            let content = std::fs::read(&copied_link).unwrap();
+            assert_eq!(content, b"data");
+        }
+    }
 }
 
 fn generate_sort_by_string(sort_type: &SortType) -> String {
@@ -1324,7 +1414,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 InputMode::Normal => {}
                 InputMode::WatchDelete => {}
                 InputMode::WatchCreate => {}
-                InputMode::WatchRename => {}
+                InputMode::WatchRename => {
+                    // Place cursor inside the rename popup input, aligned to app.char_index
+                    let area = draw_popup(f.size(), 40, 7);
+                    let popup_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .margin(1)
+                        .constraints([Constraint::Percentage(100)])
+                        .split(area);
+                    f.set_cursor(
+                        popup_chunks[0].x + app.char_index as u16 + 1,
+                        popup_chunks[0].y + 1,
+                    );
+                }
                 InputMode::WatchSort => {}
                 InputMode::Editing => f.set_cursor(
                     input_area.x + app.character_index as u16 + 1,
@@ -2326,6 +2428,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             KeyCode::Backspace => {
                                 app.delete_c();
+                            }
+                            KeyCode::Left => {
+                                app.move_create_edit_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                app.move_create_edit_cursor_right();
                             }
                             KeyCode::Esc => {
                                 app.input_mode = InputMode::Normal;
