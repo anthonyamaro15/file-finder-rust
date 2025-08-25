@@ -917,10 +917,13 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 }
             }
 
-            // Prepare files list
+            // Prepare items to copy: regular files and symlinks (we previously skipped symlinks, causing empty dirs)
             let files: Vec<_> = all_entries
                 .iter()
-                .filter(|e| e.path().is_file())
+                .filter(|e| {
+                    let ft = e.file_type();
+                    ft.is_file() || ft.is_symlink()
+                })
                 .map(|e| e.path().to_path_buf())
                 .collect();
 
@@ -948,14 +951,53 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                             .map_err(|e| anyhow::anyhow!("Failed to create parent directory: {}", e))?;
                     }
 
-                    fast_copy_file(entry_path, &dst_path).map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to copy '{}' -> '{}': {}",
-                            entry_path.display(),
-                            dst_path.display(),
-                            e
-                        )
-                    })?;
+                    // Preserve symlinks instead of skipping them
+                    let ft = std::fs::symlink_metadata(entry_path)
+                        .map_err(|e| anyhow::anyhow!("Failed to lstat '{}': {}", entry_path.display(), e))?
+                        .file_type();
+
+                    if ft.is_symlink() {
+                        let target = std::fs::read_link(entry_path)
+                            .map_err(|e| anyhow::anyhow!("Failed to readlink '{}': {}", entry_path.display(), e))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::symlink;
+                            symlink(&target, &dst_path).map_err(|e| {
+                                anyhow::anyhow!(
+                                    "Failed to create symlink '{}' -> '{}' : {}",
+                                    dst_path.display(),
+                                    target.display(),
+                                    e
+                                )
+                            })?;
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            // On non-unix, best-effort: fall back to copying the target contents
+                            if target.is_file() {
+                                fast_copy_file(&target, &dst_path).map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "Failed to copy symlink target '{}' -> '{}': {}",
+                                        target.display(),
+                                        dst_path.display(),
+                                        e
+                                    )
+                                })?;
+                            }
+                        }
+                    } else if ft.is_file() {
+                        fast_copy_file(entry_path, &dst_path).map_err(|e| {
+                            anyhow::anyhow!(
+                                "Failed to copy '{}' -> '{}': {}",
+                                entry_path.display(),
+                                dst_path.display(),
+                                e
+                            )
+                        })?;
+                    } else {
+                        // Skip special files (sockets, devices, etc.)
+                        warn!("Skipping unsupported file type: {}", entry_path.display());
+                    }
 
                     let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                     if count % UPDATE_INTERVAL == 0 || count == total_files {
