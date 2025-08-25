@@ -137,33 +137,3 @@ impl Settings {
     }
 }
 
-// Backward compatibility: alias Configuration to Settings
-pub type Configuration = Settings;
-
-impl Configuration {
-    pub fn new() -> Self {
-        Settings::default()
-    }
-
-    pub fn handle_settings_configuration(&mut self) -> AppResult<()> {
-        match Settings::load() {
-            Ok(loaded_settings) => {
-                *self = loaded_settings;
-                Ok(())
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to load settings, using defaults: {}", e);
-                Settings::create_default_if_missing()?;
-                Ok(())
-            }
-        }
-    }
-
-    pub fn write_settings_to_file(&self) -> AppResult<()> {
-        self.save()
-    }
-
-    pub fn load_settings_from_file(&self, path: &str) -> AppResult<Configuration> {
-        Settings::load_from_file(path)
-    }
-}

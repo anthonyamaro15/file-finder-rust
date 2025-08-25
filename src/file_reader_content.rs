@@ -1,7 +1,6 @@
 use std::{
     fs,
-    io::{self, Read},
-    iter::zip,
+    io::{self},
     path::Path,
 };
 
@@ -9,11 +8,10 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::{
     style::Color,
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::Paragraph,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
-use syntect::html::highlighted_html_for_file;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 use syntect::util::LinesWithEndings;

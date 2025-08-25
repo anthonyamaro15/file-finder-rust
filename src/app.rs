@@ -4,12 +4,9 @@ use std::time::Instant;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use log::debug;
-use ratatui::text::Line;
 
 use crate::directory_store::DirectoryStore;
 use crate::errors::{AppError, AppResult};
-use crate::highlight::highlight_search_term;
-use crate::ui::theme::OneDarkTheme;
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 use crate::config::{Settings, Theme, ThemeColors};
@@ -32,7 +29,6 @@ pub enum InputMode {
     WatchRename,
     WatchSort,
     WatchKeyBinding,
-    WatchCopy,
     CacheLoading,
 }
 
@@ -45,12 +41,6 @@ pub struct SearchResult {
     pub original_index: usize,
 }
 
-#[derive(Debug, Clone)]
-pub enum FileChange {
-    Added { path: String, index: usize },
-    Removed { index: usize },
-    Modified { path: String, index: usize },
-}
 
 #[derive(Debug)]
 pub struct App {
@@ -96,15 +86,6 @@ pub struct App {
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
 
-    // Cached UI items for performance
-    pub cached_list_items: Vec<String>,
-    pub cached_list_items_valid: bool,
-
-    // Pagination for lazy loading large directories
-    pub pagination_enabled: bool,
-    pub items_per_page: usize,
-    pub current_page: usize,
-    pub total_pages: usize,
 
     // File system watcher for real-time updates
     pub file_watcher: Option<FileSystemWatcher>,
@@ -151,17 +132,6 @@ impl App {
             file_labels.push(get_file_name);
         }
 
-        // Enable pagination for large directories (>500 files)
-        let file_count = files.len();
-        let pagination_threshold = 500;
-        let pagination_enabled = file_count > pagination_threshold;
-        let items_per_page = if pagination_enabled { 200 } else { file_count };
-        let total_pages = if pagination_enabled {
-            (file_count + items_per_page - 1) / items_per_page
-        } else {
-            1
-        };
-
         Self {
             input: String::new(),
             input_mode: InputMode::Normal,
@@ -199,15 +169,6 @@ impl App {
             copy_files_processed: 0,
             copy_total_files: 0,
 
-            // Initialize cached UI items
-            cached_list_items: Vec::new(),
-            cached_list_items_valid: false,
-
-            // Initialize pagination
-            pagination_enabled,
-            items_per_page,
-            current_page: 0,
-            total_pages,
 
             // Initialize file watcher
             file_watcher: None,
@@ -413,15 +374,6 @@ impl App {
         self.reset_cursor();
     }
 
-    pub fn validate_user_input(&self, input: &str) -> Option<IDE> {
-        match input {
-            "nvim" => Some(IDE::NVIM),
-            "vscode" => Some(IDE::VSCODE),
-            "zed" => Some(IDE::ZED),
-            _ => None,
-        }
-    }
-
     // TODO: could we combine search, create, edit input field methods?
     // there is a lot of duplication here
     //
@@ -472,21 +424,6 @@ impl App {
 
     pub fn clamp_create_edit_cursor(&mut self, new_cursor_pos: usize) -> usize {
         new_cursor_pos.clamp(0, self.create_edit_file_name.chars().count())
-    }
-
-    pub fn handle_arguments(&mut self, args: Vec<String>) -> AppResult<()> {
-        if args.len() > 1 {
-            let ide = &args[1];
-
-            let validated_ide = self.validate_user_input(ide);
-
-            if let Some(selection) = validated_ide {
-                self.selected_id = Some(selection);
-            } else {
-                return Err(AppError::invalid_ide(ide));
-            }
-        }
-        Ok(())
     }
 
     pub fn get_selected_ide(&self) -> Option<String> {
@@ -550,174 +487,8 @@ impl App {
             self.input.clear();
         }
 
-        // Invalidate cached list items when file list changes
-        self.cached_list_items_valid = false;
-
-        // Update pagination when file list changes
-        self.update_pagination();
     }
 
-    /// Optimized incremental update for file references
-    pub fn update_file_references_incremental(&mut self, changes: Vec<FileChange>) {
-        for change in changes {
-            match change {
-                FileChange::Added { path, index } => {
-                    // Insert new file at the specified index
-                    if index <= self.files.len() {
-                        self.files.insert(index, path.clone());
-
-                        // Update filtered indexes - shift all indexes >= insert position
-                        for filtered_index in &mut self.filtered_indexes {
-                            if *filtered_index >= index {
-                                *filtered_index += 1;
-                            }
-                        }
-                        self.filtered_indexes.insert(index, index);
-
-                        // Add the new file name to labels
-                        let new_path = Path::new(&path);
-                        let file_name = new_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .map(|name| name.to_string())
-                            .unwrap_or_else(|| path.clone());
-                        self.file_read_only_label_list.insert(index, file_name);
-                    }
-                }
-                FileChange::Removed { index } => {
-                    // Remove file at the specified index
-                    if index < self.files.len() {
-                        self.files.remove(index);
-
-                        // Update filtered indexes - remove and shift
-                        self.filtered_indexes.retain(|&i| i != index);
-                        for filtered_index in &mut self.filtered_indexes {
-                            if *filtered_index > index {
-                                *filtered_index -= 1;
-                            }
-                        }
-
-                        // Remove from labels
-                        if index < self.file_read_only_label_list.len() {
-                            self.file_read_only_label_list.remove(index);
-                        }
-                    }
-                }
-                FileChange::Modified { path, index } => {
-                    // Update file at the specified index
-                    if index < self.files.len() {
-                        self.files[index] = path.clone();
-
-                        // Update the file name in labels
-                        let new_path = Path::new(&path);
-                        let file_name = new_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .map(|name| name.to_string())
-                            .unwrap_or_else(|| path.clone());
-
-                        if index < self.file_read_only_label_list.len() {
-                            self.file_read_only_label_list[index] = file_name;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Invalidate cached list items when file list changes
-        self.cached_list_items_valid = false;
-
-        // Update pagination when file list changes
-        self.update_pagination();
-    }
-
-    /// Get cached list items for UI rendering (performance optimization)
-    pub fn get_cached_list_items(&mut self) -> &Vec<String> {
-        if !self.cached_list_items_valid {
-            self.rebuild_cached_list_items();
-        }
-        &self.cached_list_items
-    }
-
-    /// Rebuild the cached list items from current file list
-    fn rebuild_cached_list_items(&mut self) {
-        self.cached_list_items.clear();
-
-        for path in &self.files {
-            let new_path = Path::new(path);
-            let file_name = new_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| path.clone());
-
-            self.cached_list_items.push(file_name);
-        }
-
-        self.cached_list_items_valid = true;
-    }
-
-    /// Get the current page of files for display (pagination support)
-    pub fn get_current_page_items(&self) -> Vec<usize> {
-        if !self.pagination_enabled {
-            return self.filtered_indexes.clone();
-        }
-
-        let start_idx = self.current_page * self.items_per_page;
-        let end_idx =
-            ((self.current_page + 1) * self.items_per_page).min(self.filtered_indexes.len());
-
-        self.filtered_indexes[start_idx..end_idx].to_vec()
-    }
-
-    /// Navigate to the next page
-    pub fn next_page(&mut self) {
-        if self.pagination_enabled && self.current_page + 1 < self.total_pages {
-            self.current_page += 1;
-        }
-    }
-
-    /// Navigate to the previous page
-    pub fn prev_page(&mut self) {
-        if self.pagination_enabled && self.current_page > 0 {
-            self.current_page -= 1;
-        }
-    }
-
-    /// Update pagination when file list changes
-    pub fn update_pagination(&mut self) {
-        let file_count = self.filtered_indexes.len();
-        let pagination_threshold = 500;
-
-        self.pagination_enabled = file_count > pagination_threshold;
-
-        if self.pagination_enabled {
-            self.items_per_page = 200;
-            self.total_pages = (file_count + self.items_per_page - 1) / self.items_per_page;
-            // Reset to first page when file list changes significantly
-            if self.current_page >= self.total_pages {
-                self.current_page = 0;
-            }
-        } else {
-            self.items_per_page = file_count;
-            self.total_pages = 1;
-            self.current_page = 0;
-        }
-    }
-
-    /// Get pagination info for display
-    pub fn get_pagination_info(&self) -> Option<String> {
-        if self.pagination_enabled && self.total_pages > 1 {
-            Some(format!(
-                "Page {}/{} ({} items per page)",
-                self.current_page + 1,
-                self.total_pages,
-                self.items_per_page
-            ))
-        } else {
-            None
-        }
-    }
 
     /// Start watching a directory for file system changes
     pub fn start_watching_directory<P: AsRef<Path>>(
@@ -847,9 +618,6 @@ impl App {
         // 3. Call self.update_file_references() to update indexes and labels
         // 4. Reset pagination and search state if needed
 
-        // For now, we'll just mark the cached items as invalid so they get rebuilt
-        self.cached_list_items_valid = false;
-
         debug!(
             "File list refresh requested for: {}",
             self.current_directory
@@ -968,30 +736,4 @@ impl App {
         Ok(())
     }
 
-    /// Get theme colors for UI rendering
-    pub fn theme_colors(&self) -> &ThemeColors {
-        &self.theme_colors
-    }
-
-    /// Update theme and save to settings
-    pub fn update_theme(&mut self, theme_name: &str) -> AppResult<()> {
-        // Load the new theme
-        let theme = Theme::load(theme_name)?;
-
-        // Convert to processed colors
-        self.theme_colors = theme.to_colors()?;
-
-        // Update settings and save
-        self.settings.theme = theme_name.to_string();
-        self.settings.save()?;
-
-        debug!("Switched to theme: {}", theme_name);
-
-        Ok(())
-    }
-
-    /// Get settings reference
-    pub fn settings(&self) -> &Settings {
-        &self.settings
-    }
 }
