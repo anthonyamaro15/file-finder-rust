@@ -1,7 +1,7 @@
 pub mod settings;
 pub mod theme;
 
-pub use settings::{Configuration, Settings};
+pub use settings::Settings;
 pub use theme::{Theme, ThemeColors};
 
 use crate::errors::{AppError, AppResult};

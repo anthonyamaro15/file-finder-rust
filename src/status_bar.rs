@@ -1,5 +1,4 @@
 use crate::app::{App, InputMode};
-use crate::SortBy;
 use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style},
@@ -155,7 +154,6 @@ impl StatusBar {
             InputMode::WatchRename => ("RENAME", Color::Cyan),
             InputMode::WatchSort => ("SORT", Color::Magenta),
             InputMode::WatchKeyBinding => ("HELP", Color::White),
-            InputMode::WatchCopy => ("COPY", Color::LightBlue),
             InputMode::CacheLoading => ("LOADING", Color::Yellow),
         }
     }

@@ -218,10 +218,14 @@ impl Ui {
                 })
                 .collect()
         } else {
-            // Use pagination for large directories to improve performance
-            let page_items = app.get_current_page_items();
+            // Use all filtered indexes (or all files if no filter)
+            let indexes: Vec<usize> = if !app.filtered_indexes.is_empty() {
+                app.filtered_indexes.clone()
+            } else {
+                (0..app.files.len()).collect()
+            };
 
-            page_items
+            indexes
                 .iter()
                 .map(|&file_index| {
                     // Use pre-computed file name from app
