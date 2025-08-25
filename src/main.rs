@@ -1229,7 +1229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Set editor from CLI: {:?}", editor);
     }
 
-    let store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
+    let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         let res = load_directory_from_file(&settings.cache_directory.to_owned()).unwrap();
         println!("Loading directory cache from file");
         res
@@ -1787,12 +1787,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 debug!("Cache loading completed, finalizing...");
 
                 // Use the completed cache if available, otherwise fallback to current directory
+                // Capture the completed cache and persist it; also update the in-memory store used for global search
                 let completed_directories = if let Some(ref cache_store) = app.completed_cache_store
                 {
                     debug!(
                         "Using completed cache with {} directories",
                         cache_store.directories.len()
                     );
+
+                    // Update the in-memory store so global search starts working immediately
+                    store = cache_store.clone();
 
                     // Save the cache to file for future use
                     match crate::directory_store::save_directory_to_file(
@@ -1813,7 +1817,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
 
-                    // Return the cache directories for the UI
+                    // We no longer replace the current file list with the entire cache; keep current directory view.
+                    // Still return directories for compatibility (ignored by finish_cache_loading).
                     cache_store.directories.clone()
                 } else {
                     debug!("No completed cache available, falling back to current directory");
@@ -1827,7 +1832,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_else(|_| Vec::new())
                 };
 
-                // Update app with the directories and switch to normal mode
+                // Finalize cache loading without changing the current directory view
                 app.finish_cache_loading(completed_directories);
 
                 debug!("Cache loading finished, app is now in normal mode");

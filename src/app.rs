@@ -687,11 +687,12 @@ impl App {
     }
 
     /// Finish cache loading and switch back to normal mode
-    pub fn finish_cache_loading(&mut self, directories: Vec<String>) {
-        // Update the files list with the loaded cache
-        self.files = directories;
+    pub fn finish_cache_loading(&mut self, _directories: Vec<String>) {
+        // Do NOT override the current file list here. We want to remain focused on the
+        // current directory (e.g., start_path) after cache creation completes.
+        // The completed cache is used for global search and saved to disk separately.
 
-        // Update file references and reset UI state
+        // Keep current files, but refresh labels/indexes just in case other state needs updating.
         self.update_file_references();
 
         // Switch back to normal input mode
