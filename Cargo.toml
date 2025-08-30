@@ -1,6 +1,6 @@
 [package]
 name = "ff"
-version = "0.1.2"  # Update this when releasing a new version
+version = "0.1.3"  # Update this when releasing a new version
 edition = "2021"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
 homepage = "https://github.com/anthonyamaro15/file-finder-rust"
