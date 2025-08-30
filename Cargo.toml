@@ -1,6 +1,6 @@
 [package]
 name = "ff"
-version = "0.1.0"                  # bump to 0.1.1+ before the next release tag
+version = "0.1.1"  # Update this when releasing a new version
 edition = "2021"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
 homepage = "https://github.com/anthonyamaro15/file-finder-rust"
