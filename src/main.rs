@@ -8,8 +8,8 @@ use std::{
     io::{self, ErrorKind, Stdout},
     path::{Path, PathBuf},
     process::Command,
-    sync::{mpsc, Arc, Mutex},
     sync::atomic::{AtomicUsize, Ordering},
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
@@ -764,7 +764,10 @@ enum CopyMessage {
 #[cfg(target_os = "macos")]
 fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
     // Allow disabling clonefile/copyfile via env for baseline comparisons
-    let disable_clone = std::env::var("FF_DISABLE_CLONEFILE").ok().filter(|v| v == "1").is_some();
+    let disable_clone = std::env::var("FF_DISABLE_CLONEFILE")
+        .ok()
+        .filter(|v| v == "1")
+        .is_some();
     if !disable_clone {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
         unsafe {
@@ -785,13 +788,7 @@ fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
                 | libc::COPYFILE_XATTR
                 | libc::COPYFILE_DATA
                 | libc::COPYFILE_SECURITY;
-            if libc::copyfile(
-                src_c.as_ptr(),
-                dst_c.as_ptr(),
-                std::ptr::null_mut(),
-                flags,
-            ) == 0
-            {
+            if libc::copyfile(src_c.as_ptr(), dst_c.as_ptr(), std::ptr::null_mut(), flags) == 0 {
                 return Ok(());
             }
         }
@@ -900,10 +897,8 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 let rel = match entry.path().strip_prefix(&src) {
                     Ok(p) => p,
                     Err(e) => {
-                        let _ = tx.send(CopyMessage::Error(format!(
-                            "Failed to strip prefix: {}",
-                            e
-                        )));
+                        let _ =
+                            tx.send(CopyMessage::Error(format!("Failed to strip prefix: {}", e)));
                         return;
                     }
                 };
@@ -938,86 +933,99 @@ fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<Cop
                 .and_then(|s| s.parse::<usize>().ok())
                 .filter(|&n| n >= 1 && n <= 64)
                 .unwrap_or(4);
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             let par_result: Result<(), anyhow::Error> = pool.install(|| {
-                files.par_iter().try_for_each(|entry_path| -> anyhow::Result<()> {
-                    let rel = entry_path
-                        .strip_prefix(&src)
-                        .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
-                    let dst_path = new_src.join(rel);
+                files
+                    .par_iter()
+                    .try_for_each(|entry_path| -> anyhow::Result<()> {
+                        let rel = entry_path
+                            .strip_prefix(&src)
+                            .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
+                        let dst_path = new_src.join(rel);
 
-                    if let Some(parent) = dst_path.parent() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| anyhow::anyhow!("Failed to create parent directory: {}", e))?;
-                    }
+                        if let Some(parent) = dst_path.parent() {
+                            fs::create_dir_all(parent).map_err(|e| {
+                                anyhow::anyhow!("Failed to create parent directory: {}", e)
+                            })?;
+                        }
 
-                    // Preserve symlinks instead of skipping them
-                    let ft = std::fs::symlink_metadata(entry_path)
-                        .map_err(|e| anyhow::anyhow!("Failed to lstat '{}': {}", entry_path.display(), e))?
-                        .file_type();
+                        // Preserve symlinks instead of skipping them
+                        let ft = std::fs::symlink_metadata(entry_path)
+                            .map_err(|e| {
+                                anyhow::anyhow!("Failed to lstat '{}': {}", entry_path.display(), e)
+                            })?
+                            .file_type();
 
-                    if ft.is_symlink() {
-                        let target = std::fs::read_link(entry_path)
-                            .map_err(|e| anyhow::anyhow!("Failed to readlink '{}': {}", entry_path.display(), e))?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::symlink;
-                            // If destination exists (e.g., another thread created it), remove it first to avoid EEXIST
-                            if dst_path.exists() {
-                                let _ = fs::remove_file(&dst_path);
-                            }
-                            symlink(&target, &dst_path).map_err(|e| {
+                        if ft.is_symlink() {
+                            let target = std::fs::read_link(entry_path).map_err(|e| {
                                 anyhow::anyhow!(
-                                    "Failed to create symlink '{}' -> '{}' : {}",
-                                    dst_path.display(),
-                                    target.display(),
+                                    "Failed to readlink '{}': {}",
+                                    entry_path.display(),
                                     e
                                 )
                             })?;
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            // On non-unix, best-effort: fall back to copying the target contents
-                            if target.is_file() {
-                                fast_copy_file(&target, &dst_path).map_err(|e| {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::symlink;
+                                // If destination exists (e.g., another thread created it), remove it first to avoid EEXIST
+                                if dst_path.exists() {
+                                    let _ = fs::remove_file(&dst_path);
+                                }
+                                symlink(&target, &dst_path).map_err(|e| {
                                     anyhow::anyhow!(
-                                        "Failed to copy symlink target '{}' -> '{}': {}",
-                                        target.display(),
+                                        "Failed to create symlink '{}' -> '{}' : {}",
                                         dst_path.display(),
+                                        target.display(),
                                         e
                                     )
                                 })?;
                             }
+                            #[cfg(not(unix))]
+                            {
+                                // On non-unix, best-effort: fall back to copying the target contents
+                                if target.is_file() {
+                                    fast_copy_file(&target, &dst_path).map_err(|e| {
+                                        anyhow::anyhow!(
+                                            "Failed to copy symlink target '{}' -> '{}': {}",
+                                            target.display(),
+                                            dst_path.display(),
+                                            e
+                                        )
+                                    })?;
+                                }
+                            }
+                        } else if ft.is_file() {
+                            fast_copy_file(entry_path, &dst_path).map_err(|e| {
+                                anyhow::anyhow!(
+                                    "Failed to copy '{}' -> '{}': {}",
+                                    entry_path.display(),
+                                    dst_path.display(),
+                                    e
+                                )
+                            })?;
+                        } else {
+                            // Skip special files (sockets, devices, etc.)
+                            warn!("Skipping unsupported file type: {}", entry_path.display());
                         }
-                    } else if ft.is_file() {
-                        fast_copy_file(entry_path, &dst_path).map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to copy '{}' -> '{}': {}",
-                                entry_path.display(),
-                                dst_path.display(),
-                                e
-                            )
-                        })?;
-                    } else {
-                        // Skip special files (sockets, devices, etc.)
-                        warn!("Skipping unsupported file type: {}", entry_path.display());
-                    }
 
-                    let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if count % UPDATE_INTERVAL == 0 || count == total_files {
-                        let _ = progress_tx.send(CopyMessage::Progress {
-                            files_processed: count,
-                            total_files,
-                            current_file: entry_path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                        });
-                    }
+                        let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                        if count % UPDATE_INTERVAL == 0 || count == total_files {
+                            let _ = progress_tx.send(CopyMessage::Progress {
+                                files_processed: count,
+                                total_files,
+                                current_file: entry_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string(),
+                            });
+                        }
 
-                    Ok(())
-                })
+                        Ok(())
+                    })
             });
 
             par_result
@@ -1056,17 +1064,25 @@ mod tests {
         loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(CopyMessage::Completed { success, message }) => {
-                    if success { return Ok(()); }
+                    if success {
+                        return Ok(());
+                    }
                     return Err(format!("Copy failed: {}", message));
                 }
                 Ok(CopyMessage::Error(e)) => return Err(e),
                 Ok(_) => {
-                    if std::time::Instant::now() > deadline { return Err("Timeout waiting for copy".into()); }
+                    if std::time::Instant::now() > deadline {
+                        return Err("Timeout waiting for copy".into());
+                    }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if std::time::Instant::now() > deadline { return Err("Timeout waiting for copy".into()); }
+                    if std::time::Instant::now() > deadline {
+                        return Err("Timeout waiting for copy".into());
+                    }
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => return Err("Channel disconnected".into()),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Channel disconnected".into())
+                }
             }
         }
     }
@@ -1117,7 +1133,10 @@ mod tests {
         #[cfg(unix)]
         {
             let meta = std::fs::symlink_metadata(&copied_link).unwrap();
-            assert!(meta.file_type().is_symlink(), "expected symlink to be preserved");
+            assert!(
+                meta.file_type().is_symlink(),
+                "expected symlink to be preserved"
+            );
             let target = std::fs::read_link(&copied_link).unwrap();
             assert_eq!(target, Path::new("../real.txt"));
         }

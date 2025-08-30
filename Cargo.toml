@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 default-run = "file-finder"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+homepage = "https://github.com/anthonyamaro15/file-finder-rust"# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.83"
