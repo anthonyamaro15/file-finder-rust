@@ -875,7 +875,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "file-finder"
+name = "ff"
 version = "0.1.0"
 dependencies = [
  "anyhow",

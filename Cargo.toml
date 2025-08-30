@@ -1,10 +1,10 @@
 [package]
-name = "file-finder"
-version = "0.1.0"
+name = "ff"
+version = "0.1.0"                  # bump to 0.1.1+ before the next release tag
 edition = "2021"
-default-run = "file-finder"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
-homepage = "https://github.com/anthonyamaro15/file-finder-rust"# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+homepage = "https://github.com/anthonyamaro15/file-finder-rust"
+description = "A blazing-fast TUI file finder with fuzzy search, ranking, and IDE integration"
 license = "MIT"
 
 [dependencies]
@@ -12,7 +12,7 @@ anyhow = "1.0.83"
 clap = { version = "4.0", features = ["derive"] }
 crossterm = "0.27.0"
 ratatui = "0.26.2"
-serde = {version = "1.0.203" , features = ["derive"]}
+serde = { version = "1.0.203", features = ["derive"] }
 walkdir = "2.5.0"
 ignore = "0.4"
 serde_json = "1.0"
@@ -41,11 +41,19 @@ predicates = "3.0"
 proptest = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 
-[[bench]]
-name = "directory_walk_bench"
-harness = false
+# (bench removed for now; re-add when the file exists)
+# [[bench]]
+# name = "directory_walk_bench"
+# harness = false
+# path = "benches/directory_walk_bench.rs"
 
-# The profile that 'dist' will build with
+# Build profile used by cargo-dist
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Ensure the shipped binary is named `ff`
+[[bin]]
+name = "ff"
+path = "src/main.rs"
+
