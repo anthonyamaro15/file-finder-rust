@@ -4,12 +4,12 @@ use file_reader_content::{FileContent, FileType};
 use image::ImageReader;
 use rayon::prelude::*;
 use std::{
-    fs::{self, File, Metadata},
+    fs::{self, File},
     io::{self, ErrorKind, Stdout},
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
-    sync::{mpsc, Arc, Mutex},
+    sync::mpsc,
     thread,
 };
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
@@ -39,7 +39,11 @@ use crate::{
     status_bar::StatusBar,
     theme::OneDarkTheme,
     ui::Ui,
-    utils::init,
+    utils::{
+        check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info,
+        get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
+        get_metadata_info, init, is_file, SortBy, SortType,
+    },
 };
 use log::{debug, warn};
 
@@ -59,19 +63,7 @@ mod theme;
 mod ui;
 mod watcher;
 
-#[derive(Clone)]
-enum SortType {
-    ASC,
-    DESC,
-}
-
-#[derive(Clone)]
-enum SortBy {
-    Name,
-    Size,
-    DateAdded,
-    Default,
-}
+// SortType and SortBy moved to utils/files.rs
 
 #[derive(Clone)]
 struct ImageGenerator {
@@ -127,113 +119,7 @@ impl ImageGenerator {
     }
 }
 
-fn sort_entries_by_type(
-    sort_by: SortBy,
-    sort_type: SortType,
-    mut entries: Vec<PathBuf>,
-) -> Vec<PathBuf> {
-    match sort_type {
-        SortType::ASC => match sort_by {
-            SortBy::Name => entries.sort_by(|a, b| {
-                a.file_name()
-                    .unwrap()
-                    .to_ascii_lowercase()
-                    .cmp(&b.file_name().unwrap().to_ascii_lowercase())
-            }),
-            SortBy::Size => entries.sort_by(|a, b| {
-                a.metadata()
-                    .ok()
-                    .map(|meta| meta.len())
-                    .unwrap_or(0)
-                    .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-            }),
-
-            SortBy::DateAdded => entries.sort_by(|a, b| {
-                a.metadata()
-                    .ok()
-                    .and_then(|meta| meta.created().ok())
-                    .unwrap_or(std::time::SystemTime::now())
-                    .cmp(
-                        &b.metadata()
-                            .ok()
-                            .and_then(|meta| meta.created().ok())
-                            .unwrap_or(std::time::SystemTime::now()),
-                    )
-            }),
-            _ => {}
-        },
-        SortType::DESC => match sort_by {
-            SortBy::Name => entries.sort_by(|a, b| {
-                b.file_name()
-                    .unwrap()
-                    .to_ascii_lowercase()
-                    .cmp(&a.file_name().unwrap().to_ascii_lowercase())
-            }),
-            SortBy::Size => entries.sort_by(|a, b| {
-                b.metadata()
-                    .ok()
-                    .map(|meta| meta.len())
-                    .unwrap_or(0)
-                    .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-            }),
-            SortBy::DateAdded => entries.sort_by(|a, b| {
-                b.metadata()
-                    .ok()
-                    .and_then(|meta| meta.created().ok())
-                    .unwrap_or(std::time::SystemTime::now())
-                    .cmp(
-                        &a.metadata()
-                            .ok()
-                            .and_then(|meta| meta.created().ok())
-                            .unwrap_or(std::time::SystemTime::now()),
-                    )
-            }),
-            _ => {}
-        },
-    }
-
-    entries
-}
-
-// Optimized parallel file processing with rayon
-fn convert_file_path_to_string(
-    entries: Vec<PathBuf>,
-    show_hidden: bool,
-    sort_by: SortBy,
-    sort_type: SortType,
-) -> Vec<String> {
-    use rayon::prelude::*;
-
-    let sort_entries = sort_entries_by_type(sort_by, sort_type, entries);
-
-    // Filter and process files in parallel
-    let filtered_entries: Vec<PathBuf> = sort_entries
-        .into_par_iter()
-        .filter(|value| {
-            if value.is_dir() {
-                true
-            } else if value.is_file() {
-                if !show_hidden {
-                    value
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .map(|name| !name.starts_with("."))
-                        .unwrap_or(false)
-                } else {
-                    true
-                }
-            } else {
-                false
-            }
-        })
-        .collect();
-
-    // Convert to strings in parallel
-    filtered_entries
-        .into_par_iter()
-        .filter_map(|entry| entry.to_str().map(|s| s.to_string()))
-        .collect()
-}
+// sort_entries_by_type and convert_file_path_to_string moved to utils/files.rs
 
 fn handle_file_selection(
     file: &str,
@@ -276,58 +162,7 @@ fn handle_file_selection(
     Ok(())
 }
 
-fn get_inner_files_info(
-    file: String,
-    show_hidden_files: bool,
-    sort_by: SortBy,
-    sort_type: &SortType,
-) -> anyhow::Result<Option<Vec<String>>> {
-    let entries = match fs::read_dir(file) {
-        Ok(en) => {
-            let val = en.map(|res| res.map(|e| e.path())).collect();
-            match val {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("Error: {}", e);
-                    return Ok(None);
-                }
-            }
-        }
-        Err(e) => {
-            println!("Error: {}", e);
-            return Ok(None);
-        }
-    };
-
-    let file_strings =
-        convert_file_path_to_string(entries, show_hidden_files, sort_by, sort_type.clone());
-    Ok(Some(file_strings))
-}
-
-fn get_content_from_path(path: String) -> Option<Vec<String>> {
-    let mut file_name_list: Vec<String> = Vec::new();
-    match fs::read_dir(path) {
-        Ok(val) => {
-            for name in val.into_iter() {
-                match name {
-                    Ok(result) => {
-                        let file_name = result.file_name().to_str().unwrap().to_string();
-                        file_name_list.push(file_name);
-                    }
-                    Err(e) => {
-                        println!("error getting content from path: {:?}", e);
-                        return None;
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            println!("her: {:?}", e);
-            return None;
-        }
-    };
-    Some(file_name_list)
-}
+// get_inner_files_info and get_content_from_path moved to utils/files.rs
 
 fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let popup_layout = Layout::vertical([
@@ -409,21 +244,7 @@ fn handle_delete_based_on_type(file_path: &str) -> FileOperationResult<()> {
     }
 }
 
-fn get_file_path_data(
-    start_path: String,
-    show_hidden: bool,
-    sort_by: SortBy,
-    sort_type: &SortType,
-) -> anyhow::Result<Vec<String>> {
-    let entries = fs::read_dir(start_path)?
-        .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, io::Error>>()?;
-
-    let file_strings =
-        convert_file_path_to_string(entries, show_hidden, sort_by, sort_type.clone());
-
-    Ok(file_strings)
-}
+// get_file_path_data moved to utils/files.rs
 
 fn create_new_dir(current_file_path: String, new_item: String) -> FileOperationResult<()> {
     // Validate the directory name
@@ -482,109 +303,7 @@ fn create_new_file(current_file_path: String, file_name: String) -> FileOperatio
     Ok(())
 }
 
-fn is_file(path: String) -> bool {
-    match fs::metadata(path) {
-        Ok(file) => {
-            let file_t = file.file_type();
-            if file_t.is_file() {
-                true
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
-    }
-}
-
-fn get_metadata_info(path: String) -> anyhow::Result<Option<Metadata>> {
-    let metadata = match fs::metadata(path) {
-        Ok(info) => Some(info),
-        Err(_) => None,
-    };
-
-    Ok(metadata)
-}
-
-fn format_file_size(size: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-    let mut size = size as f64;
-    let mut unit_index = 0;
-
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-
-    if unit_index == 0 {
-        format!("{} {}", size as u64, UNITS[unit_index])
-    } else {
-        format!("{:.1} {}", size, UNITS[unit_index])
-    }
-}
-
-fn format_system_time(time: std::time::SystemTime) -> String {
-    use std::time::UNIX_EPOCH;
-
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => {
-            let secs = duration.as_secs();
-            let days = secs / 86400;
-            let hours = (secs % 86400) / 3600;
-            let minutes = (secs % 3600) / 60;
-
-            if days > 0 {
-                format!("{}d ago", days)
-            } else if hours > 0 {
-                format!("{}h ago", hours)
-            } else if minutes > 0 {
-                format!("{}m ago", minutes)
-            } else {
-                "just now".to_string()
-            }
-        }
-        Err(_) => "unknown".to_string(),
-    }
-}
-
-fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> String {
-    let metadata_info = match metadata {
-        Ok(res) => match res {
-            Some(info) => {
-                let size = format_file_size(info.len());
-                let permissions = info.permissions();
-                let readonly = if permissions.readonly() { "RO" } else { "RW" };
-
-                // Try to get modification time
-                let modified = info
-                    .modified()
-                    .map(format_system_time)
-                    .unwrap_or_else(|_| "unknown".to_string());
-
-                format!("{} | {} | modified {}", size, readonly, modified)
-            }
-            None => String::from("Info not available"),
-        },
-        Err(_) => String::from("Error reading metadata"),
-    };
-
-    metadata_info
-}
-
-fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
-    let get_info = Path::new(&curr_path);
-    let file_name = get_info.file_name().unwrap().to_str().unwrap().to_string();
-
-    // Generate a unique name by prefixing copy_ repeatedly until it does not exist
-    let mut copies = 1usize;
-    loop {
-        let prefix = "copy_".repeat(copies);
-        let candidate = format!("{}/{}{}", new_path, prefix, file_name);
-        if !Path::new(&candidate).exists() {
-            return candidate;
-        }
-        copies += 1;
-    }
-}
+// is_file, get_metadata_info, format_file_size, format_system_time, generate_metadata_str_info, generate_copy_file_dir_name moved to utils/
 
 fn create_item_based_on_type(
     current_file_path: String,
@@ -629,22 +348,7 @@ fn handle_rename(app: &App) -> FileOperationResult<()> {
     Ok(())
 }
 
-fn check_if_exists(new_path: String) -> bool {
-    match Path::new(&new_path).try_exists() {
-        Ok(value) => value,
-        Err(_) => {
-            // If we can't determine existence, assume it doesn't exist
-            false
-        }
-    }
-}
-
-fn get_curr_path(path: String) -> String {
-    let mut split_path = path.split("/").collect::<Vec<&str>>();
-    split_path.pop();
-    let vec_to_str = split_path.join("/");
-    vec_to_str
-}
+// check_if_exists and get_curr_path moved to utils/files.rs
 
 fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
     // Check if source exists
