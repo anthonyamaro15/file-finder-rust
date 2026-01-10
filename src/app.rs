@@ -737,4 +737,61 @@ impl App {
         Ok(())
     }
 
+    // ============================================================
+    // Helper methods for navigation and selection
+    // ============================================================
+
+    /// Get the list length based on current mode (search results or files).
+    /// Returns the count of items available for navigation.
+    pub fn get_list_length(&self) -> usize {
+        if !self.search_results.is_empty() {
+            self.search_results.len()
+        } else {
+            self.files.len()
+        }
+    }
+
+    /// Get the selected path based on current mode (search results or files).
+    /// Returns None if the index is invalid or the list is empty.
+    pub fn get_selected_path(&self, selected_index: Option<usize>) -> Option<String> {
+        let index = selected_index?;
+
+        if !self.search_results.is_empty() {
+            // Search mode (global or local) - get path from search results
+            self.search_results
+                .get(index)
+                .map(|result| result.file_path.clone())
+        } else {
+            // Normal mode - get path from files list
+            self.files.get(index).cloned()
+        }
+    }
+
+    /// Get the current directory path from the first file in the list.
+    /// Returns the parent directory of the first file, or an empty string if no files.
+    pub fn get_current_dir(&self) -> String {
+        if let Some(first_file) = self.files.first() {
+            let path = Path::new(first_file);
+            path.parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Check if we're currently in search mode (either global or local).
+    pub fn is_in_search_mode(&self) -> bool {
+        !self.search_results.is_empty()
+    }
+
+    /// Clear search state and return to normal file list view.
+    pub fn clear_search(&mut self) {
+        self.global_search_mode = false;
+        self.search_results.clear();
+        self.input.clear();
+        self.character_index = 0;
+    }
+
 }
+
