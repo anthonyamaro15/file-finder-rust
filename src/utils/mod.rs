@@ -34,10 +34,9 @@ pub fn init() {
     }
 }
 
-// Re-export commonly used items for convenience
+// Re-export items used by main.rs
 pub use files::{
-    check_if_exists, convert_file_path_to_string, generate_copy_file_dir_name,
-    generate_metadata_str_info, get_content_from_path, get_curr_path, get_file_path_data,
-    get_inner_files_info, get_metadata_info, is_file, sort_entries_by_type, SortBy, SortType,
+    check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info,
+    get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
+    get_metadata_info, is_file, SortBy, SortType,
 };
-pub use format::{format_file_size, format_system_time};

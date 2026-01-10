@@ -1,43 +1,56 @@
-use app::{App, InputMode};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use file_reader_content::{FileContent, FileType};
-use image::ImageReader;
-use rayon::prelude::*;
+// ============================================================
+// File Finder (ff) - Terminal File Browser
+// ============================================================
+
+// Standard library imports
 use std::{
-    fs::{self, File},
-    io::{self, ErrorKind, Stdout},
+    io::{self, Stdout},
     path::Path,
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
     sync::mpsc,
-    thread,
 };
-use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
-use walkdir::WalkDir;
 
-use ratatui::{prelude::*, widgets::Clear};
-
+// External crate imports
+use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use image::ImageReader;
+use log::{debug, warn};
 use ratatui::{
     backend::CrosstermBackend,
+    prelude::*,
     style::{Color, Style},
-    text::Text,
-    widgets::{Block, Borders, List, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListState, Paragraph},
     Terminal,
 };
+use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
+// Internal module declarations
+mod app;
+mod cli;
+mod config;
+mod configuration;
+mod directory_store;
+mod errors;
+mod file_reader_content;
+mod highlight;
 mod operations;
 mod render;
+mod status_bar;
+mod theme;
+mod ui;
 mod utils;
+mod watcher;
 
+// Internal imports
 use crate::{
+    app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
     directory_store::{build_directory_from_store_async, load_directory_from_file},
-    errors::{validation, FileOperationResult},
+    file_reader_content::{FileContent, FileType},
     operations::{
         copy_dir_file_with_progress, create_item_based_on_type, handle_delete_based_on_type,
         handle_rename, CopyMessage,
@@ -45,7 +58,7 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_block,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_popup, generate_sort_by_string, split_popup_area, split_popup_area_vertical,
+        draw_popup, split_popup_area, split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
@@ -56,25 +69,6 @@ use crate::{
         get_metadata_info, init, is_file, SortBy, SortType,
     },
 };
-use log::{debug, warn};
-
-extern crate copypasta;
-use copypasta::{ClipboardContext, ClipboardProvider};
-
-mod app;
-mod cli;
-mod config;
-mod configuration;
-mod directory_store;
-mod errors;
-mod file_reader_content;
-mod highlight;
-mod status_bar;
-mod theme;
-mod ui;
-mod watcher;
-
-// SortType and SortBy moved to utils/files.rs
 
 #[derive(Clone)]
 struct ImageGenerator {
@@ -130,8 +124,6 @@ impl ImageGenerator {
     }
 }
 
-// sort_entries_by_type and convert_file_path_to_string moved to utils/files.rs
-
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -172,11 +164,6 @@ fn handle_file_selection(
 
     Ok(())
 }
-
-// get_inner_files_info and get_content_from_path moved to utils/files.rs
-// draw_popup and generate_sort_by_string moved to render/popups.rs
-// File operations (delete, create, rename) moved to operations/file_ops.rs
-// Copy operations moved to operations/copy.rs
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments using clap
@@ -961,9 +948,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let generated_metadata_str =
                                         generate_metadata_str_info(get_metadata);
                                     app.curr_stats = generated_metadata_str.clone();
-
-                                    // INFO: update preview list
-
                                     file_reader_content.curr_selected_path =
                                         selected_cur_path.clone();
                                     if !is_file(selected_cur_path.clone()) {
