@@ -784,6 +784,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.files = file_path_list.clone();
                                 app.read_only_files = file_path_list;
                                 app.update_file_references();
+                                status_bar.invalidate_cache();
                             }
                         } else {
                             warn!("Copy failed: {}", message);
@@ -1255,6 +1256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.files = file_path_list.clone();
                                                 app.read_only_files = file_path_list.clone();
                                                 app.update_file_references();
+                                                status_bar.invalidate_cache();
                                                 app.input_mode = InputMode::Normal;
                                             }
                                             Err(e) => {
@@ -1314,6 +1316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.files = file_path_list.clone();
                                             app.read_only_files = file_path_list.clone();
                                             app.update_file_references();
+                                            status_bar.invalidate_cache();
                                         }
                                         Err(e) => {
                                             app.is_create_edit_error = true;
@@ -1393,6 +1396,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.files = file_path_list.clone();
                                             app.read_only_files = file_path_list.clone();
                                             app.update_file_references();
+                                            status_bar.invalidate_cache();
 
                                             // Restore selection to a nearby item
                                             app.preserved_selection_index = next_selection_index;
