@@ -30,12 +30,23 @@ use ratatui::{
     Terminal,
 };
 
+mod operations;
+mod render;
 mod utils;
 
 use crate::{
     cli::{compute_effective_config, CliArgs},
     directory_store::{build_directory_from_store_async, load_directory_from_file},
-    errors::{validation, FileOperationError, FileOperationResult},
+    errors::{validation, FileOperationResult},
+    operations::{
+        copy_dir_file_with_progress, create_item_based_on_type, handle_delete_based_on_type,
+        handle_rename, CopyMessage,
+    },
+    render::{
+        create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_block,
+        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
+        draw_popup, generate_sort_by_string, split_popup_area, split_popup_area_vertical,
+    },
     status_bar::StatusBar,
     theme::OneDarkTheme,
     ui::Ui,
@@ -163,705 +174,9 @@ fn handle_file_selection(
 }
 
 // get_inner_files_info and get_content_from_path moved to utils/files.rs
-
-fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let popup_layout = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(rect);
-
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(popup_layout[1])[1]
-}
-
-fn delete_file(file_path: &str) -> FileOperationResult<()> {
-    let path = Path::new(file_path);
-
-    // Validate file exists
-    validation::validate_path_exists(path)?;
-
-    // Validate permissions
-    validation::validate_permissions(path, "delete")?;
-
-    // Attempt to delete the file
-    fs::remove_file(path).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => {
-            FileOperationError::permission_denied(path, "Cannot delete file - check permissions")
-        }
-        io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
-        _ => FileOperationError::from(e),
-    })?;
-
-    Ok(())
-}
-
-fn delete_dir(dir_path: &str) -> FileOperationResult<()> {
-    let path = Path::new(dir_path);
-
-    // Validate directory exists
-    validation::validate_path_exists(path)?;
-
-    // Validate permissions
-    validation::validate_permissions(path, "delete")?;
-
-    // Attempt to delete the directory
-    fs::remove_dir_all(path).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => FileOperationError::permission_denied(
-            path,
-            "Cannot delete directory - check permissions",
-        ),
-        io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
-        _ => FileOperationError::from(e),
-    })?;
-
-    Ok(())
-}
-
-fn handle_delete_based_on_type(file_path: &str) -> FileOperationResult<()> {
-    let path = Path::new(file_path);
-
-    // Validate file exists
-    validation::validate_path_exists(path)?;
-
-    let metadata = fs::metadata(path).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => {
-            FileOperationError::permission_denied(path, "Cannot read file information")
-        }
-        io::ErrorKind::NotFound => FileOperationError::file_not_found(path),
-        _ => FileOperationError::from(e),
-    })?;
-
-    if metadata.is_dir() {
-        delete_dir(file_path)
-    } else {
-        delete_file(file_path)
-    }
-}
-
-// get_file_path_data moved to utils/files.rs
-
-fn create_new_dir(current_file_path: String, new_item: String) -> FileOperationResult<()> {
-    // Validate the directory name
-    validation::validate_filename(&new_item)?;
-
-    let append_path = format!("{}/{}", current_file_path, new_item);
-    let path = Path::new(&append_path);
-
-    // Validate that the directory doesn't already exist
-    validation::validate_path_not_exists(path)?;
-
-    // Validate parent directory permissions
-    validation::validate_permissions(path, "create")?;
-
-    // Create the directory
-    fs::create_dir(path).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => FileOperationError::permission_denied(
-            path,
-            "Cannot create directory - check permissions",
-        ),
-        io::ErrorKind::AlreadyExists => FileOperationError::already_exists(path),
-        io::ErrorKind::NotFound => {
-            FileOperationError::file_not_found(Path::new(&current_file_path))
-        }
-        _ => FileOperationError::from(e),
-    })?;
-
-    Ok(())
-}
-
-fn create_new_file(current_file_path: String, file_name: String) -> FileOperationResult<()> {
-    // Validate the filename
-    validation::validate_filename(&file_name)?;
-
-    let append_path = format!("{}/{}", current_file_path, file_name);
-    let path = Path::new(&append_path);
-
-    // Validate that the file doesn't already exist
-    validation::validate_path_not_exists(path)?;
-
-    // Validate parent directory permissions
-    validation::validate_permissions(path, "create")?;
-
-    // Create the file
-    File::create_new(path).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => {
-            FileOperationError::permission_denied(path, "Cannot create file - check permissions")
-        }
-        io::ErrorKind::AlreadyExists => FileOperationError::already_exists(path),
-        io::ErrorKind::NotFound => {
-            FileOperationError::file_not_found(Path::new(&current_file_path))
-        }
-        _ => FileOperationError::from(e),
-    })?;
-
-    Ok(())
-}
-
-// is_file, get_metadata_info, format_file_size, format_system_time, generate_metadata_str_info, generate_copy_file_dir_name moved to utils/
-
-fn create_item_based_on_type(
-    current_file_path: String,
-    new_item: String,
-) -> FileOperationResult<()> {
-    if new_item.contains(".") {
-        create_new_file(current_file_path, new_item)
-    } else {
-        create_new_dir(current_file_path, new_item)
-    }
-}
-
-fn handle_rename(app: &App) -> FileOperationResult<()> {
-    // Validate the new filename
-    validation::validate_filename(&app.create_edit_file_name)?;
-
-    let curr_path = format!("{}/{}", app.current_path_to_edit, app.current_name_to_edit);
-    let new_path = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
-
-    let old_path = Path::new(&curr_path);
-    let new_path_obj = Path::new(&new_path);
-
-    // Validate the old file exists
-    validation::validate_path_exists(old_path)?;
-
-    // Validate the new path doesn't already exist
-    validation::validate_path_not_exists(new_path_obj)?;
-
-    // Validate permissions for rename operation
-    validation::validate_permissions(new_path_obj, "rename")?;
-
-    // Attempt the rename
-    fs::rename(old_path, new_path_obj).map_err(|e| match e.kind() {
-        io::ErrorKind::PermissionDenied => {
-            FileOperationError::permission_denied(old_path, "Cannot rename - check permissions")
-        }
-        io::ErrorKind::NotFound => FileOperationError::file_not_found(old_path),
-        io::ErrorKind::AlreadyExists => FileOperationError::already_exists(new_path_obj),
-        _ => FileOperationError::from(e),
-    })?;
-
-    Ok(())
-}
-
-// check_if_exists and get_curr_path moved to utils/files.rs
-
-fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
-    // Check if source exists
-    if !src.exists() {
-        return Err(anyhow::anyhow!(
-            "Source path does not exist: {}",
-            src.display()
-        ));
-    }
-
-    // Check if destination already exists
-    if new_src.exists() {
-        return Err(anyhow::anyhow!(
-            "Destination already exists: {}",
-            new_src.display()
-        ));
-    }
-
-    if src.is_file() {
-        // Ensure parent directory exists
-        if let Some(parent) = new_src.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| anyhow::anyhow!("Failed to create parent directory: {}", e))?;
-        }
-
-        fs::copy(src, new_src).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to copy file '{}' to '{}': {}",
-                src.display(),
-                new_src.display(),
-                e
-            )
-        })?;
-    } else if src.is_dir() {
-        // Create the destination directory
-        fs::create_dir_all(new_src)
-            .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
-
-        let entries: Vec<_> = WalkDir::new(src)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Ok(e) => Some(e),
-                Err(err) => {
-                    warn!("Skipping entry due to error: {}", err);
-                    None
-                }
-            })
-            .collect();
-
-        entries.par_iter().try_for_each(|entry| {
-            let entry_path = entry.path();
-            let relative_path = entry_path.strip_prefix(src).map_err(|e| {
-                io::Error::new(ErrorKind::Other, format!("Failed to strip prefix: {}", e))
-            })?;
-            let dst_path = new_src.join(relative_path);
-
-            if entry_path.is_dir() {
-                fs::create_dir_all(&dst_path).map_err(|e| {
-                    io::Error::new(
-                        ErrorKind::Other,
-                        format!("Failed to create directory '{}': {}", dst_path.display(), e),
-                    )
-                })?;
-            } else if entry_path.is_file() {
-                if let Some(parent) = dst_path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| {
-                        io::Error::new(
-                            ErrorKind::Other,
-                            format!("Failed to create parent directory: {}", e),
-                        )
-                    })?;
-                }
-                fs::copy(entry_path, &dst_path).map_err(|e| {
-                    io::Error::new(
-                        ErrorKind::Other,
-                        format!(
-                            "Failed to copy file '{}' to '{}': {}",
-                            entry_path.display(),
-                            dst_path.display(),
-                            e
-                        ),
-                    )
-                })?;
-            } else {
-                // Skip special files (symlinks, devices, etc.)
-                warn!("Skipping unsupported file type: {}", entry_path.display());
-            }
-
-            Ok::<(), io::Error>(())
-        })?;
-    } else {
-        return Err(anyhow::anyhow!(
-            "Source is neither a file nor a directory: {}",
-            src.display()
-        ));
-    }
-
-    Ok(())
-}
-
-// Progress message for copy operations
-#[derive(Debug, Clone)]
-enum CopyMessage {
-    Progress {
-        files_processed: usize,
-        total_files: usize,
-        current_file: String,
-    },
-    Completed {
-        success: bool,
-        message: String,
-    },
-    Error(String),
-}
-
-// Fast file copy helpers optimized for macOS/APFS
-#[cfg(target_os = "macos")]
-fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
-    // Allow disabling clonefile/copyfile via env for baseline comparisons
-    let disable_clone = std::env::var("FF_DISABLE_CLONEFILE")
-        .ok()
-        .filter(|v| v == "1")
-        .is_some();
-    if !disable_clone {
-        use std::{ffi::CString, os::unix::ffi::OsStrExt};
-        unsafe {
-            let src_c = CString::new(src.as_os_str().as_bytes())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-            let dst_c = CString::new(dst.as_os_str().as_bytes())
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-            // 1) Try APFS clone-on-write for same-volume instant copy
-            if libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) == 0 {
-                return Ok(());
-            }
-
-            // 2) Fallback to kernel-optimized copy with metadata preservation
-            // Compose flags equivalent to COPYFILE_ALL (ACL | STAT | XATTR | DATA | SECURITY)
-            let flags = libc::COPYFILE_ACL
-                | libc::COPYFILE_STAT
-                | libc::COPYFILE_XATTR
-                | libc::COPYFILE_DATA
-                | libc::COPYFILE_SECURITY;
-            if libc::copyfile(src_c.as_ptr(), dst_c.as_ptr(), std::ptr::null_mut(), flags) == 0 {
-                return Ok(());
-            }
-        }
-    }
-
-    // 3) Last resort (or when disabled)
-    std::fs::copy(src, dst).map(|_| ())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
-    std::fs::copy(src, dst).map(|_| ())
-}
-
-// Async copy function with progress tracking
-fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<CopyMessage> {
-    let (tx, rx) = mpsc::channel();
-    let src = src.to_path_buf();
-    let new_src = new_src.to_path_buf();
-
-    thread::spawn(move || {
-        // Check if source exists
-        if !src.exists() {
-            let _ = tx.send(CopyMessage::Error(format!(
-                "Source path does not exist: {}",
-                src.display()
-            )));
-            return;
-        }
-
-        // Check if destination already exists
-        if new_src.exists() {
-            let _ = tx.send(CopyMessage::Error(format!(
-                "Destination already exists: {}",
-                new_src.display()
-            )));
-            return;
-        }
-
-        let result = if src.is_file() {
-            // Single file copy
-            if let Some(parent) = new_src.parent() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    let _ = tx.send(CopyMessage::Error(format!(
-                        "Failed to create parent directory: {}",
-                        e
-                    )));
-                    return;
-                }
-            }
-
-            let _ = tx.send(CopyMessage::Progress {
-                files_processed: 0,
-                total_files: 1,
-                current_file: src
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-            });
-
-            match fast_copy_file(&src, &new_src) {
-                Ok(()) => {
-                    let _ = tx.send(CopyMessage::Progress {
-                        files_processed: 1,
-                        total_files: 1,
-                        current_file: src
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string(),
-                    });
-                    Ok(())
-                }
-                Err(e) => Err(anyhow::anyhow!(
-                    "Failed to copy file '{}' to '{}': {}",
-                    src.display(),
-                    new_src.display(),
-                    e
-                )),
-            }
-        } else if src.is_dir() {
-            // Directory copy - parallelized with batched progress updates
-            if let Err(e) = fs::create_dir_all(&new_src) {
-                let _ = tx.send(CopyMessage::Error(format!(
-                    "Failed to create destination directory: {}",
-                    e
-                )));
-                return;
-            }
-
-            // Collect all entries once
-            let all_entries: Vec<_> = WalkDir::new(&src)
-                .into_iter()
-                .filter_map(|entry| match entry {
-                    Ok(e) => Some(e),
-                    Err(err) => {
-                        warn!("Skipping entry due to error: {}", err);
-                        None
-                    }
-                })
-                .collect();
-
-            // Create all directories first
-            for entry in all_entries.iter().filter(|e| e.path().is_dir()) {
-                let rel = match entry.path().strip_prefix(&src) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        let _ =
-                            tx.send(CopyMessage::Error(format!("Failed to strip prefix: {}", e)));
-                        return;
-                    }
-                };
-                if let Err(e) = fs::create_dir_all(new_src.join(rel)) {
-                    let _ = tx.send(CopyMessage::Error(format!(
-                        "Failed to create directory '{}': {}",
-                        new_src.join(rel).display(),
-                        e
-                    )));
-                    return;
-                }
-            }
-
-            // Prepare items to copy: regular files and symlinks (we previously skipped symlinks, causing empty dirs)
-            let files: Vec<_> = all_entries
-                .iter()
-                .filter(|e| {
-                    let ft = e.file_type();
-                    ft.is_file() || ft.is_symlink()
-                })
-                .map(|e| e.path().to_path_buf())
-                .collect();
-
-            let total_files = files.len();
-            let processed = AtomicUsize::new(0);
-            let progress_tx = tx.clone();
-            const UPDATE_INTERVAL: usize = 10; // Update progress every 10 files
-
-            // Limit concurrency: FF_COPY_THREADS overrides default (4). If set to 1, this simulates serial copy.
-            let threads = std::env::var("FF_COPY_THREADS")
-                .ok()
-                .and_then(|s| s.parse::<usize>().ok())
-                .filter(|&n| n >= 1 && n <= 64)
-                .unwrap_or(4);
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap();
-            let par_result: Result<(), anyhow::Error> = pool.install(|| {
-                files
-                    .par_iter()
-                    .try_for_each(|entry_path| -> anyhow::Result<()> {
-                        let rel = entry_path
-                            .strip_prefix(&src)
-                            .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
-                        let dst_path = new_src.join(rel);
-
-                        if let Some(parent) = dst_path.parent() {
-                            fs::create_dir_all(parent).map_err(|e| {
-                                anyhow::anyhow!("Failed to create parent directory: {}", e)
-                            })?;
-                        }
-
-                        // Preserve symlinks instead of skipping them
-                        let ft = std::fs::symlink_metadata(entry_path)
-                            .map_err(|e| {
-                                anyhow::anyhow!("Failed to lstat '{}': {}", entry_path.display(), e)
-                            })?
-                            .file_type();
-
-                        if ft.is_symlink() {
-                            let target = std::fs::read_link(entry_path).map_err(|e| {
-                                anyhow::anyhow!(
-                                    "Failed to readlink '{}': {}",
-                                    entry_path.display(),
-                                    e
-                                )
-                            })?;
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::symlink;
-                                // If destination exists (e.g., another thread created it), remove it first to avoid EEXIST
-                                if dst_path.exists() {
-                                    let _ = fs::remove_file(&dst_path);
-                                }
-                                symlink(&target, &dst_path).map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "Failed to create symlink '{}' -> '{}' : {}",
-                                        dst_path.display(),
-                                        target.display(),
-                                        e
-                                    )
-                                })?;
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                // On non-unix, best-effort: fall back to copying the target contents
-                                if target.is_file() {
-                                    fast_copy_file(&target, &dst_path).map_err(|e| {
-                                        anyhow::anyhow!(
-                                            "Failed to copy symlink target '{}' -> '{}': {}",
-                                            target.display(),
-                                            dst_path.display(),
-                                            e
-                                        )
-                                    })?;
-                                }
-                            }
-                        } else if ft.is_file() {
-                            fast_copy_file(entry_path, &dst_path).map_err(|e| {
-                                anyhow::anyhow!(
-                                    "Failed to copy '{}' -> '{}': {}",
-                                    entry_path.display(),
-                                    dst_path.display(),
-                                    e
-                                )
-                            })?;
-                        } else {
-                            // Skip special files (sockets, devices, etc.)
-                            warn!("Skipping unsupported file type: {}", entry_path.display());
-                        }
-
-                        let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count % UPDATE_INTERVAL == 0 || count == total_files {
-                            let _ = progress_tx.send(CopyMessage::Progress {
-                                files_processed: count,
-                                total_files,
-                                current_file: entry_path
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string(),
-                            });
-                        }
-
-                        Ok(())
-                    })
-            });
-
-            par_result
-        } else {
-            Err(anyhow::anyhow!(
-                "Source is neither a file nor a directory: {}",
-                src.display()
-            ))
-        };
-
-        // Send completion message
-        match result {
-            Ok(_) => {
-                let _ = tx.send(CopyMessage::Completed {
-                    success: true,
-                    message: format!("Successfully copied to {}", new_src.display()),
-                });
-            }
-            Err(e) => {
-                let _ = tx.send(CopyMessage::Error(e.to_string()));
-            }
-        }
-    });
-
-    rx
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<(), String> {
-        // Wait up to 5 seconds for completion
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(CopyMessage::Completed { success, message }) => {
-                    if success {
-                        return Ok(());
-                    }
-                    return Err(format!("Copy failed: {}", message));
-                }
-                Ok(CopyMessage::Error(e)) => return Err(e),
-                Ok(_) => {
-                    if std::time::Instant::now() > deadline {
-                        return Err("Timeout waiting for copy".into());
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if std::time::Instant::now() > deadline {
-                        return Err("Timeout waiting for copy".into());
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("Channel disconnected".into())
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn copies_single_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src_file = tmp.path().join("a.txt");
-        std::fs::write(&src_file, b"hello").unwrap();
-        let dst_file = tmp.path().join("out.txt");
-
-        let rx = copy_dir_file_with_progress(&src_file, &dst_file);
-        drain_until_complete(rx).expect("copy should complete");
-
-        let out = std::fs::read(&dst_file).unwrap();
-        assert_eq!(out, b"hello");
-    }
-
-    #[test]
-    fn copies_directory_with_symlink_and_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src_dir = tmp.path().join("src");
-        let dst_dir = tmp.path().join("dst");
-        std::fs::create_dir_all(&src_dir).unwrap();
-        let real = src_dir.join("real.txt");
-        std::fs::write(&real, b"data").unwrap();
-        let sub = src_dir.join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-
-        // Create a symlink inside sub -> ../real.txt
-        let link_path = sub.join("ln.txt");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(Path::new("../real.txt"), &link_path).unwrap();
-        #[cfg(not(unix))]
-        {
-            // On non-unix, simulate by creating another real file; fallback behavior copies target contents
-            std::fs::write(&link_path, b"data").unwrap();
-        }
-
-        let rx = copy_dir_file_with_progress(&src_dir, &dst_dir);
-        drain_until_complete(rx).expect("dir copy should complete");
-
-        // Verify real file exists
-        assert!(dst_dir.join("real.txt").is_file());
-
-        // Verify link handling
-        let copied_link = dst_dir.join("sub/ln.txt");
-        #[cfg(unix)]
-        {
-            let meta = std::fs::symlink_metadata(&copied_link).unwrap();
-            assert!(
-                meta.file_type().is_symlink(),
-                "expected symlink to be preserved"
-            );
-            let target = std::fs::read_link(&copied_link).unwrap();
-            assert_eq!(target, Path::new("../real.txt"));
-        }
-        #[cfg(not(unix))]
-        {
-            // best-effort: we copied the target contents
-            assert!(copied_link.is_file());
-            let content = std::fs::read(&copied_link).unwrap();
-            assert_eq!(content, b"data");
-        }
-    }
-}
-
-fn generate_sort_by_string(sort_type: &SortType) -> String {
-    let str_sort_type = match sort_type {
-        SortType::ASC => "ASC",
-        SortType::DESC => "DESC",
-    };
-    let join_str = format!("Sort By: '{}'", str_sort_type);
-    join_str
-}
+// draw_popup and generate_sort_by_string moved to render/popups.rs
+// File operations (delete, create, rename) moved to operations/file_ops.rs
+// Copy operations moved to operations/copy.rs
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command line arguments using clap
@@ -1164,38 +479,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Handle cache loading screen or normal list rendering
             match app.input_mode {
                 InputMode::CacheLoading => {
-                    // Render cache loading screen
+                    // Render cache loading screen using helper from render module
                     let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
-                    // Create a simple loading screen with progress info and spinner
-                    let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-                    let spinner_index = (directories_processed / 10) % spinner_chars.len(); // Update every 10 directories
-                    let spinner = spinner_chars[spinner_index];
-                    let loading_text = if current_directory.is_empty() {
-                        format!(
-                            "{} Building directory cache...\n\nDirectories processed: {}\n\nPlease wait while the cache is being built.",
-                            spinner, directories_processed
-                        )
-                    } else {
-                        let display_dir = if current_directory.len() > 60 {
-                            format!("...{}", &current_directory[current_directory.len() - 57..])
-                        } else {
-                            current_directory.clone()
-                        };
-                        format!(
-                            "{} Building directory cache...\n\nDirectories processed: {}\nCurrent: {}\n\nPlease wait while the cache is being built.",
-                            spinner, directories_processed, display_dir
-                        )
-                    };
-                    let loading_block = Paragraph::new(loading_text)
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .title("⚡ Directory Cache Loading")
-                                .style(OneDarkTheme::loading())
-                        )
-                        .style(OneDarkTheme::normal())
-                        .alignment(ratatui::layout::Alignment::Center);
-                    // Render loading screen across both panels
+                    let loading_block = create_cache_loading_screen(directories_processed, &current_directory);
                     f.render_widget(loading_block, chunks[2]);
                 }
                 _ => {
@@ -1286,105 +572,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             if app.render_popup {
-                let block = Block::bordered()
-                    .title("⚠️  Confirm to delete y/n")
-                    .style(OneDarkTheme::error());
+                let block = create_delete_confirmation_block();
                 let area = draw_popup(f.size(), 40, 7);
-                let popup_chuncks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .margin(1)
-                    .constraints([Constraint::Percentage(100)])
-                    .split(area);
+                let popup_chunks = split_popup_area(area);
                 f.render_widget(Clear, area);
-                f.render_widget(block, popup_chuncks[0]);
+                f.render_widget(block, popup_chunks[0]);
             }
 
-            let area = draw_popup(f.size(), 40, 7);
-            let popup_chuncks = Layout::default()
-                .direction(Direction::Horizontal)
-                .margin(1)
-                .constraints([Constraint::Percentage(100)])
-                .split(area);
-
+            // Popup areas using render module helpers
+            let popup_area = draw_popup(f.size(), 40, 7);
+            let popup_chunks = split_popup_area(popup_area);
             let sort_option_area = draw_popup(f.size(), 90, 20);
-            let sort_options_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints([Constraint::Percentage(100)])
-                .split(sort_option_area);
-
+            let sort_options_chunks = split_popup_area_vertical(sort_option_area);
             let keybinding_area = draw_popup(f.size(), 80, 20);
-            let keybinding_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(1)
-                .constraints([Constraint::Percentage(100)])
-                .split(keybinding_area);
+            let keybinding_chunks = split_popup_area_vertical(keybinding_area);
 
             match app.input_mode {
                 InputMode::WatchCreate => {
-
-                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                        .block(Block::default().borders(Borders::ALL).title(
-                            match app.is_create_edit_error {
-                                false => "✨ Create File/Dir".to_string(),
-                                true => format!("❌ {}", app.error_message),
-                            },
-                        ))
-                        .style(match app.is_create_edit_error {
-                            true => OneDarkTheme::error(),
-                            false => OneDarkTheme::success(),
-                        });
-
-                    f.render_widget(Clear, popup_chuncks[0]);
-                    f.render_widget(create_input_block, popup_chuncks[0]);
+                    let create_input_block = create_create_input_popup(
+                        &app.create_edit_file_name,
+                        app.is_create_edit_error,
+                        &app.error_message,
+                    );
+                    f.render_widget(Clear, popup_chunks[0]);
+                    f.render_widget(create_input_block, popup_chunks[0]);
                 }
                 InputMode::WatchRename => {
-                    let create_input_block = Paragraph::new(app.create_edit_file_name.clone())
-                        .block(Block::default().borders(Borders::ALL).title("✏️  Enter file/dir name"))
-                        .style(OneDarkTheme::warning());
-
-                    f.render_widget(create_input_block, popup_chuncks[0]);
+                    let rename_input_block = create_rename_input_popup(&app.create_edit_file_name);
+                    f.render_widget(rename_input_block, popup_chunks[0]);
                 }
                 InputMode::WatchSort => {
-                    let lines = vec![
-                        Line::from("Press (a) to sort ASC or (d) to sort DESC, (q) to exit"),
-                        Line::from("Name: (n)"),
-                        Line::from("Date Created: (t)"),
-                        Line::from("Size: (s)"),
-                    ];
-
-                    let sort_by_text = generate_sort_by_string(&sort_type);
-                    let list_items = Text::from(lines);
-                    let p = Paragraph::new(list_items)
-                        .block(Block::default().borders(Borders::ALL).title(format!("🔄 {}", sort_by_text)))
-                        .style(OneDarkTheme::info());
+                    let sort_popup = create_sort_options_popup(&sort_type);
                     f.render_widget(Clear, sort_options_chunks[0]);
-                    f.render_widget(p, sort_options_chunks[0]);
-
+                    f.render_widget(sort_popup, sort_options_chunks[0]);
                 }
                 InputMode::WatchKeyBinding => {
-                    let lines = vec![
-                        Line::from("<Enter>: Open directory with selected IDE. copy path if not IDE option provided."),
-                        Line::from("<s>: Sort"),
-                        Line::from("<a>: Create new"),
-                        Line::from("<d>: Delete"),
-                        Line::from("<i>: Search mode"),
-                        Line::from("<c>: Copy dir/file"),
-                        Line::from("<.>: Show hidden files"),
-                        Line::from(""),
-                        Line::from("-- Search Features --"),
-                        Line::from("Type in search mode to use fuzzy search with scoring and ranking"),
-                        Line::from("Start search with space or / to search across entire directory tree"),
-                        Line::from("Results sorted by relevance with highlighting of matched text"),
-                        Line::from("Search history is available using up/down arrow keys"),
-                    ];
-
-                    let list_items = Text::from(lines);
-                    let paragraph = Paragraph::new(list_items)
-                        .block(Block::default().borders(Borders::ALL).title("⌨️  Keybindings"))
-                        .style(OneDarkTheme::info());
+                    let keybindings_popup = create_keybindings_popup();
                     f.render_widget(Clear, keybinding_chunks[0]);
-                    f.render_widget(paragraph, keybinding_chunks[0]);
+                    f.render_widget(keybindings_popup, keybinding_chunks[0]);
                 }
                 _ => {}
             }
@@ -1578,13 +803,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                // Determine the list length based on current mode
-                                // Use search results if we have any (either global or local search)
-                                let list_len = if !app.search_results.is_empty() {
-                                    app.search_results.len()
-                                } else {
-                                    app.files.len()
-                                };
+                                // Use helper method to get list length based on current mode
+                                let list_len = app.get_list_length();
 
                                 if list_len > 0 {
                                     let i = match state.selected() {
@@ -1711,13 +931,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                // Determine the list length based on current mode
-                                // Use search results if we have any (either global or local search)
-                                let list_len = if !app.search_results.is_empty() {
-                                    app.search_results.len()
-                                } else {
-                                    app.files.len()
-                                };
+                                // Use helper method to get list length based on current mode
+                                let list_len = app.get_list_length();
 
                                 if list_len > 0 {
                                     let i = match state.selected() {
@@ -1895,39 +1110,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             KeyCode::Char('l') => {
-                                let selected_index = state.selected();
-
-                                // Get the selected path based on current mode
-                                // Use search results if we have any (either global or local search)
-                                let selected_path = if !app.search_results.is_empty() {
-                                    // Search mode (global or local) - get path from search results
-                                    if let Some(selected_indx) = selected_index {
-                                        if selected_indx < app.search_results.len() {
-                                            Some(
-                                                app.search_results[selected_indx].file_path.clone(),
-                                            )
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    // Normal mode - get path from files list
-                                    if app.files.len() > 0 {
-                                        if let Some(selected_indx) = selected_index {
-                                            if selected_indx < app.files.len() {
-                                                Some(app.files[selected_indx].clone())
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                };
+                                // Use helper method to get selected path based on current mode
+                                let selected_path = app.get_selected_path(state.selected());
 
                                 if let Some(selected) = selected_path {
                                     app.prev_dir = get_curr_path(selected.to_string());
@@ -1941,10 +1125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             Ok(files_strings) => {
                                                 if let Some(files_strs) = files_strings {
                                                     // Exit search mode when navigating into a directory
-                                                    app.global_search_mode = false;
-                                                    app.search_results.clear();
-                                                    app.input.clear();
-                                                    app.character_index = 0;
+                                                    app.clear_search();
                                                     app.input_mode = InputMode::Normal;
 
                                                     app.read_only_files = files_strs.clone();
@@ -2092,33 +1273,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             KeyCode::Enter => {
-                                // Get the selected path based on current mode
-                                // Use search results if we have any (either global or local search)
-                                let selected_path = if !app.search_results.is_empty() {
-                                    // Search mode (global or local) - get path from search results
-                                    if let Some(selected_indx) = state.selected() {
-                                        if selected_indx < app.search_results.len() {
-                                            Some(
-                                                app.search_results[selected_indx].file_path.clone(),
-                                            )
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    // Normal mode - get path from files list
-                                    if let Some(selected_indx) = state.selected() {
-                                        if selected_indx < app.files.len() {
-                                            Some(app.files[selected_indx].clone())
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                };
+                                // Use helper method to get selected path based on current mode
+                                let selected_path = app.get_selected_path(state.selected());
 
                                 if let Some(selected) = selected_path {
                                     app.input = selected.clone();
