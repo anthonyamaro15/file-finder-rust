@@ -1,7 +1,9 @@
 use std::{
+    collections::VecDeque,
     fs,
     io::{self},
     path::Path,
+    time::SystemTime,
 };
 
 use ratatui::style::Style;
@@ -13,8 +15,97 @@ use ratatui::{
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
-use syntect::util::as_24_bit_terminal_escaped;
 use syntect::util::LinesWithEndings;
+
+/// Default maximum number of cached previews
+const DEFAULT_CACHE_SIZE: usize = 20;
+
+/// A cached preview entry storing highlighted lines for a file
+#[derive(Clone)]
+struct PreviewCacheEntry {
+    path: String,
+    modified_time: Option<SystemTime>,
+    /// Cached highlighted lines - each line contains styled spans (text, style)
+    highlighted_lines: Vec<Line<'static>>,
+}
+
+/// LRU cache for file previews
+pub struct PreviewCache {
+    entries: VecDeque<PreviewCacheEntry>,
+    max_size: usize,
+}
+
+impl PreviewCache {
+    pub fn new(max_size: usize) -> Self {
+        PreviewCache {
+            entries: VecDeque::with_capacity(max_size),
+            max_size,
+        }
+    }
+
+    /// Get cached preview if it exists and file hasn't been modified
+    pub fn get(&mut self, path: &str) -> Option<Vec<Line<'static>>> {
+        // Check if file modification time matches
+        let current_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
+
+        // Find the entry
+        let position = self.entries.iter().position(|e| e.path == path)?;
+
+        let entry = &self.entries[position];
+
+        // Check if file was modified since caching
+        if entry.modified_time != current_mtime {
+            // File was modified, remove stale entry
+            self.entries.remove(position);
+            return None;
+        }
+
+        // Move to front (most recently used)
+        let entry = self.entries.remove(position)?;
+        let lines = entry.highlighted_lines.clone();
+        self.entries.push_front(entry);
+
+        Some(lines)
+    }
+
+    /// Insert a new preview into the cache
+    pub fn insert(&mut self, path: String, lines: Vec<Line<'static>>) {
+        // Remove existing entry for this path if any
+        if let Some(pos) = self.entries.iter().position(|e| e.path == path) {
+            self.entries.remove(pos);
+        }
+
+        // Get file modification time
+        let modified_time = fs::metadata(&path).ok().and_then(|m| m.modified().ok());
+
+        // Add new entry at front
+        self.entries.push_front(PreviewCacheEntry {
+            path,
+            modified_time,
+            highlighted_lines: lines,
+        });
+
+        // Evict oldest if over capacity
+        while self.entries.len() > self.max_size {
+            self.entries.pop_back();
+        }
+    }
+
+    /// Clear all cached entries
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Get current cache size
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if cache is empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
 #[derive(Debug, Clone)]
 pub enum FileType {
     SourceCode,
@@ -42,6 +133,8 @@ pub struct FileContent<'a> {
     pub syntax_set: SyntaxSet,
     pub theme_set: ThemeSet,
     pub hightlighted_content: Option<Paragraph<'a>>,
+    /// LRU cache for highlighted file previews
+    preview_cache: PreviewCache,
 }
 
 impl FileContent<'_> {
@@ -58,7 +151,18 @@ impl FileContent<'_> {
             syntax_set: ps,
             theme_set: ts,
             hightlighted_content: None,
+            preview_cache: PreviewCache::new(DEFAULT_CACHE_SIZE),
         }
+    }
+
+    /// Clear the preview cache
+    pub fn clear_preview_cache(&mut self) {
+        self.preview_cache.clear();
+    }
+
+    /// Get the current number of cached previews
+    pub fn cache_size(&self) -> usize {
+        self.preview_cache.len()
     }
     pub fn is_curr_path_file(path: String) -> bool {
         match fs::metadata(path) {
@@ -88,7 +192,17 @@ impl FileContent<'_> {
         }
 
         let extension = extension_type.unwrap();
+        let current_path = self.curr_selected_path.clone();
 
+        // Check cache first - if we have a valid cached version, use it
+        if let Some(cached_lines) = self.preview_cache.get(&current_path) {
+            let text = Text::from(cached_lines);
+            let paragraph = Paragraph::new(text);
+            self.hightlighted_content = Some(paragraph);
+            return String::new(); // Return value is unused, just return empty
+        }
+
+        // Cache miss - perform syntax highlighting
         // Try to find syntax by extension, with fallback options
         let syntax = self
             .syntax_set
@@ -106,15 +220,14 @@ impl FileContent<'_> {
             .or_else(|| Some(self.syntax_set.find_syntax_plain_text()));
 
         if let Some(syntax) = syntax {
-            let mut res = String::from("");
-            let mut spans = vec![];
+            let mut spans: Vec<Line<'static>> = vec![];
             let syntax_set = self.syntax_set.clone();
             let theme = self.theme_set.themes["base16-ocean.dark"].clone();
             let mut h = HighlightLines::new(syntax, &theme);
 
             for line in LinesWithEndings::from(&content) {
                 // LinesWithEndings enables use of newlines mode
-                let mut lines: Vec<Span> = vec![];
+                let mut line_spans: Vec<Span<'static>> = vec![];
 
                 // Handle potential highlighting errors gracefully
                 let ranges = match h.highlight_line(line, &syntax_set) {
@@ -128,18 +241,18 @@ impl FileContent<'_> {
                 for (style, text) in ranges.iter() {
                     let fg_color = self.convert_color(style.foreground);
                     let span = Span::styled(text.to_string(), Style::default().fg(fg_color));
-                    lines.push(span);
+                    line_spans.push(span);
                 }
-                spans.push(Line::from(lines));
-
-                let escaped = as_24_bit_terminal_escaped(&ranges[..], true);
-                res = escaped.clone();
+                spans.push(Line::from(line_spans));
             }
-            let text = Text::from(spans);
 
+            // Store in cache before creating the Paragraph
+            self.preview_cache.insert(current_path, spans.clone());
+
+            let text = Text::from(spans);
             let paragraph = Paragraph::new(text);
             self.hightlighted_content = Some(paragraph);
-            res
+            String::new() // Return value is unused
         } else {
             // If no syntax found, return content as-is and don't set highlighted_content
             self.is_error = true;
