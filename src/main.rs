@@ -124,6 +124,120 @@ impl ImageGenerator {
     }
 }
 
+/// Update the preview panel for a given file/directory path.
+/// This consolidates the duplicated preview update logic from navigation handlers.
+fn update_preview_for_path(
+    path: &str,
+    app: &mut App,
+    file_reader_content: &mut FileContent,
+    image_generator: &mut ImageGenerator,
+) {
+    // Update metadata stats
+    let metadata = get_metadata_info(path.to_owned());
+    app.curr_stats = generate_metadata_str_info(metadata);
+
+    // Update the current selected path in file reader
+    file_reader_content.curr_selected_path = path.to_string();
+
+    if !is_file(path.to_string()) {
+        // Directory: show contents
+        if let Some(file_names) = get_content_from_path(path.to_string()) {
+            image_generator.clear();
+            file_reader_content.file_type = FileType::NotAvailable;
+            app.preview_files = file_names;
+        }
+    } else {
+        // File: detect type and show appropriate preview
+        let file_extension = file_reader_content.get_file_extension(path.to_string());
+
+        match file_extension {
+            FileType::SourceCode
+            | FileType::Markdown
+            | FileType::TextFile
+            | FileType::ConfigFile
+            | FileType::JSON => {
+                image_generator.clear();
+                file_reader_content.file_type = file_extension.clone();
+
+                let file_content = file_reader_content.read_file_content(path.to_string());
+                let curr_file_type = file_reader_content.get_file_extension_type(path.to_string());
+                let highlighted_content =
+                    file_reader_content.get_highlighted_content(file_content, curr_file_type);
+
+                if !file_reader_content.is_error {
+                    app.preview_file_content = highlighted_content;
+                }
+            }
+            FileType::Image => {
+                image_generator.clear();
+                file_reader_content.curr_asset_path = path.to_string();
+                image_generator.load_img(path.to_string());
+                file_reader_content.file_type = FileType::Image;
+                app.preview_file_content.clear();
+                file_reader_content.hightlighted_content = None;
+            }
+            FileType::ZIP => {
+                image_generator.clear();
+                file_reader_content.read_zip_content(path.to_string());
+                file_reader_content.file_type = FileType::ZIP;
+            }
+            FileType::Archive => {
+                image_generator.clear();
+                file_reader_content.file_type = FileType::Archive;
+                app.preview_file_content = format!("Archive file: {}", path);
+            }
+            FileType::CSV => {
+                image_generator.clear();
+                file_reader_content.read_csv_content();
+                file_reader_content.file_type = FileType::CSV;
+            }
+            FileType::Binary => {
+                image_generator.clear();
+                file_reader_content.file_type = FileType::Binary;
+                app.preview_file_content =
+                    format!("Binary file: {} (use external viewer)", path);
+            }
+            _ => {
+                image_generator.clear();
+                file_reader_content.file_type = FileType::NotAvailable;
+            }
+        }
+
+        app.preview_files = Vec::new();
+    }
+}
+
+/// Apply a sort operation to the current file list.
+/// This consolidates the duplicated sort logic from the WatchSort handlers.
+fn apply_sort(
+    app: &mut App,
+    sort_by: SortBy,
+    sort_type: &SortType,
+) -> anyhow::Result<()> {
+    if app.files.is_empty() {
+        return Ok(());
+    }
+
+    // Get current directory path from first file in list
+    let cur_path = get_curr_path(app.files[0].clone());
+
+    // Get sorted file list
+    let file_path_list = get_file_path_data(
+        cur_path,
+        app.show_hidden_files,
+        sort_by,
+        sort_type,
+    )?;
+
+    // Update app state
+    app.files = file_path_list.clone();
+    app.read_only_files = file_path_list;
+    app.update_file_references();
+    app.input_mode = InputMode::Normal;
+
+    Ok(())
+}
+
 fn handle_file_selection(
     file: &str,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -790,250 +904,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                             KeyCode::Down | KeyCode::Char('j') => {
-                                // Use helper method to get list length based on current mode
                                 let list_len = app.get_list_length();
 
                                 if list_len > 0 {
                                     let i = match state.selected() {
                                         Some(i) => {
-                                            if i >= list_len - 1 {
-                                                0
-                                            } else {
-                                                i + 1
-                                            }
+                                            if i >= list_len - 1 { 0 } else { i + 1 }
                                         }
                                         None => 0,
                                     };
                                     state.select(Some(i));
                                     app.curr_index = Some(i);
 
-                                    // Get the selected path based on current mode
-                                    // Use search results if we have any (either global or local search)
-                                    let selected_cur_path = if !app.search_results.is_empty() {
-                                        &app.search_results[i].file_path
-                                    } else {
-                                        &app.files[i]
-                                    };
-
-                                    debug!("check here: {:?}", selected_cur_path);
-                                    let get_metadata =
-                                        get_metadata_info(selected_cur_path.to_owned());
-                                    let generated_metadata_str =
-                                        generate_metadata_str_info(get_metadata);
-
-                                    app.curr_stats = generated_metadata_str.clone();
-                                    file_reader_content.curr_selected_path =
-                                        selected_cur_path.clone();
-
-                                    if !is_file(selected_cur_path.to_string()) {
-                                        if let Some(file_names) =
-                                            get_content_from_path(selected_cur_path.to_string())
-                                        {
-                                            image_generator.clear();
-                                            file_reader_content.file_type = FileType::NotAvailable;
-                                            app.preview_files = file_names;
-                                        }
-                                    } else {
-                                        let file_extension = file_reader_content
-                                            .get_file_extension(selected_cur_path.clone());
-
-                                        match file_extension {
-                                            FileType::SourceCode
-                                            | FileType::Markdown
-                                            | FileType::TextFile
-                                            | FileType::ConfigFile
-                                            | FileType::JSON => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type =
-                                                    file_extension.clone();
-                                                let file_content = file_reader_content
-                                                    .read_file_content(
-                                                        selected_cur_path.to_string(),
-                                                    );
-
-                                                let curr_file_type = file_reader_content
-                                                    .get_file_extension_type(
-                                                        selected_cur_path.clone(),
-                                                    );
-
-                                                let highlighted_content = file_reader_content
-                                                    .get_highlighted_content(
-                                                        file_content,
-                                                        curr_file_type,
-                                                    );
-
-                                                // only update if there are no errors
-                                                if !file_reader_content.is_error {
-                                                    app.preview_file_content = highlighted_content;
-                                                }
-                                            }
-                                            FileType::Image => {
-                                                image_generator.clear();
-                                                file_reader_content.curr_asset_path =
-                                                    selected_cur_path.to_string();
-
-                                                image_generator.load_img(selected_cur_path.clone());
-                                                file_reader_content.file_type = FileType::Image;
-                                                // Clear any previous text content
-                                                app.preview_file_content.clear();
-                                                file_reader_content.hightlighted_content = None;
-                                            }
-                                            FileType::ZIP => {
-                                                image_generator.clear();
-                                                file_reader_content
-                                                    .read_zip_content(selected_cur_path.clone());
-                                                file_reader_content.file_type = FileType::ZIP;
-                                            }
-                                            FileType::Archive => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type = FileType::Archive;
-                                                // For now, show archive info as text
-                                                let archive_info =
-                                                    format!("Archive file: {}", selected_cur_path);
-                                                app.preview_file_content = archive_info;
-                                            }
-                                            FileType::CSV => {
-                                                image_generator.clear();
-                                                file_reader_content.read_csv_content();
-                                                file_reader_content.file_type = FileType::CSV;
-                                            }
-                                            FileType::Binary => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type = FileType::Binary;
-                                                let binary_info = format!(
-                                                    "Binary file: {} (use external viewer)",
-                                                    selected_cur_path
-                                                );
-                                                app.preview_file_content = binary_info;
-                                            }
-                                            _ => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type =
-                                                    FileType::NotAvailable;
-                                            }
-                                        }
-
-                                        app.preview_files = Vec::new();
+                                    // Update preview using helper function
+                                    if let Some(path) = app.get_selected_path(Some(i)) {
+                                        update_preview_for_path(
+                                            &path,
+                                            &mut app,
+                                            &mut file_reader_content,
+                                            &mut image_generator,
+                                        );
                                     }
                                 }
                             }
                             KeyCode::Up | KeyCode::Char('k') => {
-                                // Use helper method to get list length based on current mode
                                 let list_len = app.get_list_length();
 
                                 if list_len > 0 {
                                     let i = match state.selected() {
                                         Some(i) => {
-                                            if i == 0 {
-                                                list_len - 1
-                                            } else {
-                                                i - 1
-                                            }
+                                            if i == 0 { list_len - 1 } else { i - 1 }
                                         }
                                         None => 0,
                                     };
                                     state.select(Some(i));
                                     app.curr_index = Some(i);
 
-                                    // Get the selected path based on current mode
-                                    // Use search results if we have any (either global or local search)
-                                    let selected_cur_path = if !app.search_results.is_empty() {
-                                        &app.search_results[i].file_path
-                                    } else {
-                                        &app.files[i]
-                                    };
-
-                                    let get_metadata =
-                                        get_metadata_info(selected_cur_path.to_owned());
-                                    let generated_metadata_str =
-                                        generate_metadata_str_info(get_metadata);
-                                    app.curr_stats = generated_metadata_str.clone();
-                                    file_reader_content.curr_selected_path =
-                                        selected_cur_path.clone();
-                                    if !is_file(selected_cur_path.clone()) {
-                                        if let Some(file_names) =
-                                            get_content_from_path(selected_cur_path.to_string())
-                                        {
-                                            image_generator.clear();
-                                            file_reader_content.file_type = FileType::NotAvailable;
-                                            app.preview_files = file_names;
-                                        }
-                                    } else {
-                                        let file_extension = file_reader_content
-                                            .get_file_extension(selected_cur_path.clone());
-
-                                        match file_extension {
-                                            FileType::SourceCode
-                                            | FileType::Markdown
-                                            | FileType::TextFile
-                                            | FileType::ConfigFile
-                                            | FileType::JSON => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type =
-                                                    file_extension.clone();
-                                                let file_content = file_reader_content
-                                                    .read_file_content(
-                                                        selected_cur_path.to_string(),
-                                                    );
-                                                let curr_file_type = file_reader_content
-                                                    .get_file_extension_type(
-                                                        selected_cur_path.clone(),
-                                                    );
-                                                let highlighted_content = file_reader_content
-                                                    .get_highlighted_content(
-                                                        file_content,
-                                                        curr_file_type,
-                                                    );
-                                                // only update if there are no errors
-                                                if !file_reader_content.is_error {
-                                                    app.preview_file_content = highlighted_content;
-                                                }
-                                            }
-                                            FileType::Image => {
-                                                image_generator.clear();
-                                                file_reader_content.curr_asset_path =
-                                                    selected_cur_path.to_string();
-
-                                                image_generator.load_img(selected_cur_path.clone());
-                                                file_reader_content.file_type = FileType::Image;
-                                                // Clear any previous text content
-                                                app.preview_file_content.clear();
-                                                file_reader_content.hightlighted_content = None;
-                                            }
-                                            FileType::ZIP => {
-                                                image_generator.clear();
-                                                file_reader_content
-                                                    .read_zip_content(selected_cur_path.clone());
-                                                file_reader_content.file_type = FileType::ZIP;
-                                            }
-                                            FileType::Archive => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type = FileType::Archive;
-                                                let archive_info =
-                                                    format!("Archive file: {}", selected_cur_path);
-                                                app.preview_file_content = archive_info;
-                                            }
-                                            FileType::CSV => {
-                                                image_generator.clear();
-                                                file_reader_content.read_csv_content();
-                                                file_reader_content.file_type = FileType::CSV;
-                                            }
-                                            FileType::Binary => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type = FileType::Binary;
-                                                let binary_info = format!(
-                                                    "Binary file: {} (use external viewer)",
-                                                    selected_cur_path
-                                                );
-                                                app.preview_file_content = binary_info;
-                                            }
-                                            _ => {
-                                                image_generator.clear();
-                                                file_reader_content.file_type =
-                                                    FileType::NotAvailable;
-                                            }
-                                        }
-                                        app.preview_files = Vec::new()
+                                    // Update preview using helper function
+                                    if let Some(path) = app.get_selected_path(Some(i)) {
+                                        update_preview_for_path(
+                                            &path,
+                                            &mut app,
+                                            &mut file_reader_content,
+                                            &mut image_generator,
+                                        );
                                     }
                                 }
                             }
@@ -1493,55 +1407,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.input_mode = InputMode::Normal;
                             }
                             KeyCode::Char('n') => {
-                                // sort by name
-
-                                // we only care about the path not the selcted item
-                                let get_path_from_list = &app.files[0];
-                                let cur_path = get_curr_path(get_path_from_list.to_string());
-                                let file_path_list = get_file_path_data(
-                                    cur_path,
-                                    app.show_hidden_files,
-                                    SortBy::Name,
-                                    &sort_type,
-                                )?;
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list.clone();
-                                app.update_file_references();
-                                app.input_mode = InputMode::Normal;
+                                apply_sort(&mut app, SortBy::Name, &sort_type)?;
                             }
-
                             KeyCode::Char('s') => {
-                                // TODO: this code should be refactor to into a reusable method since is
-                                // used in multiple places
-                                let get_path_from_list = &app.files[0];
-                                let cur_path = get_curr_path(get_path_from_list.to_string());
-
-                                let file_path_list = get_file_path_data(
-                                    cur_path,
-                                    app.show_hidden_files,
-                                    SortBy::Size,
-                                    &sort_type,
-                                )?;
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list.clone();
-                                app.update_file_references();
-                                app.input_mode = InputMode::Normal;
+                                apply_sort(&mut app, SortBy::Size, &sort_type)?;
                             }
-
                             KeyCode::Char('t') => {
-                                let get_path_from_list = &app.files[0];
-                                let cur_path = get_curr_path(get_path_from_list.to_string());
-
-                                let file_path_list = get_file_path_data(
-                                    cur_path,
-                                    app.show_hidden_files,
-                                    SortBy::DateAdded,
-                                    &sort_type,
-                                )?;
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list.clone();
-                                app.update_file_references();
-                                app.input_mode = InputMode::Normal;
+                                apply_sort(&mut app, SortBy::DateAdded, &sort_type)?;
                             }
                             KeyCode::Char('a') => {
                                 sort_type = SortType::ASC;
