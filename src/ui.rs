@@ -31,7 +31,12 @@ impl Ui {
         let mut current_item_list: Vec<ListFileItem> = Vec::new();
         for path in files.iter() {
             let new_path = Path::new(path);
-            let get_file_name = new_path.file_name().unwrap().to_str().unwrap().to_string();
+            // Safely extract file name, skip if path is invalid
+            let get_file_name = new_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(path))
+                .to_string();
             let create_item_list = ListFileItem {
                 label: get_file_name,
                 path: String::from(path),
