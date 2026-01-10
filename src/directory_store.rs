@@ -59,7 +59,10 @@ pub fn build_directory_from_store_walkdir(
                 }
 
                 if !should_ignore {
-                    store.insert(entry.path().to_str().unwrap());
+                    // Skip paths that aren't valid UTF-8
+                    if let Some(path_str) = entry.path().to_str() {
+                        store.insert(path_str);
+                    }
                 }
             }
         }

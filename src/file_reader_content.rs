@@ -304,45 +304,56 @@ impl FileContent<'_> {
     }
 
     pub fn read_csv_content(&mut self) {
-        let file = fs::File::open(self.curr_selected_path.clone()).unwrap();
+        let file = match fs::File::open(self.curr_selected_path.clone()) {
+            Ok(f) => f,
+            Err(_) => {
+                self.curr_csv_content = vec!["Error: Could not open CSV file".to_string()];
+                return;
+            }
+        };
 
         let mut rdr = csv::Reader::from_reader(file);
 
         let mut file_content: Vec<String> = Vec::new();
         for result in rdr.records() {
-            let record = result.unwrap();
-
-            for val in record.iter() {
-                file_content.push(val.to_string());
-                //println!("result: {:?}", val);
+            // Skip records that fail to parse instead of crashing
+            if let Ok(record) = result {
+                for val in record.iter() {
+                    file_content.push(val.to_string());
+                }
             }
         }
 
         self.curr_csv_content = file_content;
-
-        //  for result in rdr.recors() {}
     }
 
     pub fn read_zip_content(&mut self, path: String) -> i32 {
         let filename = std::path::Path::new(&path);
-        let file = fs::File::open(filename).unwrap();
+        let file = match fs::File::open(filename) {
+            Ok(f) => f,
+            Err(_) => {
+                self.curr_zip_content = vec!["Error: Could not open ZIP file".to_string()];
+                return -1;
+            }
+        };
 
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(a) => a,
+            Err(_) => {
+                self.curr_zip_content = vec!["Error: Invalid ZIP archive".to_string()];
+                return -1;
+            }
+        };
 
         let mut list: Vec<String> = Vec::new();
 
         for i in 0..archive.len() {
-            let file = archive.by_index(i).unwrap();
-
-            let outpath = match file.enclosed_name() {
-                Some(fil_path) => fil_path,
-                None => continue,
-            };
-
-            let name = outpath.display().to_string();
-
-            //println!("name {}", name.clone());
-            list.push(name);
+            // Skip entries that fail to read
+            if let Ok(file) = archive.by_index(i) {
+                if let Some(fil_path) = file.enclosed_name() {
+                    list.push(fil_path.display().to_string());
+                }
+            }
         }
 
         self.curr_zip_content = list;
@@ -351,15 +362,24 @@ impl FileContent<'_> {
 
     pub fn extract_zip_content(&mut self) -> String {
         let fname = std::path::Path::new(&self.curr_selected_path);
-        let file = fs::File::open(fname).unwrap();
+        let file = match fs::File::open(fname) {
+            Ok(f) => f,
+            Err(e) => return format!("Error opening ZIP: {}", e),
+        };
 
-        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(a) => a,
+            Err(e) => return format!("Error reading ZIP archive: {}", e),
+        };
 
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i).unwrap();
+            let mut file = match archive.by_index(i) {
+                Ok(f) => f,
+                Err(_) => continue, // Skip problematic entries
+            };
 
             let outpath = match file.enclosed_name() {
-                Some(f_path) => f_path,
+                Some(f_path) => f_path.to_owned(),
                 None => continue,
             };
 
@@ -371,23 +391,40 @@ impl FileContent<'_> {
             }
 
             if file.is_dir() {
-                fs::create_dir_all(&outpath).unwrap();
+                if let Err(e) = fs::create_dir_all(&outpath) {
+                    eprintln!("Warning: Could not create directory {:?}: {}", outpath, e);
+                    continue;
+                }
             } else {
                 if let Some(p) = outpath.parent() {
                     if !p.exists() {
-                        fs::create_dir_all(p).unwrap();
+                        if let Err(e) = fs::create_dir_all(p) {
+                            eprintln!("Warning: Could not create parent directory {:?}: {}", p, e);
+                            continue;
+                        }
                     }
                 }
 
-                let mut outfile = fs::File::create(&outpath).unwrap();
-                io::copy(&mut file, &mut outfile).unwrap();
+                let mut outfile = match fs::File::create(&outpath) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        eprintln!("Warning: Could not create file {:?}: {}", outpath, e);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = io::copy(&mut file, &mut outfile) {
+                    eprintln!("Warning: Could not write to file {:?}: {}", outpath, e);
+                }
             }
 
             {
-                use std::os::unix::fs::PermissionsExt;
-
-                if let Some(mode) = file.unix_mode() {
-                    let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode));
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Some(mode) = file.unix_mode() {
+                        let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode));
+                    }
                 }
             }
         }

@@ -49,7 +49,7 @@ mod watcher;
 use crate::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
-    directory_store::{build_directory_from_store_async, load_directory_from_file},
+    directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
     file_reader_content::{FileContent, FileType},
     operations::{
         copy_dir_file_with_progress, create_item_based_on_type, handle_delete_based_on_type,
@@ -369,9 +369,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
-        let res = load_directory_from_file(&settings.cache_directory.to_owned()).unwrap();
-        println!("Loading directory cache from file");
-        res
+        match load_directory_from_file(&settings.cache_directory.to_owned()) {
+            Ok(res) => {
+                println!("Loading directory cache from file");
+                res
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not load cache file ({}), rebuilding...", e);
+                // Fall through to rebuild cache
+                DirectoryStore::new()
+            }
+        }
     } else {
         println!("Starting asynchronous directory cache build...");
 
