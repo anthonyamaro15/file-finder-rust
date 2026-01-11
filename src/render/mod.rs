@@ -2,6 +2,7 @@
 
 pub mod popups;
 pub mod preview;
+pub mod size_bar;
 
 // Re-export items used by main.rs
 pub use popups::{
@@ -10,3 +11,4 @@ pub use popups::{
     split_popup_area_vertical,
 };
 pub use preview::create_cache_loading_screen;
+pub use size_bar::{create_size_text, get_file_size};

@@ -105,19 +105,35 @@ pub fn create_sort_options_popup<'a>(sort_type: &SortType) -> Paragraph<'a> {
 /// Create the keybindings help popup widget.
 pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
     let lines = vec![
-        Line::from("<Enter>: Open directory with selected IDE. copy path if not IDE option provided."),
-        Line::from("<s>: Sort"),
-        Line::from("<a>: Create new"),
-        Line::from("<d>: Delete"),
-        Line::from("<i>: Search mode"),
-        Line::from("<c>: Copy dir/file"),
-        Line::from("<.>: Show hidden files"),
         Line::from(""),
-        Line::from("-- Search Features --"),
-        Line::from("Type in search mode to use fuzzy search with scoring and ranking"),
-        Line::from("Start search with space or / to search across entire directory tree"),
-        Line::from("Results sorted by relevance with highlighting of matched text"),
-        Line::from("Search history is available using up/down arrow keys"),
+        Line::styled("── Navigation ──", OneDarkTheme::info()),
+        Line::from("  j / ↓           Move down"),
+        Line::from("  k / ↑           Move up"),
+        Line::from("  h               Go to parent directory"),
+        Line::from("  l               Enter directory"),
+        Line::from("  Enter           Open with IDE / copy path"),
+        Line::from(""),
+        Line::styled("── File Operations ──", OneDarkTheme::info()),
+        Line::from("  a               Create new file/directory"),
+        Line::from("  d               Delete (with confirmation)"),
+        Line::from("  r               Rename file/directory"),
+        Line::from("  c               Copy file/directory"),
+        Line::from("  y               Extract ZIP archive"),
+        Line::from("  o               Open with system default"),
+        Line::from(""),
+        Line::styled("── Search ──", OneDarkTheme::info()),
+        Line::from("  i               Enter search mode"),
+        Line::from("  Space or /      Global search (at start)"),
+        Line::from("  Esc             Exit search mode"),
+        Line::from("  ↑/↓             Search history"),
+        Line::from(""),
+        Line::styled("── View & Sort ──", OneDarkTheme::info()),
+        Line::from("  s               Sort options menu"),
+        Line::from("  .               Toggle hidden files"),
+        Line::from("  ?               Show this help"),
+        Line::from(""),
+        Line::styled("── General ──", OneDarkTheme::info()),
+        Line::from("  q               Quit / Close popup"),
     ];
 
     let list_items = Text::from(lines);
@@ -126,9 +142,9 @@ pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("⌨️  Keybindings"),
+                .title("⌨️  Keybindings (q to close)"),
         )
-        .style(OneDarkTheme::info())
+        .style(OneDarkTheme::normal())
 }
 
 /// Split an area for popup content with margins.
