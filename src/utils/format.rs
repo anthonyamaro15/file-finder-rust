@@ -79,11 +79,14 @@ pub fn replace_home_with_tilde(path: &str) -> String {
 
 /// Compress a single path segment to fit display constraints.
 /// Keeps first 3 characters and adds "..." if segment is longer than 6 chars.
+/// Uses chars() to handle multi-byte UTF-8 safely.
 fn compress_segment(segment: &str) -> String {
-    if segment.len() <= 6 {
+    let char_count = segment.chars().count();
+    if char_count <= 6 {
         segment.to_string()
     } else {
-        format!("{}...", &segment[..3])
+        let prefix: String = segment.chars().take(3).collect();
+        format!("{}...", prefix)
     }
 }
 
@@ -206,13 +209,16 @@ pub fn format_path_for_display(path: &str, max_width: usize) -> String {
 }
 
 /// Truncate a string at the end with ellipsis.
+/// Uses chars() to handle multi-byte UTF-8 safely.
 fn truncate_end(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
+    let char_count = s.chars().count();
+    if char_count <= max_width {
         s.to_string()
     } else if max_width <= 3 {
         "...".chars().take(max_width).collect()
     } else {
-        format!("{}...", &s[..max_width - 3])
+        let prefix: String = s.chars().take(max_width - 3).collect();
+        format!("{}...", prefix)
     }
 }
 
@@ -341,5 +347,29 @@ mod tests {
         assert_eq!(truncate_end("hello", 3), "...");
         assert_eq!(truncate_end("hello", 2), "..");
         assert_eq!(truncate_end("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_compress_segment_unicode() {
+        // Test with multi-byte UTF-8 characters (should not panic)
+        // "日本語フォルダ" = 7 chars, compressed to first 3 + "..."
+        assert_eq!(compress_segment("日本語フォルダ"), "日本語...");
+        // "café" = 4 chars, no compression needed (<=6)
+        assert_eq!(compress_segment("café"), "café");
+        // "文件夹名称" = 5 chars, no compression needed (<=6)
+        assert_eq!(compress_segment("文件夹名称"), "文件夹名称");
+        // "文件夹名称很长" = 7 chars, compressed
+        assert_eq!(compress_segment("文件夹名称很长"), "文件夹...");
+    }
+
+    #[test]
+    fn test_truncate_end_unicode() {
+        // Test with multi-byte UTF-8 characters (should not panic)
+        // "日本語テストです" = 8 chars, truncate to 6 (3 + "...")
+        assert_eq!(truncate_end("日本語テストです", 6), "日本語...");
+        // "café" = 4 chars, fits in 10
+        assert_eq!(truncate_end("café", 10), "café");
+        // "日本語テスト" = 6 chars, fits exactly in 6
+        assert_eq!(truncate_end("日本語テスト", 6), "日本語テスト");
     }
 }

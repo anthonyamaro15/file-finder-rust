@@ -575,19 +575,34 @@ impl FileContent<'_> {
         self.curr_selected_path.clone()
     }
 
+    /// Maximum PDF file size for preview (50MB)
+    const MAX_PDF_SIZE: u64 = 50 * 1024 * 1024;
+
     /// Read and extract text content from a PDF file
     pub fn read_pdf_content(&mut self, path: &str) -> String {
+        // Check file size before attempting to extract
+        if let Ok(metadata) = fs::metadata(path) {
+            if metadata.len() > Self::MAX_PDF_SIZE {
+                return format!(
+                    "PDF file is too large for preview ({:.1} MB).\n\nMaximum size: 50 MB\n\nUse an external PDF viewer.",
+                    metadata.len() as f64 / (1024.0 * 1024.0)
+                );
+            }
+        }
+
         match pdf_extract::extract_text(path) {
             Ok(text) => {
                 if text.trim().is_empty() {
                     "PDF file contains no extractable text.\n\nThis may be a scanned document or image-based PDF.".to_string()
                 } else {
-                    // Limit preview to first ~200 lines for performance
-                    let lines: Vec<&str> = text.lines().take(200).collect();
-                    let preview = lines.join("\n");
+                    // Count lines once, then take for preview
+                    let all_lines: Vec<&str> = text.lines().collect();
+                    let total_lines = all_lines.len();
+                    let preview_lines: Vec<&str> = all_lines.into_iter().take(200).collect();
+                    let preview = preview_lines.join("\n");
 
-                    if text.lines().count() > 200 {
-                        format!("{}\n\n... (truncated, {} more lines)", preview, text.lines().count() - 200)
+                    if total_lines > 200 {
+                        format!("{}\n\n... (truncated, {} more lines)", preview, total_lines - 200)
                     } else {
                         preview
                     }
