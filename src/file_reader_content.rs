@@ -32,6 +32,9 @@ const MAX_ARCHIVE_ENTRIES: usize = 100;
 /// Maximum CSV rows to display in preview
 const MAX_CSV_ROWS: usize = 100;
 
+/// Maximum bytes to read for hex preview of binary files
+const MAX_HEX_PREVIEW_BYTES: usize = 512;
+
 /// A cached preview entry storing highlighted lines for a file
 #[derive(Clone)]
 struct PreviewCacheEntry {
@@ -816,5 +819,44 @@ impl FileContent<'_> {
     /// Note: Requires xz2 crate if needed - for now returns placeholder
     pub fn read_tar_xz_content(&mut self, _path: &str) -> Vec<String> {
         vec!["tar.xz preview not yet implemented".to_string()]
+    }
+
+    /// Read binary file and return hex dump preview
+    pub fn read_binary_hex_view(&self, path: &str) -> String {
+        use pretty_hex::PrettyHex;
+        use std::io::Read;
+
+        let mut file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return format!("Error opening file: {}", e),
+        };
+
+        // Get file size for header
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+        // Read first N bytes
+        let mut buffer = vec![0u8; MAX_HEX_PREVIEW_BYTES];
+        let bytes_read = match file.read(&mut buffer) {
+            Ok(n) => n,
+            Err(e) => return format!("Error reading file: {}", e),
+        };
+        buffer.truncate(bytes_read);
+
+        // Generate hex dump
+        let hex_dump = format!("{:?}", buffer.hex_dump());
+
+        // Format output with header
+        let size_str = Self::format_file_size(file_size);
+        let mut output = format!("Binary file ({}):\n\n", size_str);
+        output.push_str(&hex_dump);
+
+        if file_size > MAX_HEX_PREVIEW_BYTES as u64 {
+            output.push_str(&format!(
+                "\n\n... (showing first {} of {} bytes)",
+                bytes_read, size_str
+            ));
+        }
+
+        output
     }
 }

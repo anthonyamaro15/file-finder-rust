@@ -238,8 +238,7 @@ fn update_preview_for_path(
             FileType::Binary => {
                 image_generator.clear();
                 file_reader_content.file_type = FileType::Binary;
-                app.preview_file_content =
-                    format!("Binary file: {} (use external viewer)", path);
+                app.preview_file_content = file_reader_content.read_binary_hex_view(path);
             }
             _ => {
                 image_generator.clear();
@@ -725,8 +724,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 FileType::Binary => {
                     let binary_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Binary"))
-                        .style(Style::default().fg(Color::Yellow));
+                        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Hex View"))
+                        .style(Style::default().fg(Color::White));
                     f.render_widget(binary_info, inner_layout[1]);
                 }
                 _ => {
