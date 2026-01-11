@@ -185,7 +185,45 @@ fn update_preview_for_path(
             FileType::Archive => {
                 image_generator.clear();
                 file_reader_content.file_type = FileType::Archive;
-                app.preview_file_content = format!("Archive file: {}", path);
+
+                // Determine archive type by extension
+                let ext = std::path::Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                let entries = match ext.as_str() {
+                    "tar" => file_reader_content.read_tar_content(path),
+                    "tgz" => file_reader_content.read_tar_gz_content(path),
+                    "gz" => {
+                        // Only treat as tar.gz if the path ends with .tar.gz
+                        if path.to_lowercase().ends_with(".tar.gz") {
+                            file_reader_content.read_tar_gz_content(path)
+                        } else {
+                            vec!["Gzip file (not a tar archive)".to_string()]
+                        }
+                    }
+                    "bz2" | "tbz2" => {
+                        // Only treat as tar.bz2 if the path ends with .tar.bz2
+                        if path.to_lowercase().ends_with(".tar.bz2") {
+                            file_reader_content.read_tar_bz2_content(path)
+                        } else {
+                            vec!["Bzip2 file (not a tar archive)".to_string()]
+                        }
+                    }
+                    "xz" | "txz" => {
+                        // Only treat as tar.xz if the path ends with .tar.xz
+                        if path.to_lowercase().ends_with(".tar.xz") {
+                            file_reader_content.read_tar_xz_content(path)
+                        } else {
+                            vec!["XZ file (not a tar archive)".to_string()]
+                        }
+                    }
+                    _ => vec![format!("Archive type '{}' preview not supported", ext)],
+                };
+
+                app.preview_file_content = entries.join("\n");
             }
             FileType::CSV => {
                 image_generator.clear();

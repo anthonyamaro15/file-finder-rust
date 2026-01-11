@@ -20,6 +20,18 @@ use syntect::util::LinesWithEndings;
 /// Default maximum number of cached previews
 const DEFAULT_CACHE_SIZE: usize = 20;
 
+/// Maximum file size for text preview (1MB) - larger files are truncated
+const MAX_PREVIEW_SIZE: u64 = 1024 * 1024;
+
+/// Maximum lines to display in preview
+const MAX_PREVIEW_LINES: usize = 500;
+
+/// Maximum archive entries to display in preview
+const MAX_ARCHIVE_ENTRIES: usize = 100;
+
+/// Maximum CSV rows to display in preview
+const MAX_CSV_ROWS: usize = 100;
+
 /// A cached preview entry storing highlighted lines for a file
 #[derive(Clone)]
 struct PreviewCacheEntry {
@@ -301,7 +313,15 @@ impl FileContent<'_> {
             );
         }
 
-        let content = match fs::read_to_string(path) {
+        // Check file size first - use limited reader for large files
+        if let Ok(metadata) = fs::metadata(&path) {
+            if metadata.len() > MAX_PREVIEW_SIZE {
+                return self.read_file_content_limited(&path, metadata.len());
+            }
+        }
+
+        // Small file - read normally
+        let content = match fs::read_to_string(&path) {
             Ok(file_content) => file_content,
             Err(err) => {
                 let err_kind = err.kind().to_string();
@@ -312,6 +332,58 @@ impl FileContent<'_> {
             }
         };
         content
+    }
+
+    /// Read only the first portion of a large file for preview
+    fn read_file_content_limited(&self, path: &str, total_size: u64) -> String {
+        use std::io::{BufRead, BufReader};
+
+        let file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return format!("Error opening file: {}", e),
+        };
+
+        let reader = BufReader::new(file);
+        let mut lines = Vec::new();
+        let mut bytes_read: usize = 0;
+
+        for line_result in reader.lines().take(MAX_PREVIEW_LINES) {
+            match line_result {
+                Ok(line) => {
+                    bytes_read += line.len() + 1; // +1 for newline
+                    if bytes_read > MAX_PREVIEW_SIZE as usize {
+                        break;
+                    }
+                    lines.push(line);
+                }
+                Err(_) => break, // Stop on read error (likely binary content)
+            }
+        }
+
+        let preview = lines.join("\n");
+        let size_str = Self::format_file_size(total_size);
+        format!(
+            "{}\n\n... (truncated, file is {})",
+            preview, size_str
+        )
+    }
+
+    /// Format file size for display
+    fn format_file_size(size: u64) -> String {
+        const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
+        let mut size = size as f64;
+        let mut unit_index = 0;
+
+        while size >= 1024.0 && unit_index < UNITS.len() - 1 {
+            size /= 1024.0;
+            unit_index += 1;
+        }
+
+        if unit_index == 0 {
+            format!("{} {}", size as u64, UNITS[unit_index])
+        } else {
+            format!("{:.1} {}", size, UNITS[unit_index])
+        }
     }
 
     pub fn get_file_extension_type(&mut self, path: String) -> Option<String> {
@@ -459,13 +531,26 @@ impl FileContent<'_> {
         let mut rdr = csv::Reader::from_reader(file);
 
         let mut file_content: Vec<String> = Vec::new();
+        let mut row_count = 0;
+        let mut total_rows = 0;
+
         for result in rdr.records() {
+            total_rows += 1;
+            if row_count >= MAX_CSV_ROWS {
+                continue; // Keep counting total but don't store more
+            }
             // Skip records that fail to parse instead of crashing
             if let Ok(record) = result {
                 for val in record.iter() {
                     file_content.push(val.to_string());
                 }
+                row_count += 1;
             }
+        }
+
+        // Add truncation message if there are more rows
+        if total_rows > MAX_CSV_ROWS {
+            file_content.push(format!("... and {} more rows", total_rows - MAX_CSV_ROWS));
         }
 
         self.curr_csv_content = file_content;
@@ -490,14 +575,22 @@ impl FileContent<'_> {
         };
 
         let mut list: Vec<String> = Vec::new();
+        let total_entries = archive.len();
+        let entries_to_show = total_entries.min(MAX_ARCHIVE_ENTRIES);
 
-        for i in 0..archive.len() {
+        for i in 0..entries_to_show {
             // Skip entries that fail to read
             if let Ok(file) = archive.by_index(i) {
                 if let Some(fil_path) = file.enclosed_name() {
-                    list.push(fil_path.display().to_string());
+                    let size = file.size();
+                    list.push(format!("{} ({})", fil_path.display(), Self::format_file_size(size)));
                 }
             }
+        }
+
+        // Add truncation message if there are more entries
+        if total_entries > MAX_ARCHIVE_ENTRIES {
+            list.push(format!("... and {} more entries", total_entries - MAX_ARCHIVE_ENTRIES));
         }
 
         self.curr_zip_content = list;
@@ -618,5 +711,110 @@ impl FileContent<'_> {
                 }
             }
         }
+    }
+
+    /// Read tar archive contents (limited entries for preview)
+    pub fn read_tar_content(&mut self, path: &str) -> Vec<String> {
+        use std::io::BufReader;
+        use tar::Archive;
+
+        let file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return vec![format!("Error: Could not open archive: {}", e)],
+        };
+
+        let mut archive = Archive::new(BufReader::new(file));
+        let mut list = Vec::new();
+        let mut count = 0;
+
+        match archive.entries() {
+            Ok(entries) => {
+                for entry_result in entries {
+                    if count >= MAX_ARCHIVE_ENTRIES {
+                        list.push("... (more entries truncated)".to_string());
+                        break;
+                    }
+                    if let Ok(entry) = entry_result {
+                        if let Ok(entry_path) = entry.path() {
+                            let size = entry.size();
+                            list.push(format!(
+                                "{} ({})",
+                                entry_path.display(),
+                                Self::format_file_size(size)
+                            ));
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return vec![format!("Error reading archive: {}", e)];
+            }
+        }
+
+        if list.is_empty() {
+            list.push("Empty or unreadable archive".to_string());
+        }
+
+        list
+    }
+
+    /// Read tar.gz archive contents (limited entries for preview)
+    pub fn read_tar_gz_content(&mut self, path: &str) -> Vec<String> {
+        use flate2::read::GzDecoder;
+        use tar::Archive;
+
+        let file = match fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => return vec![format!("Error: Could not open archive: {}", e)],
+        };
+
+        let decoder = GzDecoder::new(file);
+        let mut archive = Archive::new(decoder);
+        let mut list = Vec::new();
+        let mut count = 0;
+
+        match archive.entries() {
+            Ok(entries) => {
+                for entry_result in entries {
+                    if count >= MAX_ARCHIVE_ENTRIES {
+                        list.push("... (more entries truncated)".to_string());
+                        break;
+                    }
+                    if let Ok(entry) = entry_result {
+                        if let Ok(entry_path) = entry.path() {
+                            let size = entry.size();
+                            list.push(format!(
+                                "{} ({})",
+                                entry_path.display(),
+                                Self::format_file_size(size)
+                            ));
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return vec![format!("Error reading archive: {}", e)];
+            }
+        }
+
+        if list.is_empty() {
+            list.push("Empty or unreadable archive".to_string());
+        }
+
+        list
+    }
+
+    /// Read tar.bz2 archive contents (limited entries for preview)
+    /// Note: Requires bzip2 crate if needed - for now returns placeholder
+    pub fn read_tar_bz2_content(&mut self, _path: &str) -> Vec<String> {
+        vec!["tar.bz2 preview not yet implemented".to_string()]
+    }
+
+    /// Read tar.xz archive contents (limited entries for preview)
+    /// Note: Requires xz2 crate if needed - for now returns placeholder
+    pub fn read_tar_xz_content(&mut self, _path: &str) -> Vec<String> {
+        vec!["tar.xz preview not yet implemented".to_string()]
     }
 }
