@@ -13,6 +13,14 @@ pub struct Settings {
     pub settings_path: String,
     pub ignore_directories: Vec<String>,
     pub theme: String,
+
+    /// Show file sizes in file list
+    #[serde(default = "default_show_file_sizes")]
+    pub show_size_bars: bool,
+}
+
+fn default_show_file_sizes() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -46,6 +54,7 @@ impl Default for Settings {
                 "dist-prod".to_string(),
             ],
             theme: "onedark".to_string(),
+            show_size_bars: default_show_file_sizes(),
         }
     }
 }

@@ -1,12 +1,15 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    text::Span,
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 use std::{path::Path, rc::Rc};
 
 use crate::app::{App, InputMode};
+use crate::config::Settings;
+use crate::render::{create_size_text, get_file_size};
 pub mod theme;
 use self::theme::OneDarkTheme;
 use crate::highlight::highlight_search_term;
@@ -61,12 +64,13 @@ impl Ui {
         chunks: &Rc<[Rect]>,
         state: &mut ListState,
         app: &App,
+        settings: &Settings,
     ) {
         // Create enhanced title with search feedback
         let list_title = self.generate_list_title(app);
 
         // Generate list items based on search mode
-        let filtered_read_only_items = self.generate_list_items(app);
+        let filtered_read_only_items = self.generate_list_items(app, settings.show_size_bars);
 
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -172,7 +176,7 @@ impl Ui {
     }
 
     /// Generate list items based on current search state (optimized with pagination)
-    fn generate_list_items(&self, app: &App) -> Vec<ListItem> {
+    fn generate_list_items(&self, app: &App, show_file_sizes: bool) -> Vec<ListItem> {
         let search_term = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
             let term = app.input.trim();
             // Remove leading search indicators for highlighting
@@ -213,12 +217,28 @@ impl Ui {
                             OneDarkTheme::info(),
                         ));
 
+                        // Add file size for files (not directories)
+                        if show_file_sizes && !result.is_directory {
+                            let file_size = get_file_size(&result.file_path);
+                            spans.push(Span::raw(" "));
+                            spans.push(create_size_text(file_size));
+                        }
+
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        // Fallback to simple text
-                        let display_text =
-                            format!("{} {} ({})", icon, result.display_name, result.score);
-                        ListItem::from(display_text)
+                        // Fallback to simple text with file size
+                        let mut spans = vec![
+                            Span::raw(format!("{} {} ({})", icon, result.display_name, result.score)),
+                        ];
+
+                        // Add file size for files (not directories)
+                        if show_file_sizes && !result.is_directory {
+                            let file_size = get_file_size(&result.file_path);
+                            spans.push(Span::raw(" "));
+                            spans.push(create_size_text(file_size));
+                        }
+
+                        ListItem::from(ratatui::text::Line::from(spans))
                     }
                 })
                 .collect()
@@ -267,11 +287,29 @@ impl Ui {
                             OneDarkTheme::info(),
                         ));
 
+                        // Add file size for files (not directories)
+                        if show_file_sizes && !is_dir {
+                            let file_size = get_file_size(file_path);
+                            spans.push(Span::raw(" "));
+                            spans.push(create_size_text(file_size));
+                        }
+
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
                         // Normal display without highlighting
-                        let display_text = format!("{} {}", icon, file_name);
-                        ListItem::from(display_text)
+                        if show_file_sizes && !is_dir {
+                            // With file size
+                            let file_size = get_file_size(file_path);
+                            let spans = vec![
+                                Span::raw(format!("{} {} ", icon, file_name)),
+                                create_size_text(file_size),
+                            ];
+                            ListItem::from(ratatui::text::Line::from(spans))
+                        } else {
+                            // Without file size (directories or disabled)
+                            let display_text = format!("{} {}", icon, file_name);
+                            ListItem::from(display_text)
+                        }
                     }
                 })
                 .collect()

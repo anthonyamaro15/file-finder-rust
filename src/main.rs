@@ -595,7 +595,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 _ => {
                     // Normal file list rendering
-                    widgets_ui.clone().render_list_preview(f, &chunks, &mut state, &app);
+                    widgets_ui.clone().render_list_preview(f, &chunks, &mut state, &app, &settings);
                 }
             }
 
@@ -693,7 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let popup_chunks = split_popup_area(popup_area);
             let sort_option_area = draw_popup(f.size(), 90, 20);
             let sort_options_chunks = split_popup_area_vertical(sort_option_area);
-            let keybinding_area = draw_popup(f.size(), 80, 20);
+            let keybinding_area = draw_popup(f.size(), 55, 75);
             let keybinding_chunks = split_popup_area_vertical(keybinding_area);
 
             match app.input_mode {
