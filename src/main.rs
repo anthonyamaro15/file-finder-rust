@@ -23,6 +23,7 @@ use ratatui::{
     backend::CrosstermBackend,
     prelude::*,
     style::{Color, Style},
+    symbols::border,
     widgets::{Block, Borders, Clear, List, ListState, Paragraph},
     Terminal,
 };
@@ -191,6 +192,11 @@ fn update_preview_for_path(
                 file_reader_content.read_csv_content();
                 file_reader_content.file_type = FileType::CSV;
             }
+            FileType::PDF => {
+                image_generator.clear();
+                file_reader_content.file_type = FileType::PDF;
+                app.preview_file_content = file_reader_content.read_pdf_content(path);
+            }
             FileType::Binary => {
                 image_generator.clear();
                 file_reader_content.file_type = FileType::Binary;
@@ -330,6 +336,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sort_type = SortType::ASC;
     let mut file_reader_content = FileContent::new(ps, ts);
+    // Apply syntax theme from settings
+    file_reader_content.set_syntax_theme(&settings.syntax_theme);
     let mut image_generator = ImageGenerator::new();
     // Setup terminal
 
@@ -606,13 +614,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     image_generator.clear();
                     if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
                         let file_preview_text = highlighted_content.clone()
-                            .block(Block::default().borders(Borders::ALL).title("File Preview"))
+                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
                             .style(Style::default());
                         f.render_widget(file_preview_text, inner_layout[1]);
                     } else {
                         // Fallback for when highlighted content is not available
                         let preview_text = Paragraph::new(app.preview_file_content.clone())
-                            .block(Block::default().borders(Borders::ALL).title("File Preview"))
+                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
                             .style(Style::default());
                         f.render_widget(preview_text, inner_layout[1]);
                     }
@@ -620,7 +628,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 FileType::Image => {
                     if has_image {
                         let image_info = Paragraph::new(image_generator.image_info.clone())
-                            .block(Block::default().borders(Borders::ALL).title("Image Preview"))
+                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Image"))
                             .style(Style::default().fg(Color::Green));
                         f.render_widget(image_info, inner_layout[1]);
                     } else {
@@ -629,7 +637,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else {
                             image_generator.image_info.clone()
                         })
-                            .block(Block::default().borders(Borders::ALL).title("Image Preview - Error"))
+                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Image - Error"))
                             .style(Style::default().fg(Color::Yellow));
                         f.render_widget(image_info, inner_layout[1]);
                     }
@@ -638,7 +646,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title("ZIP Archive Contents")
+                            .border_set(border::ROUNDED)
+                            .title("ZIP Archive")
                             .style(match app.input_mode {
                                 InputMode::Normal => Style::default().fg(Color::Green),
                                 InputMode::Editing => Style::default().fg(Color::Gray),
@@ -650,7 +659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 FileType::Archive => {
                     let archive_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(Block::default().borders(Borders::ALL).title("Archive Info"))
+                        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Archive"))
                         .style(Style::default());
                     f.render_widget(archive_info, inner_layout[1]);
                 }
@@ -658,7 +667,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).block(
                         Block::default()
                             .borders(Borders::ALL)
-                            .title("CSV Data Preview")
+                            .border_set(border::ROUNDED)
+                            .title("CSV Data")
                             .style(match app.input_mode {
                                 InputMode::Normal => Style::default().fg(Color::Green),
                                 InputMode::Editing => Style::default().fg(Color::Gray),
@@ -668,9 +678,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .style(Style::default().fg(Color::DarkGray));
                     f.render_widget(csv_list_content, inner_layout[1]);
                 }
+                FileType::PDF => {
+                    let pdf_content = Paragraph::new(app.preview_file_content.clone())
+                        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("PDF"))
+                        .style(Style::default().fg(Color::White))
+                        .wrap(ratatui::widgets::Wrap { trim: false });
+                    f.render_widget(pdf_content, inner_layout[1]);
+                }
                 FileType::Binary => {
                     let binary_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(Block::default().borders(Borders::ALL).title("Binary File"))
+                        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Binary"))
                         .style(Style::default().fg(Color::Yellow));
                     f.render_widget(binary_info, inner_layout[1]);
                 }

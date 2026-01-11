@@ -1,6 +1,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols::border,
     text::Span,
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
@@ -81,6 +82,7 @@ impl Ui {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
                     .title(list_title.as_str())
                     .style(match app.input_mode {
                         InputMode::Normal => OneDarkTheme::active_border(),
@@ -131,7 +133,8 @@ impl Ui {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("📂 Preview")
+                    .border_set(border::ROUNDED)
+                    .title("Preview")
                     .style(match app.input_mode {
                         InputMode::Normal => OneDarkTheme::inactive_border(),
                         InputMode::Editing => OneDarkTheme::inactive_border(),

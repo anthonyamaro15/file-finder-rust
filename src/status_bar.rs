@@ -1,7 +1,9 @@
 use crate::app::{App, InputMode};
+use crate::utils::format::format_path_for_display;
 use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -191,34 +193,28 @@ impl StatusBar {
             ])
             .split(area);
 
-        // Mode indicator
+        // Mode indicator with rounded borders
         let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode);
         let mode_widget = Paragraph::new(mode_text)
-            .block(Block::default().borders(Borders::ALL))
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED))
             .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
             .alignment(Alignment::Center);
         frame.render_widget(mode_widget, chunks[0]);
 
-        // Current directory
-        let dir_text = if self.current_directory.len() > chunks[1].width as usize - 4 {
-            format!(
-                "...{}",
-                &self.current_directory
-                    [self.current_directory.len() - (chunks[1].width as usize - 7)..]
-            )
-        } else {
-            self.current_directory.clone()
-        };
+        // Current directory with smart path formatting
+        // Account for border (2 chars) and padding (2 chars) = 4 chars overhead
+        let available_width = (chunks[1].width as usize).saturating_sub(4);
+        let dir_text = format_path_for_display(&self.current_directory, available_width);
 
         let dir_widget = Paragraph::new(dir_text)
-            .block(Block::default().borders(Borders::ALL).title("Directory"))
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Directory"))
             .style(Style::default().fg(Color::White));
         frame.render_widget(dir_widget, chunks[1]);
 
         // File and directory counts
         let counts_text = format!("{}F {}D", self.file_count, self.directory_count);
         let counts_widget = Paragraph::new(counts_text)
-            .block(Block::default().borders(Borders::ALL).title("Items"))
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Items"))
             .style(Style::default().fg(Color::Cyan))
             .alignment(Alignment::Center);
         frame.render_widget(counts_widget, chunks[2]);
@@ -226,14 +222,14 @@ impl StatusBar {
         // Total size
         let size_text = Self::format_file_size(self.total_size);
         let size_widget = Paragraph::new(size_text)
-            .block(Block::default().borders(Borders::ALL).title("Size"))
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Size"))
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center);
         frame.render_widget(size_widget, chunks[3]);
 
         // System info
         let system_widget = Paragraph::new(self.system_info.clone())
-            .block(Block::default().borders(Borders::ALL).title("System"))
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("System"))
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
         frame.render_widget(system_widget, chunks[4]);

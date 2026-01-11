@@ -118,6 +118,7 @@ pub enum FileType {
     Archive,
     Image,
     Binary,
+    PDF,
     NotAvailable,
 }
 
@@ -135,6 +136,8 @@ pub struct FileContent<'a> {
     pub hightlighted_content: Option<Paragraph<'a>>,
     /// LRU cache for highlighted file previews
     preview_cache: PreviewCache,
+    /// Configured syntax highlighting theme name
+    syntax_theme_name: String,
 }
 
 impl FileContent<'_> {
@@ -152,7 +155,25 @@ impl FileContent<'_> {
             theme_set: ts,
             hightlighted_content: None,
             preview_cache: PreviewCache::new(DEFAULT_CACHE_SIZE),
+            syntax_theme_name: "base16-ocean.dark".to_string(),
         }
+    }
+
+    /// Set the syntax highlighting theme
+    /// Available themes: "base16-ocean.dark", "base16-eighties.dark", "base16-mocha.dark",
+    /// "base16-ocean.light", "InspiredGitHub", "Solarized (dark)", "Solarized (light)"
+    pub fn set_syntax_theme(&mut self, theme_name: &str) {
+        // Validate theme exists, fall back to default if not found
+        if self.theme_set.themes.contains_key(theme_name) {
+            self.syntax_theme_name = theme_name.to_string();
+            // Clear cache when theme changes so files are re-highlighted
+            self.preview_cache.clear();
+        }
+    }
+
+    /// Get list of available syntax themes
+    pub fn available_themes(&self) -> Vec<&str> {
+        self.theme_set.themes.keys().map(|s| s.as_str()).collect()
     }
 
     /// Clear the preview cache
@@ -222,7 +243,11 @@ impl FileContent<'_> {
         if let Some(syntax) = syntax {
             let mut spans: Vec<Line<'static>> = vec![];
             let syntax_set = self.syntax_set.clone();
-            let theme = self.theme_set.themes["base16-ocean.dark"].clone();
+            // Use configured theme, fall back to default if not found
+            let theme = self.theme_set.themes
+                .get(&self.syntax_theme_name)
+                .cloned()
+                .unwrap_or_else(|| self.theme_set.themes["base16-ocean.dark"].clone());
             let mut h = HighlightLines::new(syntax, &theme);
 
             for line in LinesWithEndings::from(&content) {
@@ -348,6 +373,9 @@ impl FileContent<'_> {
                     "png" | "jpg" | "jpeg" | "gif" | "bmp" | "tiff" | "tif" | "svg" | "webp"
                     | "ico" | "icns" => FileType::Image,
 
+                    // PDF files
+                    "pdf" => FileType::PDF,
+
                     // Binary and executable files
                     "exe" | "dll" | "so" | "dylib" | "bin" | "app" | "deb" | "rpm" | "dmg"
                     | "iso" | "img" | "msi" => FileType::Binary,
@@ -407,6 +435,9 @@ impl FileContent<'_> {
                     }
                     if buffer.starts_with(b"PK\x03\x04") {
                         return FileType::ZIP;
+                    }
+                    if buffer.starts_with(b"%PDF") {
+                        return FileType::PDF;
                     }
                 }
             }
@@ -542,5 +573,35 @@ impl FileContent<'_> {
             }
         }
         self.curr_selected_path.clone()
+    }
+
+    /// Read and extract text content from a PDF file
+    pub fn read_pdf_content(&mut self, path: &str) -> String {
+        match pdf_extract::extract_text(path) {
+            Ok(text) => {
+                if text.trim().is_empty() {
+                    "PDF file contains no extractable text.\n\nThis may be a scanned document or image-based PDF.".to_string()
+                } else {
+                    // Limit preview to first ~200 lines for performance
+                    let lines: Vec<&str> = text.lines().take(200).collect();
+                    let preview = lines.join("\n");
+
+                    if text.lines().count() > 200 {
+                        format!("{}\n\n... (truncated, {} more lines)", preview, text.lines().count() - 200)
+                    } else {
+                        preview
+                    }
+                }
+            }
+            Err(e) => {
+                // Check for common PDF issues
+                let error_str = e.to_string();
+                if error_str.contains("password") || error_str.contains("encrypted") {
+                    "PDF file is password-protected.\n\nUnable to extract text without the password.".to_string()
+                } else {
+                    format!("Unable to read PDF content.\n\nError: {}\n\nTry opening with an external PDF viewer.", e)
+                }
+            }
+        }
     }
 }
