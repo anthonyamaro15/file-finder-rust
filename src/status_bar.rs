@@ -18,6 +18,9 @@ pub struct StatusBar {
     pub system_info: String,
     pub error_message: Option<String>,
     pub error_display_time: Option<std::time::Instant>,
+    // Cache tracking - only recalculate when directory changes
+    cached_directory: String,
+    cache_valid: bool,
 }
 
 impl StatusBar {
@@ -31,15 +34,46 @@ impl StatusBar {
             system_info: Self::get_system_info(),
             error_message: None,
             error_display_time: None,
+            cached_directory: String::new(),
+            cache_valid: false,
         }
     }
 
     pub fn update(&mut self, app: &App) {
-        self.update_file_counts(app);
-        self.update_current_directory(app);
+        // Determine current directory first
+        let current_dir = if !app.files.is_empty() {
+            Path::new(&app.files[0])
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        };
+
+        // Check if we need to recalculate expensive metadata operations
+        let needs_recalc = !self.cache_valid
+            || self.cached_directory != current_dir
+            || self.file_count + self.directory_count != app.files.len();
+
+        if needs_recalc {
+            self.update_file_counts(app);
+            self.calculate_total_size(app);
+            self.cached_directory = current_dir.clone();
+            self.cache_valid = true;
+        }
+
+        // These are cheap operations - always update
+        self.current_directory = current_dir;
         self.update_selected_item_info(app);
-        self.calculate_total_size(app);
         self.update_error_display();
+    }
+
+    /// Invalidate cache - call this after file operations (create, delete, rename)
+    pub fn invalidate_cache(&mut self) {
+        self.cache_valid = false;
     }
 
     fn update_file_counts(&mut self, app: &App) {
@@ -58,20 +92,6 @@ impl StatusBar {
 
         self.file_count = file_count;
         self.directory_count = directory_count;
-    }
-
-    fn update_current_directory(&mut self, app: &App) {
-        if !app.files.is_empty() {
-            let first_path = &app.files[0];
-            if let Some(parent) = Path::new(first_path).parent() {
-                self.current_directory = parent.to_string_lossy().to_string();
-            }
-        } else {
-            self.current_directory = env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-        }
     }
 
     fn update_selected_item_info(&mut self, app: &App) {
