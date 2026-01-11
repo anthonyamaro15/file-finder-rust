@@ -159,3 +159,90 @@ pub mod styles {
         OneDarkTheme::file()
     }
 }
+
+/// Block builders for consistent UI styling with rounded borders
+pub mod blocks {
+    use super::OneDarkTheme;
+    use ratatui::symbols::border;
+    use ratatui::widgets::{Block, Borders};
+
+    /// Create a rounded block with a title - active (focused) state
+    pub fn panel_active<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::active_border())
+    }
+
+    /// Create a rounded block with a title - inactive state
+    pub fn panel_inactive<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::inactive_border())
+    }
+
+    /// Create a rounded block for preview panels
+    pub fn preview<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::inactive_border())
+    }
+
+    /// Create a rounded block for status/info displays
+    pub fn status<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::info())
+    }
+
+    /// Create a rounded block for success messages
+    pub fn success<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::success())
+    }
+
+    /// Create a rounded block for warnings
+    pub fn warning<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::warning())
+    }
+
+    /// Create a rounded block for errors
+    pub fn error<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::error())
+    }
+
+    /// Create a minimal rounded block (no title)
+    pub fn minimal() -> Block<'static> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .style(OneDarkTheme::inactive_border())
+    }
+
+    /// Create a popup block with rounded borders
+    pub fn popup<'a>(title: &'a str) -> Block<'a> {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(title)
+            .style(OneDarkTheme::info())
+    }
+}

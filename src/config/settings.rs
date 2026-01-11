@@ -17,10 +17,19 @@ pub struct Settings {
     /// Show file sizes in file list
     #[serde(default = "default_show_file_sizes")]
     pub show_size_bars: bool,
+
+    /// Syntax highlighting theme for file previews
+    /// Available themes: "base16-ocean.dark", "base16-eighties.dark", "base16-mocha.dark", "base16-ocean.light", "InspiredGitHub", "Solarized (dark)", "Solarized (light)"
+    #[serde(default = "default_syntax_theme")]
+    pub syntax_theme: String,
 }
 
 fn default_show_file_sizes() -> bool {
     true
+}
+
+fn default_syntax_theme() -> String {
+    "base16-ocean.dark".to_string()
 }
 
 impl Default for Settings {
@@ -55,6 +64,7 @@ impl Default for Settings {
             ],
             theme: "onedark".to_string(),
             show_size_bars: default_show_file_sizes(),
+            syntax_theme: default_syntax_theme(),
         }
     }
 }

@@ -2,6 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    symbols::border,
     text::{Line, Text},
     widgets::{Block, Borders, Paragraph},
 };
@@ -42,8 +43,10 @@ pub fn generate_sort_by_string(sort_type: &SortType) -> String {
 
 /// Create the delete confirmation popup block.
 pub fn create_delete_confirmation_block<'a>() -> Block<'a> {
-    Block::bordered()
-        .title("⚠️  Confirm to delete y/n")
+    Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .title("Confirm Delete (y/n)")
         .style(OneDarkTheme::error())
 }
 
@@ -54,9 +57,9 @@ pub fn create_create_input_popup<'a>(
     error_message: &str,
 ) -> Paragraph<'a> {
     let title = if is_error {
-        format!("❌ {}", error_message)
+        format!("Error: {}", error_message)
     } else {
-        "✨ Create File/Dir".to_string()
+        "Create File/Dir".to_string()
     };
 
     let style = if is_error {
@@ -66,7 +69,7 @@ pub fn create_create_input_popup<'a>(
     };
 
     Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title(title))
         .style(style)
 }
 
@@ -76,7 +79,8 @@ pub fn create_rename_input_popup<'a>(input_text: &'a str) -> Paragraph<'a> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("✏️  Enter file/dir name"),
+                .border_set(border::ROUNDED)
+                .title("Rename"),
         )
         .style(OneDarkTheme::warning())
 }
@@ -97,7 +101,8 @@ pub fn create_sort_options_popup<'a>(sort_type: &SortType) -> Paragraph<'a> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("🔄 {}", sort_by_text)),
+                .border_set(border::ROUNDED)
+                .title(sort_by_text),
         )
         .style(OneDarkTheme::info())
 }
@@ -142,7 +147,8 @@ pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("⌨️  Keybindings (q to close)"),
+                .border_set(border::ROUNDED)
+                .title("Keybindings (q to close)"),
         )
         .style(OneDarkTheme::normal())
 }
