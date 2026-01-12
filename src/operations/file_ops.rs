@@ -145,6 +145,76 @@ pub fn create_item_based_on_type(
     }
 }
 
+/// Move a file or directory to a new location.
+/// Falls back to copy+delete for cross-filesystem moves.
+pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<()> {
+    let src = Path::new(src_path);
+    let src_name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| FileOperationError::file_not_found(src))?;
+
+    let dest = Path::new(dest_dir).join(src_name);
+
+    // Validate source exists
+    validation::validate_path_exists(src)?;
+
+    // Validate destination doesn't exist
+    validation::validate_path_not_exists(&dest)?;
+
+    // Try fs::rename first (fast path for same filesystem)
+    match fs::rename(src, &dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // If cross-device link error, fall back to copy+delete
+            if e.raw_os_error() == Some(18) {
+                // EXDEV (cross-device link) on Unix
+                // Copy first
+                if src.is_dir() {
+                    copy_dir_recursive(src, &dest)?;
+                } else {
+                    fs::copy(src, &dest).map_err(|e| FileOperationError::from(e))?;
+                }
+                // Then delete source
+                if src.is_dir() {
+                    fs::remove_dir_all(src).map_err(|e| FileOperationError::from(e))?;
+                } else {
+                    fs::remove_file(src).map_err(|e| FileOperationError::from(e))?;
+                }
+                Ok(())
+            } else {
+                Err(match e.kind() {
+                    io::ErrorKind::PermissionDenied => {
+                        FileOperationError::permission_denied(src, "Cannot move - check permissions")
+                    }
+                    io::ErrorKind::NotFound => FileOperationError::file_not_found(src),
+                    io::ErrorKind::AlreadyExists => FileOperationError::already_exists(&dest),
+                    _ => FileOperationError::from(e),
+                })
+            }
+        }
+    }
+}
+
+/// Helper function to copy a directory recursively.
+fn copy_dir_recursive(src: &Path, dest: &Path) -> FileOperationResult<()> {
+    fs::create_dir_all(dest).map_err(|e| FileOperationError::from(e))?;
+
+    for entry in fs::read_dir(src).map_err(|e| FileOperationError::from(e))? {
+        let entry = entry.map_err(|e| FileOperationError::from(e))?;
+        let entry_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+
+        if entry_path.is_dir() {
+            copy_dir_recursive(&entry_path, &dest_path)?;
+        } else {
+            fs::copy(&entry_path, &dest_path).map_err(|e| FileOperationError::from(e))?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Rename a file or directory using app state for paths.
 pub fn handle_rename(app: &App) -> FileOperationResult<()> {
     // Validate the new filename
