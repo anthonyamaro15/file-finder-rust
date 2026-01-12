@@ -26,20 +26,40 @@ https://github.com/user-attachments/assets/162e767c-9a19-4b2a-a8cc-3683deea1cfe
 - Toggle hidden files
 - Sort by name, size, or modified date
 
+### 🖼️ **View Modes**
+
+- **Normal**: File list + preview pane (50/50 split)
+- **FullList**: Full-width file list (no preview)
+- **DualPane**: Side-by-side file management with independent navigation
+- Press `p` to cycle through modes
+- `Tab` to switch active pane (highlighted border)
+- Full navigation in both panes (`j`/`k`/`h`/`l`)
+- Bidirectional copy/move between panes (`Shift+C` / `Shift+M`)
+
 ### 👀 **Previews**
 
-- Syntax highlighting for code
-- File metadata (size, permissions, mtime)
+- Syntax highlighting for code (configurable theme)
+- **Terminal image rendering** (Kitty, iTerm2, Sixel protocols)
+- **PDF text extraction**
+- **Hex view for binary files**
 - CSV preview in tabular format
-- Image metadata (dimensions, format)
-- Archive contents (ZIP, TAR, GZ)
+- Archive contents (ZIP, TAR, TAR.GZ, TGZ)
+- File metadata (size, permissions, mtime)
+
+### 📊 **File Size Visualization**
+
+- Visual size bars next to files
+- Color coding: green (small), yellow (medium), red (large)
+- Configurable via settings
 
 ### 🎨 **UI & Theming**
 
 - OneDark theme (lazygit-inspired)
-- Status bar & progress indicators
-- Modal dialogs with emojis
+- Rounded borders and polished visual hierarchy
+- Status bar with mode indicators
+- Modal dialogs for confirmations
 - Custom themes via TOML
+- Configurable syntax highlighting theme
 
 ### ⚡ **Performance**
 
@@ -47,6 +67,8 @@ https://github.com/user-attachments/assets/162e767c-9a19-4b2a-a8cc-3683deea1cfe
 - Parallel scanning with Rayon
 - Smart caching for instant global search
 - File system watching for real-time updates
+- Lazy file metadata loading
+- Preview caching
 
 ---
 
@@ -145,6 +167,17 @@ If no editor is set, the selected file path is copied to clipboard.
 | `o` | Open in file explorer      |
 | `.` | Toggle hidden files        |
 
+### 🖼️ View Modes
+
+| Key       | Action                                           |
+| --------- | ------------------------------------------------ |
+| `p`       | Cycle view mode (Normal → Full → Dual)           |
+| `Tab`     | Switch active pane (Dual Pane mode)              |
+| `Shift+C` | Copy from active pane to other pane              |
+| `Shift+M` | Move from active pane to other pane              |
+
+In Dual Pane mode, navigation keys (`j`/`k`/`h`/`l`) work on the active pane.
+
 ### 🔧 Tools
 
 | Key | Action            |
@@ -157,15 +190,37 @@ If no editor is set, the selected file path is copied to clipboard.
 
 ## 🎨 Theme & Customization
 
-- Default theme: **OneDark**
+- Default UI theme: **OneDark**
 - Custom themes: `~/.config/ff/themes/*.toml`
+- Syntax highlighting themes: configurable in settings (default: `base16-ocean.dark`)
 - Example:
 
 ```bash
 ff -t onedark
 ```
 
+### Syntax Theme
+
+Configure in `~/.config/ff/settings.toml`:
+
+```toml
+syntax_theme = "base16-ocean.dark"
+```
+
 Colors are used for file types, syntax highlighting, and modal dialogs (🟢 create, 🔴 delete, 🟡 rename, 🔵 info).
+
+### Terminal Image Support
+
+Image preview uses terminal graphics protocols when available:
+
+| Terminal  | Protocol | Status              |
+| --------- | -------- | ------------------- |
+| Kitty     | Kitty    | Full support        |
+| iTerm2    | iTerm2   | Full support (Mac)  |
+| WezTerm   | iTerm2   | Full support        |
+| Ghostty   | Kitty    | Full support        |
+| Foot      | Sixel    | Full support        |
+| Alacritty | -        | Halfblock fallback  |
 
 ---
 
