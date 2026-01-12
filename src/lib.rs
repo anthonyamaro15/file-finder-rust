@@ -7,6 +7,7 @@ pub mod errors;
 pub mod file_reader_content;
 pub mod highlight;
 pub mod operations;
+pub mod pane;
 pub mod perf_test;
 pub mod render;
 pub mod theme;

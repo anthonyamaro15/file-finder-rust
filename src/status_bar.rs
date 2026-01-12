@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, ViewMode};
 use crate::utils::format::format_path_for_display;
 use ratatui::{
     prelude::*,
@@ -180,12 +180,21 @@ impl StatusBar {
         }
     }
 
+    fn get_view_mode_indicator(view_mode: &ViewMode) -> (&'static str, Color) {
+        match view_mode {
+            ViewMode::Normal => ("Normal", Color::White),
+            ViewMode::FullList => ("Full", Color::Cyan),
+            ViewMode::DualPane => ("Dual", Color::Magenta),
+        }
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, app: &App) {
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Length(15), // Mode indicator
+                Constraint::Length(14), // View mode indicator
                 Constraint::Min(20),    // Directory path
                 Constraint::Length(25), // File counts
                 Constraint::Length(15), // Total size
@@ -201,15 +210,23 @@ impl StatusBar {
             .alignment(Alignment::Center);
         frame.render_widget(mode_widget, chunks[0]);
 
+        // View mode indicator
+        let (view_text, view_color) = Self::get_view_mode_indicator(&app.view_mode);
+        let view_widget = Paragraph::new(view_text)
+            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("View"))
+            .style(Style::default().fg(view_color))
+            .alignment(Alignment::Center);
+        frame.render_widget(view_widget, chunks[1]);
+
         // Current directory with smart path formatting
         // Account for border (2 chars) and padding (2 chars) = 4 chars overhead
-        let available_width = (chunks[1].width as usize).saturating_sub(4);
+        let available_width = (chunks[2].width as usize).saturating_sub(4);
         let dir_text = format_path_for_display(&self.current_directory, available_width);
 
         let dir_widget = Paragraph::new(dir_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Directory"))
             .style(Style::default().fg(Color::White));
-        frame.render_widget(dir_widget, chunks[1]);
+        frame.render_widget(dir_widget, chunks[2]);
 
         // File and directory counts
         let counts_text = format!("{}F {}D", self.file_count, self.directory_count);
@@ -217,7 +234,7 @@ impl StatusBar {
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Items"))
             .style(Style::default().fg(Color::Cyan))
             .alignment(Alignment::Center);
-        frame.render_widget(counts_widget, chunks[2]);
+        frame.render_widget(counts_widget, chunks[3]);
 
         // Total size
         let size_text = Self::format_file_size(self.total_size);
@@ -225,14 +242,14 @@ impl StatusBar {
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Size"))
             .style(Style::default().fg(Color::Yellow))
             .alignment(Alignment::Center);
-        frame.render_widget(size_widget, chunks[3]);
+        frame.render_widget(size_widget, chunks[4]);
 
         // System info
         let system_widget = Paragraph::new(self.system_info.clone())
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("System"))
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
-        frame.render_widget(system_widget, chunks[4]);
+        frame.render_widget(system_widget, chunks[5]);
     }
 
     pub fn render_detailed(&self, frame: &mut Frame, area: Rect, app: &App) {

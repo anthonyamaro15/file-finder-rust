@@ -8,7 +8,7 @@ use ratatui::{
 };
 use std::{path::Path, rc::Rc};
 
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, ViewMode};
 use crate::config::Settings;
 use crate::render::{create_size_text, get_file_size};
 pub mod theme;
@@ -73,9 +73,14 @@ impl Ui {
         // Generate list items based on search mode
         let filtered_read_only_items = self.generate_list_items(app, settings.show_size_bars);
 
+        // Dynamic layout based on view mode
+        let inner_constraints = match app.view_mode {
+            ViewMode::FullList => vec![Constraint::Percentage(100)],
+            _ => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
+        };
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints(inner_constraints)
             .split(chunks[2]);
 
         let list_block = List::new(filtered_read_only_items.clone())
@@ -85,7 +90,14 @@ impl Ui {
                     .border_set(border::ROUNDED)
                     .title(list_title.as_str())
                     .style(match app.input_mode {
-                        InputMode::Normal => OneDarkTheme::active_border(),
+                        InputMode::Normal => {
+                            // In DualPane mode, show inactive border if right pane is active
+                            if app.view_mode == ViewMode::DualPane && app.is_right_pane_active() {
+                                OneDarkTheme::inactive_border()
+                            } else {
+                                OneDarkTheme::active_border()
+                            }
+                        }
                         InputMode::Editing => {
                             if app.global_search_mode {
                                 OneDarkTheme::global_search()
@@ -174,7 +186,12 @@ impl Ui {
             }
         } else {
             let total = app.files.len();
-            format!("Files ({})", total)
+            // Add "Left: " prefix in DualPane mode for clarity
+            if app.view_mode == ViewMode::DualPane {
+                format!("Left: Files ({})", total)
+            } else {
+                format!("Files ({})", total)
+            }
         }
     }
 

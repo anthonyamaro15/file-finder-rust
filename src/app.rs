@@ -32,6 +32,66 @@ pub enum InputMode {
     CacheLoading,
 }
 
+/// View mode for the main content area
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ViewMode {
+    /// Normal: File list (50%) + Preview (50%) - default behavior
+    #[default]
+    Normal,
+    /// FullList: File list only (100%) - no preview pane
+    FullList,
+    /// DualPane: Two file lists side by side (50%/50%)
+    DualPane,
+}
+
+impl ViewMode {
+    /// Cycle to the next view mode
+    pub fn next(&self) -> Self {
+        match self {
+            ViewMode::Normal => ViewMode::FullList,
+            ViewMode::FullList => ViewMode::DualPane,
+            ViewMode::DualPane => ViewMode::Normal,
+        }
+    }
+
+    /// Get display name for status bar
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            ViewMode::Normal => "Normal",
+            ViewMode::FullList => "Full List",
+            ViewMode::DualPane => "Dual Pane",
+        }
+    }
+
+    /// Check if preview should be shown
+    pub fn shows_preview(&self) -> bool {
+        matches!(self, ViewMode::Normal)
+    }
+
+    /// Check if this is dual pane mode
+    pub fn is_dual_pane(&self) -> bool {
+        matches!(self, ViewMode::DualPane)
+    }
+}
+
+/// Which pane is currently active in dual-pane mode
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum PanePosition {
+    #[default]
+    Left,
+    Right,
+}
+
+impl PanePosition {
+    /// Toggle to the other pane
+    pub fn toggle(&self) -> Self {
+        match self {
+            PanePosition::Left => PanePosition::Right,
+            PanePosition::Right => PanePosition::Left,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub file_path: String,
@@ -47,6 +107,11 @@ pub struct App {
     pub input: String,
     pub character_index: usize,
     pub input_mode: InputMode,
+    pub view_mode: ViewMode,
+    /// Which pane is currently active (for dual-pane mode)
+    pub active_pane: PanePosition,
+    /// Right pane for dual-pane mode (left pane uses existing App fields)
+    pub right_pane: crate::pane::Pane,
     pub message: Vec<String>,
     pub files: Vec<String>,
     pub read_only_files: Vec<String>,
@@ -135,6 +200,9 @@ impl App {
         Self {
             input: String::new(),
             input_mode: InputMode::Normal,
+            view_mode: ViewMode::default(),
+            active_pane: PanePosition::default(),
+            right_pane: crate::pane::Pane::default(),
             message: Vec::new(),
             files,
             read_only_files: files_clone,
@@ -793,5 +861,49 @@ impl App {
         self.character_index = 0;
     }
 
+    // =========================================================================
+    // Dual Pane Helper Methods
+    // =========================================================================
+
+    /// Toggle active pane (for dual-pane mode)
+    pub fn toggle_active_pane(&mut self) {
+        self.active_pane = self.active_pane.toggle();
+    }
+
+    /// Check if the left pane is active
+    pub fn is_left_pane_active(&self) -> bool {
+        self.active_pane == PanePosition::Left
+    }
+
+    /// Check if the right pane is active
+    pub fn is_right_pane_active(&self) -> bool {
+        self.active_pane == PanePosition::Right
+    }
+
+    /// Initialize the right pane with the current directory
+    /// Called when entering dual-pane mode
+    pub fn init_right_pane(&mut self) {
+        // Clone current directory and files to right pane
+        self.right_pane = crate::pane::Pane::new(
+            self.current_directory.clone(),
+            self.files.clone(),
+        );
+        self.right_pane.show_hidden_files = self.show_hidden_files;
+    }
+
+    /// Get the directory of the inactive pane (for cross-pane operations)
+    pub fn get_inactive_pane_directory(&self) -> String {
+        match self.active_pane {
+            PanePosition::Left => self.right_pane.current_directory.clone(),
+            PanePosition::Right => self.current_directory.clone(),
+        }
+    }
+
+    /// Refresh the right pane's file list
+    pub fn refresh_right_pane(&mut self) {
+        self.right_pane.refresh_files();
+    }
+
 }
+
 
