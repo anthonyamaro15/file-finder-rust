@@ -19,6 +19,7 @@ use crossterm::{
 };
 use image::ImageReader;
 use log::{debug, warn};
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use ratatui::{
     backend::CrosstermBackend,
     prelude::*,
@@ -71,21 +72,46 @@ use crate::{
     },
 };
 
-#[derive(Clone)]
-struct ImageGenerator {
+/// Default font size for terminal graphics protocol picker (width, height in pixels)
+const DEFAULT_FONT_SIZE: (u16, u16) = (8, 16);
+
+/// Maximum image dimension allowed for preview (to avoid memory pressure)
+const MAX_IMAGE_DIMENSION: u32 = 8192;
+
+/// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
+/// with fallback to Unicode halfblocks for unsupported terminals.
+struct ImageRenderer {
+    /// Terminal graphics protocol picker
+    picker: Picker,
+    /// Current image protocol state for rendering
+    image_state: Option<Box<dyn StatefulProtocol>>,
+    /// Whether an image is currently loaded
     has_image: bool,
+    /// Image metadata info (dimensions, format)
     image_info: String,
+    /// Error message if image loading failed
+    error_message: Option<String>,
 }
 
-impl ImageGenerator {
-    pub fn new() -> ImageGenerator {
-        ImageGenerator {
+impl ImageRenderer {
+    /// Create a new ImageRenderer with terminal protocol detection
+    pub fn new() -> ImageRenderer {
+        let mut picker = Picker::new(DEFAULT_FONT_SIZE);
+        picker.guess_protocol();
+
+        ImageRenderer {
+            picker,
+            image_state: None,
             has_image: false,
             image_info: String::new(),
+            error_message: None,
         }
     }
 
+    /// Load an image from the given path
     pub fn load_img(&mut self, path: String) {
+        self.clear();
+
         match ImageReader::open(&path) {
             Ok(reader) => {
                 // Save format before calling decode since decode consumes reader
@@ -93,35 +119,67 @@ impl ImageGenerator {
                     .format()
                     .map(|f| format!("{:?}", f))
                     .unwrap_or_else(|| "Unknown".to_string());
-                match reader.decode() {
-                    Ok(dyn_img) => {
-                        let width = dyn_img.width();
-                        let height = dyn_img.height();
 
-                        self.image_info = format!(
-                            "Image Preview\n\nDimensions: {}x{}\nFormat: {}\n\nNote: Image rendering in terminal is limited.\nUse external viewer for full image experience.",
-                            width, height, format
-                        );
+                match reader.decode() {
+                    Ok(decoded_image) => {
+                        let width = decoded_image.width();
+                        let height = decoded_image.height();
+
+                        // Check if image is too large (to avoid memory pressure)
+                        if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+                            self.has_image = false;
+                            self.error_message = Some(format!(
+                                "Image too large for preview ({}x{}, max {})",
+                                width, height, MAX_IMAGE_DIMENSION
+                            ));
+                            return;
+                        }
+
+                        // Store metadata
+                        self.image_info = format!("{}x{} {}", width, height, format);
+
+                        // Create protocol state for rendering
+                        let protocol = self.picker.new_resize_protocol(decoded_image);
+                        self.image_state = Some(protocol);
                         self.has_image = true;
+                        self.error_message = None;
                     }
                     Err(e) => {
                         debug!("Failed to decode image {}: {}", path, e);
                         self.has_image = false;
-                        self.image_info = format!("Failed to decode image: {}", e);
+                        self.error_message = Some(format!("Failed to decode: {}", e));
                     }
                 }
             }
             Err(e) => {
                 debug!("Failed to open image {}: {}", path, e);
                 self.has_image = false;
-                self.image_info = format!("Failed to open image: {}", e);
+                self.error_message = Some(format!("Failed to open: {}", e));
             }
         }
     }
 
+    /// Clear the current image
     pub fn clear(&mut self) {
+        self.image_state = None;
         self.has_image = false;
         self.image_info.clear();
+        self.error_message = None;
+    }
+
+    /// Check if an image is loaded and ready to render
+    pub fn has_image(&self) -> bool {
+        self.has_image && self.image_state.is_some()
+    }
+
+    /// Get the image info string
+    pub fn get_info(&self) -> &str {
+        &self.image_info
+    }
+
+    /// Get error message if any
+    pub fn get_error(&self) -> Option<&str> {
+        self.error_message.as_deref()
     }
 }
 
@@ -131,7 +189,7 @@ fn update_preview_for_path(
     path: &str,
     app: &mut App,
     file_reader_content: &mut FileContent,
-    image_generator: &mut ImageGenerator,
+    image_renderer: &mut ImageRenderer,
 ) {
     // Update metadata stats
     let metadata = get_metadata_info(path.to_owned());
@@ -143,7 +201,7 @@ fn update_preview_for_path(
     if !is_file(path.to_string()) {
         // Directory: show contents
         if let Some(file_names) = get_content_from_path(path.to_string()) {
-            image_generator.clear();
+            image_renderer.clear();
             file_reader_content.file_type = FileType::NotAvailable;
             app.preview_files = file_names;
         }
@@ -157,7 +215,7 @@ fn update_preview_for_path(
             | FileType::TextFile
             | FileType::ConfigFile
             | FileType::JSON => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.file_type = file_extension.clone();
 
                 let file_content = file_reader_content.read_file_content(path.to_string());
@@ -170,20 +228,20 @@ fn update_preview_for_path(
                 }
             }
             FileType::Image => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.curr_asset_path = path.to_string();
-                image_generator.load_img(path.to_string());
+                image_renderer.load_img(path.to_string());
                 file_reader_content.file_type = FileType::Image;
                 app.preview_file_content.clear();
                 file_reader_content.hightlighted_content = None;
             }
             FileType::ZIP => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.read_zip_content(path.to_string());
                 file_reader_content.file_type = FileType::ZIP;
             }
             FileType::Archive => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.file_type = FileType::Archive;
 
                 // Determine archive type by extension
@@ -226,22 +284,22 @@ fn update_preview_for_path(
                 app.preview_file_content = entries.join("\n");
             }
             FileType::CSV => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.read_csv_content();
                 file_reader_content.file_type = FileType::CSV;
             }
             FileType::PDF => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.file_type = FileType::PDF;
                 app.preview_file_content = file_reader_content.read_pdf_content(path);
             }
             FileType::Binary => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.file_type = FileType::Binary;
                 app.preview_file_content = file_reader_content.read_binary_hex_view(path);
             }
             _ => {
-                image_generator.clear();
+                image_renderer.clear();
                 file_reader_content.file_type = FileType::NotAvailable;
             }
         }
@@ -375,7 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file_reader_content = FileContent::new(ps, ts);
     // Apply syntax theme from settings
     file_reader_content.set_syntax_theme(&settings.syntax_theme);
-    let mut image_generator = ImageGenerator::new();
+    let mut image_renderer = ImageRenderer::new();
     // Setup terminal
 
     let file_strings = get_file_path_data(
@@ -483,8 +541,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Update status bar with current app state
         status_bar.update(&app);
 
-        // Extract image info before drawing if needed
-        let has_image = image_generator.has_image;
+        // Extract image state before drawing (needed for mutable access in render_stateful_widget)
+        let has_image = image_renderer.has_image();
+        let image_info = image_renderer.get_info().to_string();
+        let image_error = image_renderer.get_error().map(|s| s.to_string());
+        let mut image_state_for_render = image_renderer.image_state.take();
 
         // Draw UI
         terminal.draw(|f| {
@@ -648,7 +709,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match t {
                 FileType::SourceCode | FileType::Markdown | FileType::TextFile |
                 FileType::ConfigFile | FileType::JSON => {
-                    image_generator.clear();
+                    image_renderer.clear();
                     if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
                         let file_preview_text = highlighted_content.clone()
                             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
@@ -664,19 +725,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 FileType::Image => {
                     if has_image {
-                        let image_info = Paragraph::new(image_generator.image_info.clone())
-                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Image"))
-                            .style(Style::default().fg(Color::Green));
-                        f.render_widget(image_info, inner_layout[1]);
+                        if let Some(ref mut img_state) = image_state_for_render {
+                            // Create a block for the image with title showing dimensions
+                            let title = format!("Image ({})", image_info);
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .border_set(border::ROUNDED)
+                                .title(title);
+
+                            // Calculate inner area for the image
+                            let image_area = block.inner(inner_layout[1]);
+
+                            // Render the block first
+                            f.render_widget(block, inner_layout[1]);
+
+                            // Render the actual image using StatefulImage
+                            let image_widget = StatefulImage::new(None);
+                            f.render_stateful_widget(image_widget, image_area, img_state);
+                        }
                     } else {
-                        let image_info = Paragraph::new(if image_generator.image_info.is_empty() {
-                            "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP".to_string()
-                        } else {
-                            image_generator.image_info.clone()
-                        })
-                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Image - Error"))
+                        // Show error message if image failed to load
+                        let error_msg = image_error.unwrap_or_else(|| {
+                            "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP, WebP".to_string()
+                        });
+                        let error_widget = Paragraph::new(error_msg)
+                            .block(Block::default()
+                                .borders(Borders::ALL)
+                                .border_set(border::ROUNDED)
+                                .title("Image - Error"))
                             .style(Style::default().fg(Color::Yellow));
-                        f.render_widget(image_info, inner_layout[1]);
+                        f.render_widget(error_widget, inner_layout[1]);
                     }
                 }
                 FileType::ZIP => {
@@ -729,7 +807,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(binary_info, inner_layout[1]);
                 }
                 _ => {
-                    image_generator.clear();
+                    image_renderer.clear();
                     widgets_ui.clone().render_preview_window(f, &chunks, &mut state, &app);
                 }
             }
@@ -781,6 +859,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 status_bar.render_error_notification(f, f.size());
             }
         })?;
+
+        // Restore image state after drawing.
+        // The state was taken before the draw closure because render_stateful_widget
+        // requires &mut access, but the closure captures image_renderer immutably.
+        // Taking ownership before and restoring after avoids borrow checker conflicts.
+        image_renderer.image_state = image_state_for_render;
 
         // Handle copy progress messages
         if let Some(ref rx) = copy_receiver {
@@ -961,7 +1045,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             KeyCode::Char('i') => {
                                 app.input_mode = InputMode::Editing;
                                 file_reader_content.file_type = FileType::NotAvailable;
-                                image_generator.clear();
+                                image_renderer.clear();
                             }
                             KeyCode::Char('q') => {
                                 break;
@@ -985,7 +1069,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &path,
                                             &mut app,
                                             &mut file_reader_content,
-                                            &mut image_generator,
+                                            &mut image_renderer,
                                         );
                                     }
                                 }
@@ -1009,7 +1093,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &path,
                                             &mut app,
                                             &mut file_reader_content,
-                                            &mut image_generator,
+                                            &mut image_renderer,
                                         );
                                     }
                                 }
