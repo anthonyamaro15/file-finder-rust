@@ -205,6 +205,12 @@ pub struct App {
     // Selection preservation for file operations
     pub preserved_selection_index: Option<usize>,
 
+    // Delete confirmation info
+    pub delete_target_name: String,
+    pub delete_target_is_dir: bool,
+    pub delete_target_file_count: Option<usize>,
+    pub delete_target_total_size: Option<u64>,
+
     // Preview debounce tracking
     pub preview_pending_path: Option<String>,
     pub preview_pending_since: Option<Instant>,
@@ -314,6 +320,12 @@ impl App {
 
             // Initialize selection preservation
             preserved_selection_index: None,
+
+            // Initialize delete confirmation info
+            delete_target_name: String::new(),
+            delete_target_is_dir: false,
+            delete_target_file_count: None,
+            delete_target_total_size: None,
 
             // Initialize preview debounce tracking
             preview_pending_path: None,

@@ -60,7 +60,7 @@ use crate::{
         handle_rename, CopyMessage,
     },
     render::{
-        create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_block,
+        create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup, draw_popup,
         split_popup_area, split_popup_area_vertical,
     },
@@ -69,8 +69,8 @@ use crate::{
     ui::{create_preview_block, Ui},
     utils::{
         check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info,
-        get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
-        get_metadata_info, init, is_file, SortBy, SortType,
+        get_content_from_path, get_curr_path, get_directory_stats, get_file_path_data,
+        get_inner_files_info, get_metadata_info, init, is_file, SortBy, SortType,
     },
 };
 
@@ -1099,11 +1099,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // FullList mode: no second pane to render (100% width file list)
 
             if app.render_popup {
-                let block = create_delete_confirmation_block();
-                let area = draw_popup(f.size(), 40, 7);
-                let popup_chunks = split_popup_area(area);
+                let popup = create_delete_confirmation_popup(
+                    &app.delete_target_name,
+                    app.delete_target_is_dir,
+                    app.delete_target_file_count,
+                    app.delete_target_total_size,
+                );
+                let area = draw_popup(f.size(), 50, 12);
                 f.render_widget(Clear, area);
-                f.render_widget(block, popup_chunks[0]);
+                f.render_widget(popup, area);
             }
 
             // Popup areas using render module helpers
@@ -1166,13 +1170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(msg) => last_msg = Some(msg),
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
-                        // Copy thread finished, reset state
-                        app.copy_in_progress = false;
-                        app.copy_progress_message.clear();
-                        app.copy_files_processed = 0;
-                        app.copy_total_files = 0;
+                        // Channel closed - process any final message we received, then clean up
                         copy_receiver = None;
-                        last_msg = None;
                         break;
                     }
                 }
@@ -1524,6 +1523,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             KeyCode::Char('d') => {
+                                // Populate delete target info for confirmation popup
+                                if let Some(index) = state.selected() {
+                                    if index < app.files.len() {
+                                        let selected_path = &app.files[index];
+                                        let path = Path::new(selected_path);
+
+                                        // Get filename
+                                        app.delete_target_name = path
+                                            .file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or(selected_path)
+                                            .to_string();
+
+                                        app.delete_target_is_dir = path.is_dir();
+
+                                        // Get directory stats if it's a directory
+                                        if app.delete_target_is_dir {
+                                            let (file_count, total_size) = get_directory_stats(path);
+                                            app.delete_target_file_count = Some(file_count);
+                                            app.delete_target_total_size = Some(total_size);
+                                        } else {
+                                            // For files, get the file size
+                                            app.delete_target_file_count = None;
+                                            app.delete_target_total_size = path.metadata().ok().map(|m| m.len());
+                                        }
+                                    }
+                                }
                                 app.render_popup = true;
                                 app.input_mode = InputMode::WatchDelete;
                             }

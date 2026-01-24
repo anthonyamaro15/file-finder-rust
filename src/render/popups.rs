@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::theme::OneDarkTheme;
-use crate::utils::SortType;
+use crate::utils::{format_file_size, SortType};
 
 /// Calculate a centered popup area within the given rect.
 ///
@@ -41,13 +41,42 @@ pub fn generate_sort_by_string(sort_type: &SortType) -> String {
     format!("Sort By: '{}'", str_sort_type)
 }
 
-/// Create the delete confirmation popup block.
-pub fn create_delete_confirmation_block<'a>() -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_set(border::ROUNDED)
-        .title("Confirm Delete (y/n)")
-        .style(OneDarkTheme::error())
+/// Create the delete confirmation popup with file info.
+pub fn create_delete_confirmation_popup<'a>(
+    name: &str,
+    is_dir: bool,
+    file_count: Option<usize>,
+    total_size: Option<u64>,
+) -> Paragraph<'a> {
+    let size_str = total_size
+        .map(|s| format_file_size(s))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let info_line = if is_dir {
+        let count = file_count.unwrap_or(0);
+        let files_word = if count == 1 { "file" } else { "files" };
+        format!("({} {}, {})", count, files_word, size_str)
+    } else {
+        format!("({})", size_str)
+    };
+
+    let content = vec![
+        Line::from(""),
+        Line::from(format!("Delete \"{}\"?", name)),
+        Line::from(info_line),
+        Line::from(""),
+        Line::from("Press 'y' to confirm, 'n' to cancel"),
+    ];
+
+    Paragraph::new(content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .title("Confirm Delete")
+                .style(OneDarkTheme::error()),
+        )
+        .centered()
 }
 
 /// Create the create file/dir input popup widget.

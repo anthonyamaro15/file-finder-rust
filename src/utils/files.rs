@@ -251,15 +251,20 @@ pub fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> Strin
     let get_info = Path::new(&curr_path);
     let file_name = get_info.file_name().unwrap().to_str().unwrap().to_string();
 
-    // Generate a unique name by prefixing copy_ repeatedly until it does not exist
-    let mut copies = 1usize;
+    // First try without a number suffix
+    let candidate = format!("{}/copy_{}", new_path, file_name);
+    if !Path::new(&candidate).exists() {
+        return candidate;
+    }
+
+    // Generate a unique name using numbered format: copy_2_file.txt, copy_3_file.txt, etc.
+    let mut n = 2usize;
     loop {
-        let prefix = "copy_".repeat(copies);
-        let candidate = format!("{}/{}{}", new_path, prefix, file_name);
+        let candidate = format!("{}/copy_{}_{}", new_path, n, file_name);
         if !Path::new(&candidate).exists() {
             return candidate;
         }
-        copies += 1;
+        n += 1;
     }
 }
 
@@ -279,6 +284,31 @@ pub fn get_curr_path(path: String) -> String {
     let mut split_path = path.split('/').collect::<Vec<&str>>();
     split_path.pop();
     split_path.join("/")
+}
+
+/// Get directory statistics (file count and total size).
+/// Returns (file_count, total_size_bytes).
+pub fn get_directory_stats(path: &Path) -> (usize, u64) {
+    let mut file_count = 0usize;
+    let mut total_size = 0u64;
+
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_file() {
+                file_count += 1;
+                if let Ok(metadata) = entry_path.metadata() {
+                    total_size += metadata.len();
+                }
+            } else if entry_path.is_dir() {
+                let (sub_count, sub_size) = get_directory_stats(&entry_path);
+                file_count += sub_count;
+                total_size += sub_size;
+            }
+        }
+    }
+
+    (file_count, total_size)
 }
 
 #[cfg(test)]
