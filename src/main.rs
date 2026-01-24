@@ -1984,24 +1984,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     match handle_delete_based_on_type(selected) {
                                         Ok(_) => {
-                                            // Preserve selection by finding a nearby item after deletion
-                                            let next_selection_index = if selected_indx > 0
-                                                && selected_indx >= app.files.len() - 1
-                                            {
-                                                // If we deleted the last item, select the new last item
-                                                Some(app.files.len().saturating_sub(2))
-                                            } else if selected_indx < app.files.len() - 1 {
-                                                // Select the item that will take the deleted item's position
-                                                Some(selected_indx)
-                                            } else {
-                                                // Fallback to previous item or first item
-                                                Some(
-                                                    selected_indx
-                                                        .saturating_sub(1)
-                                                        .min(app.files.len().saturating_sub(2)),
-                                                )
-                                            };
-
+                                            // Refresh file list first
                                             let file_path_list = get_file_path_data(
                                                 current_dir,
                                                 app.show_hidden_files,
@@ -2014,8 +1997,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.update_file_references();
                                             status_bar.invalidate_cache();
 
-                                            // Restore selection to a nearby item
-                                            app.preserved_selection_index = next_selection_index;
+                                            // Calculate selection AFTER refresh based on new list length
+                                            let new_len = app.files.len();
+                                            let next_selection_index = if new_len == 0 {
+                                                None
+                                            } else if selected_indx >= new_len {
+                                                // Deleted item was at or past new end, select last item
+                                                Some(new_len - 1)
+                                            } else {
+                                                // Select same index (item after deleted one moved up)
+                                                Some(selected_indx)
+                                            };
+
+                                            // Apply selection
+                                            state.select(next_selection_index);
                                             app.input_mode = InputMode::Normal;
                                         }
                                         Err(e) => {
