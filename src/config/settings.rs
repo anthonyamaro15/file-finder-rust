@@ -5,6 +5,53 @@ use std::path::Path;
 use crate::config::get_config_dir;
 use crate::errors::{AppError, AppResult};
 
+/// Layout style for the main UI
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutStyle {
+    /// Classic: Heavy borders, emoji icons, multi-section status bar
+    Classic,
+    /// Modern: Minimal borders, nerd font icons, clean status bar (default)
+    #[default]
+    Modern,
+    /// Miller: Three-pane miller columns layout
+    Miller,
+}
+
+impl LayoutStyle {
+    pub fn is_modern(&self) -> bool {
+        matches!(self, LayoutStyle::Modern | LayoutStyle::Miller)
+    }
+
+    pub fn is_miller(&self) -> bool {
+        matches!(self, LayoutStyle::Miller)
+    }
+}
+
+/// Nerd font usage setting
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NerdFontSetting {
+    /// Always use nerd font icons
+    Always,
+    /// Never use nerd font icons (use emoji fallback)
+    Never,
+    /// Auto-detect based on terminal (default)
+    #[default]
+    Auto,
+}
+
+/// Status bar style
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusBarStyle {
+    /// Classic: Multiple bordered sections
+    Classic,
+    /// Minimal: Single clean line (default)
+    #[default]
+    Minimal,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub start_path: String,
@@ -22,6 +69,24 @@ pub struct Settings {
     /// Available themes: "base16-ocean.dark", "base16-eighties.dark", "base16-mocha.dark", "base16-ocean.light", "InspiredGitHub", "Solarized (dark)", "Solarized (light)"
     #[serde(default = "default_syntax_theme")]
     pub syntax_theme: String,
+
+    // === UI Modernization Settings ===
+
+    /// Layout style: "classic", "modern", or "miller"
+    #[serde(default)]
+    pub layout_style: LayoutStyle,
+
+    /// Nerd font icons: "always", "never", or "auto"
+    #[serde(default)]
+    pub use_nerd_fonts: NerdFontSetting,
+
+    /// Show panel borders
+    #[serde(default = "default_show_borders")]
+    pub show_borders: bool,
+
+    /// Status bar style: "classic" or "minimal"
+    #[serde(default)]
+    pub status_bar_style: StatusBarStyle,
 }
 
 fn default_show_file_sizes() -> bool {
@@ -30,6 +95,10 @@ fn default_show_file_sizes() -> bool {
 
 fn default_syntax_theme() -> String {
     "base16-ocean.dark".to_string()
+}
+
+fn default_show_borders() -> bool {
+    false // Modern default: minimal borders
 }
 
 impl Default for Settings {
@@ -65,6 +134,11 @@ impl Default for Settings {
             theme: "onedark".to_string(),
             show_size_bars: default_show_file_sizes(),
             syntax_theme: default_syntax_theme(),
+            // UI Modernization defaults (modern is the new default)
+            layout_style: LayoutStyle::default(),
+            use_nerd_fonts: NerdFontSetting::default(),
+            show_borders: default_show_borders(),
+            status_bar_style: StatusBarStyle::default(),
         }
     }
 }

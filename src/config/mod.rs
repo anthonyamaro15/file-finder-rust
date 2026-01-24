@@ -1,7 +1,7 @@
 pub mod settings;
 pub mod theme;
 
-pub use settings::Settings;
+pub use settings::{LayoutStyle, NerdFontSetting, Settings, StatusBarStyle};
 pub use theme::{Theme, ThemeColors};
 
 use crate::errors::{AppError, AppResult};

@@ -19,7 +19,6 @@ use crossterm::{
 };
 use image::ImageReader;
 use log::{debug, warn};
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use ratatui::{
     backend::CrosstermBackend,
     prelude::*,
@@ -28,6 +27,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 // Internal module declarations
@@ -43,6 +43,7 @@ mod operations;
 mod pane;
 mod render;
 mod status_bar;
+mod icons;
 mod theme;
 mod ui;
 mod utils;
@@ -60,12 +61,12 @@ use crate::{
     },
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_block,
-        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_popup, split_popup_area, split_popup_area_vertical,
+        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup, draw_popup,
+        split_popup_area, split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
-    ui::Ui,
+    ui::{create_preview_block, Ui},
     utils::{
         check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info,
         get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
@@ -311,11 +312,7 @@ fn update_preview_for_path(
 
 /// Apply a sort operation to the current file list.
 /// This consolidates the duplicated sort logic from the WatchSort handlers.
-fn apply_sort(
-    app: &mut App,
-    sort_by: SortBy,
-    sort_type: &SortType,
-) -> anyhow::Result<()> {
+fn apply_sort(app: &mut App, sort_by: SortBy, sort_type: &SortType) -> anyhow::Result<()> {
     if app.files.is_empty() {
         return Ok(());
     }
@@ -324,12 +321,7 @@ fn apply_sort(
     let cur_path = get_curr_path(app.files[0].clone());
 
     // Get sorted file list
-    let file_path_list = get_file_path_data(
-        cur_path,
-        app.show_hidden_files,
-        sort_by,
-        sort_type,
-    )?;
+    let file_path_list = get_file_path_data(cur_path, app.show_hidden_files, sort_by, sort_type)?;
 
     // Update app state
     app.files = file_path_list.clone();
@@ -386,7 +378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli_args = CliArgs::parse_args();
 
     // Log the effective CLI values
-    debug!("CLI Arguments: Start path: {:?}, Theme: {:?}, Editor: {:?}, Path: {:?}, Reset Config: {}, Rebuild Cache: {}", 
+    debug!("CLI Arguments: Start path: {:?}, Theme: {:?}, Editor: {:?}, Path: {:?}, Reset Config: {}, Rebuild Cache: {}",
         cli_args.start, cli_args.theme, cli_args.editor, cli_args.path, cli_args.reset_config, cli_args.rebuild_cache);
 
     let ps = SyntaxSet::load_defaults_newlines();
@@ -503,7 +495,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let widgets_ui = Ui::new(app.files.clone());
+    let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
 
     debug!("{:?}", widgets_ui.files_list);
@@ -572,7 +564,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let search_indicator = if app.global_search_mode {
                         " [Global Search]".bold()
                     } else if !app.input.is_empty() {
-                        " [Local Search]".bold() 
+                        " [Local Search]".bold()
                     } else {
                         " find (i)".bold()
                     };
@@ -672,8 +664,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 list_title.push_str(&"List");
             }
-                        // Render the enhanced status bar
-            status_bar.render(f, chunks[3], &app);
+                        // Render the status bar based on style setting
+            match settings.status_bar_style {
+                crate::config::settings::StatusBarStyle::Classic => {
+                    status_bar.render(f, chunks[3], &app);
+                }
+                crate::config::settings::StatusBarStyle::Minimal => {
+                    status_bar.render_minimal(f, chunks[3], &app);
+                }
+            }
             let text = Text::from(Line::from(msg)).patch_style(style);
             let help_message = Paragraph::new(text);
 
@@ -731,13 +730,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         image_renderer.clear();
                         if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
                             let file_preview_text = highlighted_content.clone()
-                                .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
+                                .block(create_preview_block("Preview", &settings))
                                 .style(Style::default());
                             f.render_widget(file_preview_text, inner_layout[1]);
                         } else {
                             // Fallback for when highlighted content is not available
                             let preview_text = Paragraph::new(app.preview_file_content.clone())
-                                .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
+                                .block(create_preview_block("Preview", &settings))
                                 .style(Style::default());
                             f.render_widget(preview_text, inner_layout[1]);
                         }
@@ -747,10 +746,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(ref mut img_state) = image_state_for_render {
                                 // Create a block for the image with title showing dimensions
                                 let title = format!("Image ({})", image_info);
-                                let block = Block::default()
-                                    .borders(Borders::ALL)
-                                    .border_set(border::ROUNDED)
-                                    .title(title);
+                                let block = create_preview_block(&title, &settings);
 
                                 // Calculate inner area for the image
                                 let image_area = block.inner(inner_layout[1]);
@@ -768,110 +764,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP, WebP".to_string()
                             });
                             let error_widget = Paragraph::new(error_msg)
-                                .block(Block::default()
-                                    .borders(Borders::ALL)
-                                    .border_set(border::ROUNDED)
-                                    .title("Image - Error"))
+                                .block(create_preview_block("Image - Error", &settings))
                                 .style(Style::default().fg(Color::Yellow));
                             f.render_widget(error_widget, inner_layout[1]);
                         }
                     }
                     FileType::ZIP => {
-                        let zip_list_content = List::new(file_reader_content.curr_zip_content.clone()).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_set(border::ROUNDED)
-                                .title("ZIP Archive")
-                                .style(match app.input_mode {
-                                    InputMode::Normal => Style::default().fg(Color::Green),
-                                    InputMode::Editing => Style::default().fg(Color::Gray),
-                                    _ => Style::default().fg(Color::Gray),
-                                })
-                        )
-                        .style(Style::default().fg(Color::DarkGray));
+                        let block = create_preview_block("ZIP Archive", &settings);
+                        let zip_list_content = List::new(file_reader_content.curr_zip_content.clone())
+                            .block(block)
+                            .style(Style::default().fg(Color::Rgb(92, 99, 112)));
                         f.render_widget(zip_list_content, inner_layout[1]);
                     }
                     FileType::Archive => {
                         let archive_info = Paragraph::new(app.preview_file_content.clone())
-                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Archive"))
+                            .block(create_preview_block("Archive", &settings))
                             .style(Style::default());
                         f.render_widget(archive_info, inner_layout[1]);
                     }
                     FileType::CSV => {
-                        let csv_list_content = List::new(file_reader_content.curr_csv_content.clone()).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_set(border::ROUNDED)
-                                .title("CSV Data")
-                                .style(match app.input_mode {
-                                    InputMode::Normal => Style::default().fg(Color::Green),
-                                    InputMode::Editing => Style::default().fg(Color::Gray),
-                                    _ => Style::default().fg(Color::Gray),
-                                })
-                        )
-                        .style(Style::default().fg(Color::DarkGray));
+                        let block = create_preview_block("CSV Data", &settings);
+                        let csv_list_content = List::new(file_reader_content.curr_csv_content.clone())
+                            .block(block)
+                            .style(Style::default().fg(Color::Rgb(92, 99, 112)));
                         f.render_widget(csv_list_content, inner_layout[1]);
                     }
                     FileType::PDF => {
                         let pdf_content = Paragraph::new(app.preview_file_content.clone())
-                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("PDF"))
+                            .block(create_preview_block("PDF", &settings))
                             .style(Style::default().fg(Color::White))
                             .wrap(ratatui::widgets::Wrap { trim: false });
                         f.render_widget(pdf_content, inner_layout[1]);
                     }
                     FileType::Binary => {
                         let binary_info = Paragraph::new(app.preview_file_content.clone())
-                            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Hex View"))
+                            .block(create_preview_block("Hex View", &settings))
                             .style(Style::default().fg(Color::White));
                         f.render_widget(binary_info, inner_layout[1]);
                     }
                     _ => {
                         image_renderer.clear();
-                        widgets_ui.clone().render_preview_window(f, &chunks, &mut state, &app);
+                        widgets_ui.clone().render_preview_window(f, &chunks, &mut state, &app, &settings);
                     }
                 }
             } else if app.view_mode.is_dual_pane() {
                 // DualPane mode: render right pane file list
                 let right_pane = &app.right_pane;
 
-                // Generate list items for right pane - O(n) using enumerate
+                // Generate list items for right pane using icon provider
                 let right_items: Vec<ListItem> = right_pane.file_labels.iter().enumerate().map(|(idx, label)| {
-                    // Check if it's a directory by looking at the full path
                     let is_dir = right_pane.files.get(idx)
                         .map(|p| std::path::Path::new(p).is_dir())
                         .unwrap_or(false);
-
-                    let icon = if is_dir { "📁 " } else { "📄 " };
-                    ListItem::new(format!("{}{}", icon, label))
+                    let path = right_pane.files.get(idx)
+                        .map(|p| std::path::Path::new(p))
+                        .unwrap_or(std::path::Path::new(""));
+                    let icon = widgets_ui.icon_provider.get_for_path(path, is_dir);
+                    ListItem::new(format!("{} {}", icon, label))
                 }).collect();
 
-                // Determine border color based on active pane
-                let right_border_style = if app.is_right_pane_active() {
-                    OneDarkTheme::active_border()
-                } else {
-                    OneDarkTheme::inactive_border()
-                };
-
                 // Create title with directory info
-                let right_title = format!("Right: {}",
+                let right_title = if settings.show_borders {
+                    format!("Right: {}", std::path::Path::new(&right_pane.current_directory)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("..."))
+                } else {
                     std::path::Path::new(&right_pane.current_directory)
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("...")
-                );
+                        .to_string()
+                };
+
+                // Create block based on settings
+                let block = if settings.show_borders {
+                    let right_border_style = if app.is_right_pane_active() {
+                        OneDarkTheme::active_border()
+                    } else {
+                        OneDarkTheme::inactive_border()
+                    };
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_set(border::ROUNDED)
+                        .title(right_title)
+                        .style(right_border_style)
+                } else {
+                    Block::default()
+                        .borders(Borders::LEFT)
+                        .border_style(Style::default().fg(Color::Rgb(62, 68, 81)))
+                        .title(right_title)
+                        .title_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+                };
 
                 let right_list = List::new(right_items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_set(border::ROUNDED)
-                            .title(right_title)
-                            .style(right_border_style)
-                    )
+                    .block(block)
                     .highlight_style(OneDarkTheme::selected())
-                    .highlight_symbol("❯");
+                    .highlight_symbol(if settings.show_borders { "❯" } else { " " });
 
-                // Render the right pane with extracted list state (persisted after draw)
                 f.render_stateful_widget(right_list, inner_layout[1], &mut right_pane_list_state);
             }
             // FullList mode: no second pane to render (100% width file list)
@@ -1127,7 +1117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if list_len > 0 {
                                         let i = match state.selected() {
                                             Some(i) => {
-                                                if i >= list_len - 1 { 0 } else { i + 1 }
+                                                if i >= list_len - 1 {
+                                                    0
+                                                } else {
+                                                    i + 1
+                                                }
                                             }
                                             None => 0,
                                         };
@@ -1156,7 +1150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if list_len > 0 {
                                         let i = match state.selected() {
                                             Some(i) => {
-                                                if i == 0 { list_len - 1 } else { i - 1 }
+                                                if i == 0 {
+                                                    list_len - 1
+                                                } else {
+                                                    i - 1
+                                                }
                                             }
                                             None => 0,
                                         };
@@ -1179,7 +1177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // In DualPane mode with right pane active, navigate right pane to parent
                                 if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                                     let current_dir = app.right_pane.current_directory.clone();
-                                    if let Some(parent) = std::path::Path::new(&current_dir).parent() {
+                                    if let Some(parent) =
+                                        std::path::Path::new(&current_dir).parent()
+                                    {
                                         if let Some(parent_str) = parent.to_str() {
                                             app.right_pane.navigate_to_directory(parent_str);
                                         }
@@ -1320,7 +1320,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 // Reset active pane to left when leaving DualPane mode
-                                if app.view_mode == ViewMode::DualPane && new_mode != ViewMode::DualPane {
+                                if app.view_mode == ViewMode::DualPane
+                                    && new_mode != ViewMode::DualPane
+                                {
                                     app.active_pane = PanePosition::Left;
                                 }
 
@@ -1343,14 +1345,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         (src, dest)
                                     } else {
                                         // Left pane active: copy from left to right
-                                        let src = state.selected().and_then(|i| app.files.get(i).cloned());
+                                        let src = state
+                                            .selected()
+                                            .and_then(|i| app.files.get(i).cloned());
                                         let dest = app.right_pane.current_directory.clone();
                                         (src, dest)
                                     };
 
                                     if let Some(src_path) = src_path {
                                         let src = std::path::Path::new(&src_path);
-                                        let src_name = src.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                        let src_name =
+                                            src.file_name().and_then(|n| n.to_str()).unwrap_or("");
                                         let dest = std::path::Path::new(&dest_dir).join(src_name);
 
                                         match operations::copy_dir_file_helper(src, &dest) {
@@ -1358,12 +1363,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // Refresh the destination pane
                                                 if app.is_right_pane_active() {
                                                     // Refresh left pane
-                                                    if let Ok(Some(new_files)) = get_inner_files_info(
-                                                        app.current_directory.clone(),
-                                                        app.show_hidden_files,
-                                                        SortBy::Default,
-                                                        &SortType::ASC,
-                                                    ) {
+                                                    if let Ok(Some(new_files)) =
+                                                        get_inner_files_info(
+                                                            app.current_directory.clone(),
+                                                            app.show_hidden_files,
+                                                            SortBy::Default,
+                                                            &SortType::ASC,
+                                                        )
+                                                    {
                                                         app.files = new_files;
                                                         app.update_file_references();
                                                     }
@@ -1397,7 +1404,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         (src, dest)
                                     } else {
                                         // Left pane active: move from left to right
-                                        let src = state.selected().and_then(|i| app.files.get(i).cloned());
+                                        let src = state
+                                            .selected()
+                                            .and_then(|i| app.files.get(i).cloned());
                                         let dest = app.right_pane.current_directory.clone();
                                         (src, dest)
                                     };

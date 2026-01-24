@@ -126,6 +126,11 @@ pub struct ThemeColors {
     pub global_search: Style,
     pub local_search: Style,
     pub search_highlight: Style,
+
+    // Modern UI muted colors
+    pub muted_text: Style,     // For file sizes, dates, metadata
+    pub separator: Style,      // For subtle dividers
+    pub panel_bg: Style,       // Panel background for modern mode
 }
 
 impl Theme {
@@ -256,6 +261,11 @@ impl Theme {
                 .fg(Color::Black)
                 .bg(Self::parse_color("#E5C07B")?) // Black text on yellow background
                 .add_modifier(Modifier::BOLD),
+
+            // Modern UI muted colors
+            muted_text: Self::parse_style("#5C6370", None)?,    // Gray for metadata
+            separator: Self::parse_style("#3E4451", None)?,     // Subtle dividers
+            panel_bg: Style::default().bg(Self::parse_color("#21252B")?), // Dark panel bg
         })
     }
 
