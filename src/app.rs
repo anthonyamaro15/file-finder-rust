@@ -211,6 +211,10 @@ pub struct App {
     pub delete_target_file_count: Option<usize>,
     pub delete_target_total_size: Option<u64>,
 
+    // Delete progress tracking (for async delete)
+    pub delete_in_progress: bool,
+    pub delete_progress_message: String,
+
     // Preview debounce tracking
     pub preview_pending_path: Option<String>,
     pub preview_pending_since: Option<Instant>,
@@ -326,6 +330,10 @@ impl App {
             delete_target_is_dir: false,
             delete_target_file_count: None,
             delete_target_total_size: None,
+
+            // Initialize delete progress tracking
+            delete_in_progress: false,
+            delete_progress_message: String::new(),
 
             // Initialize preview debounce tracking
             preview_pending_path: None,

@@ -16,6 +16,8 @@ pub enum CopyMessage {
     Progress {
         files_processed: usize,
         total_files: usize,
+        bytes_copied: u64,
+        total_bytes: u64,
         current_file: String,
     },
     Completed {
@@ -207,9 +209,13 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                 }
             }
 
+            let file_size = src.metadata().map(|m| m.len()).unwrap_or(0);
+
             let _ = tx.send(CopyMessage::Progress {
                 files_processed: 0,
                 total_files: 1,
+                bytes_copied: 0,
+                total_bytes: file_size,
                 current_file: src
                     .file_name()
                     .unwrap_or_default()
@@ -222,6 +228,8 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                     let _ = tx.send(CopyMessage::Progress {
                         files_processed: 1,
                         total_files: 1,
+                        bytes_copied: file_size,
+                        total_bytes: file_size,
                         current_file: src
                             .file_name()
                             .unwrap_or_default()
@@ -247,8 +255,8 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                 return;
             }
 
-            // Collect all entries once
-            let all_entries: Vec<_> = WalkDir::new(&src)
+            // Single-pass partition: split entries into directories and files
+            let (dirs, files): (Vec<_>, Vec<_>) = WalkDir::new(&src)
                 .into_iter()
                 .filter_map(|entry| match entry {
                     Ok(e) => Some(e),
@@ -257,11 +265,13 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                         None
                     }
                 })
-                .collect();
+                .partition(|e| e.path().is_dir());
 
-            // Create all directories first
-            for entry in all_entries.iter().filter(|e| e.path().is_dir()) {
-                let rel = match entry.path().strip_prefix(&src) {
+            // Create all directories first (sorted to ensure parents before children)
+            let mut dir_paths: Vec<_> = dirs.iter().map(|e| e.path().to_path_buf()).collect();
+            dir_paths.sort();
+            for dir_path in &dir_paths {
+                let rel = match dir_path.strip_prefix(&src) {
                     Ok(p) => p,
                     Err(e) => {
                         let _ =
@@ -279,8 +289,8 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                 }
             }
 
-            // Prepare items to copy: regular files and symlinks
-            let files: Vec<_> = all_entries
+            // Prepare items to copy: regular files and symlinks, and calculate total bytes
+            let files: Vec<_> = files
                 .iter()
                 .filter(|e| {
                     let ft = e.file_type();
@@ -289,8 +299,16 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                 .map(|e| e.path().to_path_buf())
                 .collect();
 
+            // Calculate total bytes for progress tracking
+            let total_bytes: u64 = files
+                .iter()
+                .filter_map(|p| p.metadata().ok())
+                .map(|m| m.len())
+                .sum();
+
             let total_files = files.len();
             let processed = AtomicUsize::new(0);
+            let bytes_copied = std::sync::atomic::AtomicU64::new(0);
             let progress_tx = tx.clone();
             const UPDATE_INTERVAL: usize = 10; // Update progress every 10 files
 
@@ -313,11 +331,8 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                             .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
                         let dst_path = new_src.join(rel);
 
-                        if let Some(parent) = dst_path.parent() {
-                            fs::create_dir_all(parent).map_err(|e| {
-                                anyhow::anyhow!("Failed to create parent directory: {}", e)
-                            })?;
-                        }
+                        // Note: Parent directories are guaranteed to exist since we created
+                        // all directories in the first pass (sorted to ensure proper order)
 
                         // Preserve symlinks instead of skipping them
                         let ft = std::fs::symlink_metadata(entry_path)
@@ -378,11 +393,17 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
                             warn!("Skipping unsupported file type: {}", entry_path.display());
                         }
 
+                        // Track bytes copied (get file size)
+                        let file_size = entry_path.metadata().map(|m| m.len()).unwrap_or(0);
+                        let current_bytes = bytes_copied.fetch_add(file_size, Ordering::Relaxed) + file_size;
+
                         let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                         if count % UPDATE_INTERVAL == 0 || count == total_files {
                             let _ = progress_tx.send(CopyMessage::Progress {
                                 files_processed: count,
                                 total_files,
+                                bytes_copied: current_bytes,
+                                total_bytes,
                                 current_file: entry_path
                                     .file_name()
                                     .unwrap_or_default()

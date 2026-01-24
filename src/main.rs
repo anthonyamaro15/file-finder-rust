@@ -56,8 +56,8 @@ use crate::{
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
     file_reader_content::{FileContent, FileType},
     operations::{
-        copy_dir_file_with_progress, create_item_based_on_type, handle_delete_based_on_type,
-        handle_rename, CopyMessage,
+        copy_dir_file_with_progress, create_item_based_on_type, delete_with_progress,
+        handle_delete_based_on_type, handle_rename, CopyMessage, DeleteMessage,
     },
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
@@ -68,9 +68,9 @@ use crate::{
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
     utils::{
-        check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info,
-        get_content_from_path, get_curr_path, get_directory_stats, get_file_path_data,
-        get_inner_files_info, get_metadata_info, init, is_file, SortBy, SortType,
+        check_if_exists, format_file_size, generate_copy_file_dir_name, generate_metadata_str_info,
+        get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
+        get_metadata_info, init, is_file, SortBy, SortType,
     },
 };
 
@@ -549,6 +549,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Copy progress receiver (for async copy operations)
     let mut copy_receiver: Option<mpsc::Receiver<CopyMessage>> = None;
+
+    // Delete progress receiver (for async delete operations)
+    let mut delete_receiver: Option<mpsc::Receiver<DeleteMessage>> = None;
+    let mut delete_target_dir: Option<String> = None; // Parent dir to refresh after delete
 
     // Request initial preview for the first file
     if let Some(path) = app.get_selected_path(Some(0)) {
@@ -1182,11 +1186,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     CopyMessage::Progress {
                         files_processed,
                         total_files,
+                        bytes_copied,
+                        total_bytes,
                         current_file,
                     } => {
                         app.copy_files_processed = files_processed;
                         app.copy_total_files = total_files;
-                        app.copy_progress_message = format!("Copying: {}", current_file);
+                        // Show byte-based progress
+                        let percent = if total_bytes > 0 {
+                            (bytes_copied as f64 / total_bytes as f64 * 100.0) as u8
+                        } else {
+                            0
+                        };
+                        let copied_str = format_file_size(bytes_copied);
+                        let total_str = format_file_size(total_bytes);
+                        app.copy_progress_message = format!(
+                            "Copying: {} ({}% - {} / {})",
+                            current_file, percent, copied_str, total_str
+                        );
                     }
                     CopyMessage::Completed { success, message } => {
                         if success {
@@ -1232,6 +1249,99 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.copy_files_processed = 0;
                         app.copy_total_files = 0;
                         copy_receiver = None;
+                    }
+                }
+            }
+        }
+
+        // Handle delete progress messages
+        if let Some(ref rx) = delete_receiver {
+            let mut last_msg: Option<DeleteMessage> = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => last_msg = Some(msg),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        delete_receiver = None;
+                        break;
+                    }
+                }
+            }
+
+            if let Some(msg) = last_msg {
+                match msg {
+                    DeleteMessage::Counting { files_counted } => {
+                        app.delete_progress_message =
+                            format!("Counting files... {}", files_counted);
+                    }
+                    DeleteMessage::Progress {
+                        files_deleted,
+                        total_files,
+                        current_file,
+                    } => {
+                        let percent = if total_files > 0 {
+                            (files_deleted as f64 / total_files as f64 * 100.0) as u8
+                        } else {
+                            0
+                        };
+                        app.delete_progress_message = format!(
+                            "Deleting: {} ({}% - {}/{})",
+                            current_file, percent, files_deleted, total_files
+                        );
+                    }
+                    DeleteMessage::Completed { success, message } => {
+                        if success {
+                            debug!("Delete completed: {}", message);
+
+                            // Refresh file list in the target directory
+                            if let Some(ref dir) = delete_target_dir {
+                                if let Ok(file_path_list) = get_file_path_data(
+                                    dir.clone(),
+                                    app.show_hidden_files,
+                                    app.sort_by.clone(),
+                                    &app.sort_type,
+                                ) {
+                                    app.files = file_path_list.clone();
+                                    app.read_only_files = file_path_list;
+                                    app.update_file_references();
+                                    status_bar.invalidate_cache();
+
+                                    // Calculate selection based on preserved index
+                                    let new_len = app.files.len();
+                                    let selected_indx =
+                                        app.preserved_selection_index.unwrap_or(0);
+                                    let next_selection_index = if new_len == 0 {
+                                        None
+                                    } else if selected_indx >= new_len {
+                                        Some(new_len - 1)
+                                    } else {
+                                        Some(selected_indx)
+                                    };
+                                    state.select(next_selection_index);
+                                }
+                            }
+                        } else {
+                            warn!("Delete failed: {}", message);
+                            status_bar.show_error(message.clone(), None);
+                        }
+
+                        // Reset delete state
+                        app.delete_in_progress = false;
+                        app.delete_progress_message.clear();
+                        app.preserved_selection_index = None;
+                        delete_target_dir = None;
+                        delete_receiver = None;
+                    }
+                    DeleteMessage::Error(error_msg) => {
+                        warn!("Delete operation failed: {}", error_msg);
+                        status_bar.show_error(error_msg.clone(), None);
+
+                        // Reset delete state
+                        app.delete_in_progress = false;
+                        app.delete_progress_message = format!("Delete failed: {}", error_msg);
+                        app.preserved_selection_index = None;
+                        delete_target_dir = None;
+                        delete_receiver = None;
                     }
                 }
             }
@@ -1524,6 +1634,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             KeyCode::Char('d') => {
                                 // Populate delete target info for confirmation popup
+                                // For directories, we DON'T calculate stats upfront to avoid blocking
                                 if let Some(index) = state.selected() {
                                     if index < app.files.len() {
                                         let selected_path = &app.files[index];
@@ -1538,13 +1649,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                         app.delete_target_is_dir = path.is_dir();
 
-                                        // Get directory stats if it's a directory
                                         if app.delete_target_is_dir {
-                                            let (file_count, total_size) = get_directory_stats(path);
-                                            app.delete_target_file_count = Some(file_count);
-                                            app.delete_target_total_size = Some(total_size);
+                                            // For directories, don't calculate stats (will show "Counting..." in popup)
+                                            // Stats will be calculated during async delete
+                                            app.delete_target_file_count = None;
+                                            app.delete_target_total_size = None;
                                         } else {
-                                            // For files, get the file size
+                                            // For files, get the file size (fast operation)
                                             app.delete_target_file_count = None;
                                             app.delete_target_total_size = path.metadata().ok().map(|m| m.len());
                                         }
@@ -2008,48 +2119,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     split_path.pop();
                                     let current_dir = split_path.join("/");
 
-                                    // Handle TOCTOU: if file was deleted externally, treat as success
-                                    let delete_result = handle_delete_based_on_type(selected);
-                                    let is_success = match &delete_result {
-                                        Ok(_) => true,
-                                        Err(e) => e.is_not_found(), // File already gone = success
-                                    };
+                                    let path = Path::new(selected);
 
-                                    if is_success {
-                                        // Refresh file list first
-                                        let file_path_list = get_file_path_data(
-                                            current_dir,
-                                            app.show_hidden_files,
-                                            app.sort_by.clone(),
-                                            &app.sort_type,
-                                        )?;
+                                    if path.is_dir() {
+                                        // For directories, use async delete with progress
+                                        app.delete_in_progress = true;
+                                        app.delete_progress_message = "Counting files...".to_string();
+                                        app.preserved_selection_index = Some(selected_indx);
+                                        delete_target_dir = Some(current_dir);
+                                        delete_receiver = Some(delete_with_progress(selected));
+
+                                        // Close popup but stay in delete mode visually
                                         app.render_popup = false;
-                                        app.files = file_path_list.clone();
-                                        app.read_only_files = file_path_list.clone();
-                                        app.update_file_references();
-                                        status_bar.invalidate_cache();
-
-                                        // Calculate selection AFTER refresh based on new list length
-                                        let new_len = app.files.len();
-                                        let next_selection_index = if new_len == 0 {
-                                            None
-                                        } else if selected_indx >= new_len {
-                                            // Deleted item was at or past new end, select last item
-                                            Some(new_len - 1)
-                                        } else {
-                                            // Select same index (item after deleted one moved up)
-                                            Some(selected_indx)
+                                        app.input_mode = InputMode::Normal;
+                                    } else {
+                                        // For files, use sync delete (fast operation)
+                                        // Handle TOCTOU: if file was deleted externally, treat as success
+                                        let delete_result = handle_delete_based_on_type(selected);
+                                        let is_success = match &delete_result {
+                                            Ok(_) => true,
+                                            Err(e) => e.is_not_found(), // File already gone = success
                                         };
 
-                                        // Apply selection
-                                        state.select(next_selection_index);
-                                        app.input_mode = InputMode::Normal;
-                                    } else if let Err(e) = delete_result {
-                                        // Show error in status bar
-                                        status_bar.show_error(e.user_message(), None);
-                                        warn!("Delete operation failed: {}", e.user_message());
-                                        app.render_popup = false;
-                                        app.input_mode = InputMode::Normal;
+                                        if is_success {
+                                            // Refresh file list first
+                                            let file_path_list = get_file_path_data(
+                                                current_dir,
+                                                app.show_hidden_files,
+                                                app.sort_by.clone(),
+                                                &app.sort_type,
+                                            )?;
+                                            app.render_popup = false;
+                                            app.files = file_path_list.clone();
+                                            app.read_only_files = file_path_list.clone();
+                                            app.update_file_references();
+                                            status_bar.invalidate_cache();
+
+                                            // Calculate selection AFTER refresh based on new list length
+                                            let new_len = app.files.len();
+                                            let next_selection_index = if new_len == 0 {
+                                                None
+                                            } else if selected_indx >= new_len {
+                                                // Deleted item was at or past new end, select last item
+                                                Some(new_len - 1)
+                                            } else {
+                                                // Select same index (item after deleted one moved up)
+                                                Some(selected_indx)
+                                            };
+
+                                            // Apply selection
+                                            state.select(next_selection_index);
+                                            app.input_mode = InputMode::Normal;
+                                        } else if let Err(e) = delete_result {
+                                            // Show error in status bar
+                                            status_bar.show_error(e.user_message(), None);
+                                            warn!("Delete operation failed: {}", e.user_message());
+                                            app.render_popup = false;
+                                            app.input_mode = InputMode::Normal;
+                                        }
                                     }
                                 }
                             }

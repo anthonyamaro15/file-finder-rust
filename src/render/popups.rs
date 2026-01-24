@@ -51,18 +51,18 @@ pub fn generate_sort_indicator(sort_by: &SortBy, sort_type: &SortType) -> String
 pub fn create_delete_confirmation_popup<'a>(
     name: &str,
     is_dir: bool,
-    file_count: Option<usize>,
+    _file_count: Option<usize>,
     total_size: Option<u64>,
 ) -> Paragraph<'a> {
-    let size_str = total_size
-        .map(|s| format_file_size(s))
-        .unwrap_or_else(|| "unknown".to_string());
-
     let info_line = if is_dir {
-        let count = file_count.unwrap_or(0);
-        let files_word = if count == 1 { "file" } else { "files" };
-        format!("({} {}, {})", count, files_word, size_str)
+        // For directories, stats are calculated async, so show placeholder
+        // Note: We don't block on stat calculation anymore to keep UI responsive
+        "(directory)".to_string()
     } else {
+        // For files, we have the size
+        let size_str = total_size
+            .map(|s| format_file_size(s))
+            .unwrap_or_else(|| "unknown".to_string());
         format!("({})", size_str)
     };
 

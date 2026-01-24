@@ -203,14 +203,18 @@ impl Ui {
     /// Generate an enhanced title that shows search feedback
     fn generate_list_title(&self, app: &App, settings: &Settings) -> String {
         if app.copy_in_progress {
-            if app.copy_total_files > 0 {
-                let percentage = (app.copy_files_processed * 100) / app.copy_total_files;
-                return format!(
-                    "Copying... {}% ({}/{})",
-                    percentage, app.copy_files_processed, app.copy_total_files
-                );
+            if !app.copy_progress_message.is_empty() {
+                return app.copy_progress_message.clone();
             } else {
                 return "Preparing copy...".to_string();
+            }
+        }
+
+        if app.delete_in_progress {
+            if !app.delete_progress_message.is_empty() {
+                return app.delete_progress_message.clone();
+            } else {
+                return "Preparing delete...".to_string();
             }
         }
 
