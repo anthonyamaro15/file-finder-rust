@@ -7,8 +7,6 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-https://github.com/user-attachments/assets/162e767c-9a19-4b2a-a8cc-3683deea1cfe
-
 ---
 
 ## ✨ Features

@@ -80,6 +80,10 @@ const DEFAULT_FONT_SIZE: (u16, u16) = (8, 16);
 /// Maximum image dimension allowed for preview (to avoid memory pressure)
 const MAX_IMAGE_DIMENSION: u32 = 8192;
 
+/// Preview debounce delay in milliseconds
+/// Prevents rapid preview updates when scrolling quickly through files
+const PREVIEW_DEBOUNCE_MS: u64 = 50;
+
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
 /// with fallback to Unicode halfblocks for unsupported terminals.
 struct ImageRenderer {
@@ -161,6 +165,29 @@ impl ImageRenderer {
         }
     }
 
+    /// Load an image from a pre-decoded DynamicImage (for async loading)
+    pub fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
+        self.clear();
+
+        let width = decoded_image.width();
+        let height = decoded_image.height();
+
+        // Store metadata
+        self.image_info = format!("{}x{} {}", width, height, format);
+
+        // Create protocol state for rendering
+        let protocol = self.picker.new_resize_protocol(decoded_image);
+        self.image_state = Some(protocol);
+        self.has_image = true;
+        self.error_message = None;
+    }
+
+    /// Set an error message for image loading
+    pub fn set_error(&mut self, message: String) {
+        self.clear();
+        self.error_message = Some(message);
+    }
+
     /// Clear the current image
     pub fn clear(&mut self) {
         self.image_state = None;
@@ -187,6 +214,8 @@ impl ImageRenderer {
 
 /// Update the preview panel for a given file/directory path.
 /// This consolidates the duplicated preview update logic from navigation handlers.
+/// Note: Currently unused as preview loading is now async, but kept for potential future use.
+#[allow(dead_code)]
 fn update_preview_for_path(
     path: &str,
     app: &mut App,
@@ -517,6 +546,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Copy progress receiver (for async copy operations)
     let mut copy_receiver: Option<mpsc::Receiver<CopyMessage>> = None;
 
+    // Request initial preview for the first file
+    if let Some(path) = app.get_selected_path(Some(0)) {
+        app.request_preview(path);
+    }
+
     // Main loop
     loop {
         // Check if we need to restore a preserved selection
@@ -533,6 +567,200 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Update status bar with current app state
         status_bar.update(&app);
+
+        // Check for debounced preview updates - use cache or spawn async loader
+        if let Some(path) = app.take_ready_preview(PREVIEW_DEBOUNCE_MS) {
+            // Check if this file is cached (for source code files with syntax highlighting)
+            let is_file_path = std::path::Path::new(&path).is_file();
+            let file_type = file_reader_content::detect_file_type(&path);
+            let is_cacheable = matches!(
+                file_type,
+                FileType::SourceCode | FileType::ConfigFile | FileType::JSON | FileType::Markdown | FileType::TextFile
+            );
+
+            if is_file_path && is_cacheable && file_reader_content.is_cached(&path) {
+                // Cache hit - use cached content directly (instant)
+                file_reader_content.file_type = file_type;
+                if file_reader_content.try_use_cached_preview(&path) {
+                    app.preview_file_content.clear();
+                    app.preview_files = Vec::new();
+                    image_renderer.clear();
+                }
+            } else {
+                // Cache miss - use async loading
+                // Update file type and clear all previous state to avoid showing stale preview
+                file_reader_content.file_type = file_type;
+                file_reader_content.hightlighted_content = None;
+                file_reader_content.curr_selected_path = path.clone();
+                app.preview_loading = true;
+                app.preview_loading_path = Some(path.clone());
+                app.preview_file_content = "Loading...".to_string();
+                app.preview_files = Vec::new();
+                image_renderer.clear();
+
+                // Create channel for async preview result
+                let (tx, rx) = mpsc::channel();
+                app.preview_receiver = Some(rx);
+
+                // Spawn thread to load preview
+                let path_for_thread = path.clone();
+                std::thread::spawn(move || {
+                    file_reader_content::load_preview_async(path_for_thread, tx);
+                });
+            }
+        }
+
+        // Check for async preview results
+        if let Some(ref rx) = app.preview_receiver {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    use crate::app::PreviewMessage;
+                    match msg {
+                        PreviewMessage::Loaded { path, content, file_type, .. } => {
+                            // Only update if this is still the file we're waiting for
+                            if app.preview_loading_path.as_ref() == Some(&path) {
+                                app.preview_loading = false;
+                                file_reader_content.file_type = file_type.clone();
+
+                                // For text-based files, apply syntax highlighting or markdown rendering
+                                match file_type {
+                                    FileType::SourceCode | FileType::ConfigFile | FileType::JSON => {
+                                        // Set current path BEFORE calling get_highlighted_content (used for cache lookup)
+                                        file_reader_content.curr_selected_path = path.clone();
+                                        let ext_type = file_reader_content.get_file_extension_type(path.clone());
+                                        let highlighted = file_reader_content.get_highlighted_content(content.clone(), ext_type);
+                                        app.preview_file_content = highlighted;
+                                    }
+                                    FileType::Markdown => {
+                                        // Render markdown with formatting
+                                        file_reader_content.render_markdown_content(&content, &path);
+                                        app.preview_file_content.clear();
+                                    }
+                                    FileType::Image => {
+                                        // Spawn async image loading to avoid blocking UI
+                                        file_reader_content.hightlighted_content = None;
+                                        file_reader_content.curr_asset_path = path.clone();
+                                        app.preview_file_content = "Loading image...".to_string();
+
+                                        // Create channel for async image result
+                                        let (img_tx, img_rx) = mpsc::channel();
+                                        app.image_receiver = Some(img_rx);
+
+                                        // Spawn thread to decode image
+                                        let path_for_thread = path;
+                                        std::thread::spawn(move || {
+                                            file_reader_content::load_image_async(path_for_thread, img_tx);
+                                        });
+                                    }
+                                    FileType::Binary => {
+                                        file_reader_content.hightlighted_content = None;
+                                        app.preview_file_content = file_reader_content.read_binary_hex_view(&path);
+                                    }
+                                    FileType::ZIP => {
+                                        file_reader_content.hightlighted_content = None;
+                                        file_reader_content.read_zip_content(path);
+                                    }
+                                    FileType::Archive => {
+                                        file_reader_content.hightlighted_content = None;
+                                        // Determine archive type and read
+                                        let ext = std::path::Path::new(&path)
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("")
+                                            .to_lowercase();
+                                        let entries = match ext.as_str() {
+                                            "tar" => file_reader_content.read_tar_content(&path),
+                                            "tgz" => file_reader_content.read_tar_gz_content(&path),
+                                            "gz" if path.to_lowercase().ends_with(".tar.gz") => {
+                                                file_reader_content.read_tar_gz_content(&path)
+                                            }
+                                            "bz2" | "tbz2" if path.to_lowercase().ends_with(".tar.bz2") => {
+                                                file_reader_content.read_tar_bz2_content(&path)
+                                            }
+                                            "xz" | "txz" if path.to_lowercase().ends_with(".tar.xz") => {
+                                                file_reader_content.read_tar_xz_content(&path)
+                                            }
+                                            _ => vec![format!("Archive preview not supported")],
+                                        };
+                                        app.preview_file_content = entries.join("\n");
+                                    }
+                                    FileType::PDF => {
+                                        // PDF content is now loaded asynchronously
+                                        file_reader_content.hightlighted_content = None;
+                                        app.preview_file_content = content;
+                                    }
+                                    FileType::TextFile => {
+                                        // Plain text - clear any previous highlighted content
+                                        file_reader_content.hightlighted_content = None;
+                                        app.preview_file_content = content;
+                                    }
+                                    _ => {
+                                        // Other file types - clear highlighted content
+                                        file_reader_content.hightlighted_content = None;
+                                        app.preview_file_content = content;
+                                    }
+                                }
+                                app.preview_files = Vec::new();
+                            }
+                        }
+                        PreviewMessage::DirectoryListing { path, entries } => {
+                            if app.preview_loading_path.as_ref() == Some(&path) {
+                                app.preview_loading = false;
+                                app.preview_files = entries;
+                                app.preview_file_content.clear();
+                                file_reader_content.file_type = FileType::NotAvailable;
+                                image_renderer.clear();
+                            }
+                        }
+                        PreviewMessage::Error { path, message } => {
+                            if app.preview_loading_path.as_ref() == Some(&path) {
+                                app.preview_loading = false;
+                                app.preview_file_content = format!("Error: {}", message);
+                                file_reader_content.file_type = FileType::NotAvailable;
+                            }
+                        }
+                    }
+                    app.preview_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still loading, keep waiting
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Thread finished unexpectedly
+                    app.preview_loading = false;
+                    app.preview_receiver = None;
+                }
+            }
+        }
+
+        // Check for async image loading results
+        if let Some(ref rx) = app.image_receiver {
+            match rx.try_recv() {
+                Ok(result) => {
+                    // Only update if this is still the file we're waiting for
+                    if file_reader_content.curr_asset_path == result.path {
+                        match result.result {
+                            Ok((decoded_image, format)) => {
+                                image_renderer.load_from_decoded(decoded_image, format);
+                                app.preview_file_content.clear();
+                            }
+                            Err(error_msg) => {
+                                image_renderer.set_error(error_msg);
+                                app.preview_file_content.clear();
+                            }
+                        }
+                    }
+                    app.image_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    // Still loading, keep waiting
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // Thread finished unexpectedly
+                    app.image_receiver = None;
+                }
+            }
+        }
 
         // Extract image state before drawing (needed for mutable access in render_stateful_widget)
         let has_image = image_renderer.has_image();
@@ -1128,14 +1356,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         state.select(Some(i));
                                         app.curr_index = Some(i);
 
-                                        // Update preview using helper function
+                                        // Request debounced preview update
                                         if let Some(path) = app.get_selected_path(Some(i)) {
-                                            update_preview_for_path(
-                                                &path,
-                                                &mut app,
-                                                &mut file_reader_content,
-                                                &mut image_renderer,
-                                            );
+                                            app.request_preview(path);
                                         }
                                     }
                                 }
@@ -1161,14 +1384,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         state.select(Some(i));
                                         app.curr_index = Some(i);
 
-                                        // Update preview using helper function
+                                        // Request debounced preview update
                                         if let Some(path) = app.get_selected_path(Some(i)) {
-                                            update_preview_for_path(
-                                                &path,
-                                                &mut app,
-                                                &mut file_reader_content,
-                                                &mut image_renderer,
-                                            );
+                                            app.request_preview(path);
                                         }
                                     }
                                 }
