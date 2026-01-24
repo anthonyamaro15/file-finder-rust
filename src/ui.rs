@@ -272,7 +272,7 @@ impl Ui {
                 .iter()
                 .take(50) // Limit to top 50 results for performance
                 .map(|result| {
-                    let icon = self.icon_provider.get_for_path(
+                    let colored_icon = self.icon_provider.get_colored_for_path(
                         Path::new(&result.file_path),
                         result.is_directory,
                     );
@@ -286,10 +286,10 @@ impl Ui {
                             OneDarkTheme::search_highlight(),
                         );
 
-                        // Add icon and score to the highlighted line
+                        // Add colored icon and score to the highlighted line
                         let mut spans = vec![ratatui::text::Span::styled(
-                            format!("{} ", icon),
-                            OneDarkTheme::normal(),
+                            format!("{} ", colored_icon.icon),
+                            Style::default().fg(colored_icon.color),
                         )];
                         spans.extend(highlighted_line.spans);
                         spans.push(ratatui::text::Span::styled(
@@ -306,9 +306,13 @@ impl Ui {
 
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        // Fallback to simple text with file size
+                        // Fallback with colored icon
                         let mut spans = vec![
-                            Span::raw(format!("{} {} ({})", icon, result.display_name, result.score)),
+                            Span::styled(
+                                format!("{} ", colored_icon.icon),
+                                Style::default().fg(colored_icon.color),
+                            ),
+                            Span::raw(format!("{} ({})", result.display_name, result.score)),
                         ];
 
                         // Add file size for files (not directories)
@@ -338,7 +342,7 @@ impl Ui {
                     let file_path = &app.files[file_index];
                     let path = Path::new(file_path);
                     let is_dir = path.is_dir();
-                    let icon = self.icon_provider.get_for_path(path, is_dir);
+                    let colored_icon = self.icon_provider.get_colored_for_path(path, is_dir);
 
                     if app.input_mode == InputMode::Editing && !search_term.is_empty() {
                         // Local search with highlighting
@@ -357,10 +361,10 @@ impl Ui {
                             OneDarkTheme::search_highlight(),
                         );
 
-                        // Add icon and score to the highlighted line
+                        // Add colored icon and score to the highlighted line
                         let mut spans = vec![ratatui::text::Span::styled(
-                            format!("{} ", icon),
-                            OneDarkTheme::normal(),
+                            format!("{} ", colored_icon.icon),
+                            Style::default().fg(colored_icon.color),
                         )];
                         spans.extend(highlighted_line.spans);
                         spans.push(ratatui::text::Span::styled(
@@ -377,20 +381,23 @@ impl Ui {
 
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        // Normal display without highlighting
+                        // Normal display with colored icon
+                        let mut spans = vec![
+                            Span::styled(
+                                format!("{} ", colored_icon.icon),
+                                Style::default().fg(colored_icon.color),
+                            ),
+                            Span::raw(file_name.to_string()),
+                        ];
+
+                        // Add file size for files (not directories)
                         if show_file_sizes && !is_dir {
-                            // With file size
                             let file_size = get_file_size(file_path);
-                            let spans = vec![
-                                Span::raw(format!("{} {} ", icon, file_name)),
-                                create_size_text(file_size),
-                            ];
-                            ListItem::from(ratatui::text::Line::from(spans))
-                        } else {
-                            // Without file size (directories or disabled)
-                            let display_text = format!("{} {}", icon, file_name);
-                            ListItem::from(display_text)
+                            spans.push(Span::raw(" "));
+                            spans.push(create_size_text(file_size));
                         }
+
+                        ListItem::from(ratatui::text::Line::from(spans))
                     }
                 })
                 .collect()
