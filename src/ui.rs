@@ -275,6 +275,7 @@ impl Ui {
                     let colored_icon = self.icon_provider.get_colored_for_path(
                         Path::new(&result.file_path),
                         result.is_directory,
+                        &app.theme_colors,
                     );
 
                     if !search_term.is_empty() {
@@ -342,7 +343,7 @@ impl Ui {
                     let file_path = &app.files[file_index];
                     let path = Path::new(file_path);
                     let is_dir = path.is_dir();
-                    let colored_icon = self.icon_provider.get_colored_for_path(path, is_dir);
+                    let colored_icon = self.icon_provider.get_colored_for_path(path, is_dir, &app.theme_colors);
 
                     if app.input_mode == InputMode::Editing && !search_term.is_empty() {
                         // Local search with highlighting

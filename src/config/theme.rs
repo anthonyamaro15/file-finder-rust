@@ -6,78 +6,287 @@ use crate::config::get_themes_dir;
 use crate::errors::{AppError, AppResult};
 use ratatui::style::{Color, Modifier, Style};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ThemeColor {
-    pub color: String,
-    pub modifiers: Option<Vec<String>>,
-}
-
+/// Theme configuration loaded from TOML
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Theme {
-    pub theme: ThemeData,
+    pub palette: Palette,
+    #[serde(default)]
+    pub ui: UiTheme,
+    #[serde(default)]
+    pub syntax: SyntaxTheme,
+    #[serde(default)]
+    pub icons: IconTheme,
+    #[serde(default)]
+    pub markdown: MarkdownTheme,
+    #[serde(default)]
+    pub statusbar: StatusBarTheme,
 }
 
+/// Core color palette
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ThemeData {
-    pub default_fg: String,
-    pub active_border: ThemeColor,
+pub struct Palette {
+    pub red: String,
+    pub green: String,
+    pub yellow: String,
+    pub blue: String,
+    pub purple: String,
+    pub cyan: String,
+    pub orange: String,
+    pub gray: String,
+    pub light_gray: String,
+    pub fg: String,
+    pub bg: String,
+    pub bg_dark: String,
+    pub bg_lighter: String,
+    pub bg_highlight: String,
+    pub selection: String,
+    pub black: String,
+}
+
+/// UI element colors
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UiTheme {
+    pub active_border: String,
     pub inactive_border: String,
-    pub options_text: String,
-    pub searching_active_box: ThemeColor,
-    pub selected_line_bg: ThemeColor,
-    pub selected_range_bg: String,
+    pub selected_bg: String,
+    pub selected_fg: String,
+    pub search_match_bg: String,
+    pub search_match_fg: String,
+}
 
-    // Merge conflict states
-    pub merging_conflict_bg: String,
-    pub merging_conflict_fg: String,
-    pub merging_unresolved_bg: String,
-    pub merging_unresolved_fg: String,
-    pub merging_resolved_bg: String,
-    pub merging_resolved_fg: String,
+/// Syntax highlighting colors (for code preview)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyntaxTheme {
+    pub keyword: String,
+    pub function: String,
+    pub r#type: String,
+    pub string: String,
+    pub number: String,
+    pub comment: String,
+    pub operator: String,
+    pub variable: String,
+}
 
-    // Commit/status accents
-    pub cherry_picked_commit_bg: String,
-    pub cherry_picked_commit_fg: String,
+/// Icon colors by file type
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IconTheme {
+    pub directory: String,
+    pub rust: String,
+    pub javascript: String,
+    pub typescript: String,
+    pub python: String,
+    pub go: String,
+    pub java: String,
+    pub c: String,
+    pub cpp: String,
+    pub ruby: String,
+    pub php: String,
+    pub swift: String,
+    pub kotlin: String,
+    pub lua: String,
+    pub shell: String,
+    pub html: String,
+    pub css: String,
+    pub vue: String,
+    pub react: String,
+    pub svelte: String,
+    pub json: String,
+    pub yaml: String,
+    pub toml: String,
+    pub xml: String,
+    pub markdown: String,
+    pub config: String,
+    pub image: String,
+    pub video: String,
+    pub audio: String,
+    pub pdf: String,
+    pub archive: String,
+    pub git: String,
+    pub key: String,
+    pub lock: String,
+    pub database: String,
+    pub docker: String,
+    pub license: String,
+    pub readme: String,
+    pub binary: String,
+    pub font: String,
+    pub default: String,
+}
 
-    // Alert styles
-    pub alert_header_bg: String,
-    pub alert_header_text: String,
+/// Markdown rendering colors
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MarkdownTheme {
+    pub header_1: String,
+    pub header_2: String,
+    pub header_3: String,
+    pub header_4: String,
+    pub bold: String,
+    pub italic: String,
+    pub code: String,
+    pub code_bg: String,
+    pub link: String,
+    pub link_url: String,
+    pub blockquote: String,
+    pub list_marker: String,
+    pub table_border: String,
+    pub horizontal_rule: String,
+}
+
+/// Status bar colors
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StatusBarTheme {
+    pub background: String,
+    pub foreground: String,
+    pub mode_normal: String,
+    pub mode_insert: String,
+    pub mode_visual: String,
+    pub mode_command: String,
+}
+
+// Default implementations
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self {
+            red: "#e55561".to_string(),
+            green: "#8ebd6b".to_string(),
+            yellow: "#e2b86b".to_string(),
+            blue: "#4fa6ed".to_string(),
+            purple: "#bf68d9".to_string(),
+            cyan: "#48b0bd".to_string(),
+            orange: "#cc9057".to_string(),
+            gray: "#535965".to_string(),
+            light_gray: "#7a818e".to_string(),
+            fg: "#a0a8b7".to_string(),
+            bg: "#1f2329".to_string(),
+            bg_dark: "#181b20".to_string(),
+            bg_lighter: "#282c34".to_string(),
+            bg_highlight: "#30363f".to_string(),
+            selection: "#323641".to_string(),
+            black: "#0e1013".to_string(),
+        }
+    }
+}
+
+impl Default for UiTheme {
+    fn default() -> Self {
+        Self {
+            active_border: "#4fa6ed".to_string(),   // blue
+            inactive_border: "#535965".to_string(), // gray
+            selected_bg: "#4fa6ed".to_string(),     // blue
+            selected_fg: "#0e1013".to_string(),     // black
+            search_match_bg: "#e2b86b".to_string(), // yellow
+            search_match_fg: "#0e1013".to_string(), // black
+        }
+    }
+}
+
+impl Default for SyntaxTheme {
+    fn default() -> Self {
+        Self {
+            keyword: "#bf68d9".to_string(),   // purple
+            function: "#4fa6ed".to_string(),  // blue
+            r#type: "#e2b86b".to_string(),    // yellow
+            string: "#8ebd6b".to_string(),    // green
+            number: "#cc9057".to_string(),    // orange
+            comment: "#535965".to_string(),   // gray
+            operator: "#48b0bd".to_string(),  // cyan
+            variable: "#e55561".to_string(),  // red
+        }
+    }
+}
+
+impl Default for IconTheme {
+    fn default() -> Self {
+        Self {
+            directory: "#4fa6ed".to_string(),   // blue
+            rust: "#dea584".to_string(),        // rust orange
+            javascript: "#e2b86b".to_string(),  // yellow
+            typescript: "#4fa6ed".to_string(),  // blue
+            python: "#4fa6ed".to_string(),      // blue
+            go: "#48b0bd".to_string(),          // cyan
+            java: "#cc9057".to_string(),        // orange
+            c: "#7a818e".to_string(),           // light_gray
+            cpp: "#bf68d9".to_string(),         // purple
+            ruby: "#e55561".to_string(),        // red
+            php: "#bf68d9".to_string(),         // purple
+            swift: "#cc9057".to_string(),       // orange
+            kotlin: "#bf68d9".to_string(),      // purple
+            lua: "#4fa6ed".to_string(),         // blue
+            shell: "#8ebd6b".to_string(),       // green
+            html: "#cc9057".to_string(),        // orange
+            css: "#bf68d9".to_string(),         // purple
+            vue: "#8ebd6b".to_string(),         // green
+            react: "#48b0bd".to_string(),       // cyan
+            svelte: "#cc9057".to_string(),      // orange
+            json: "#e2b86b".to_string(),        // yellow
+            yaml: "#e55561".to_string(),        // red
+            toml: "#cc9057".to_string(),        // orange
+            xml: "#4fa6ed".to_string(),         // blue
+            markdown: "#48b0bd".to_string(),    // cyan
+            config: "#7a818e".to_string(),      // light_gray
+            image: "#bf68d9".to_string(),       // purple
+            video: "#e55561".to_string(),       // red
+            audio: "#cc9057".to_string(),       // orange
+            pdf: "#e55561".to_string(),         // red
+            archive: "#e2b86b".to_string(),     // yellow
+            git: "#cc9057".to_string(),         // orange
+            key: "#e2b86b".to_string(),         // yellow
+            lock: "#e2b86b".to_string(),        // yellow
+            database: "#48b0bd".to_string(),    // cyan
+            docker: "#48b0bd".to_string(),      // cyan
+            license: "#e2b86b".to_string(),     // yellow
+            readme: "#e2b86b".to_string(),      // yellow
+            binary: "#7a818e".to_string(),      // light_gray
+            font: "#e55561".to_string(),        // red
+            default: "#a0a8b7".to_string(),     // fg
+        }
+    }
+}
+
+impl Default for MarkdownTheme {
+    fn default() -> Self {
+        Self {
+            header_1: "#e55561".to_string(),    // red
+            header_2: "#e2b86b".to_string(),    // yellow
+            header_3: "#8ebd6b".to_string(),    // green
+            header_4: "#4fa6ed".to_string(),    // blue
+            bold: "#cc9057".to_string(),        // orange
+            italic: "#bf68d9".to_string(),      // purple
+            code: "#8ebd6b".to_string(),        // green
+            code_bg: "#282c34".to_string(),     // bg_lighter
+            link: "#4fa6ed".to_string(),        // blue
+            link_url: "#535965".to_string(),    // gray
+            blockquote: "#7a818e".to_string(),  // light_gray
+            list_marker: "#bf68d9".to_string(), // purple
+            table_border: "#535965".to_string(),// gray
+            horizontal_rule: "#535965".to_string(), // gray
+        }
+    }
+}
+
+impl Default for StatusBarTheme {
+    fn default() -> Self {
+        Self {
+            background: "#181b20".to_string(),  // bg_dark
+            foreground: "#a0a8b7".to_string(),  // fg
+            mode_normal: "#4fa6ed".to_string(), // blue
+            mode_insert: "#8ebd6b".to_string(), // green
+            mode_visual: "#bf68d9".to_string(), // purple
+            mode_command: "#e2b86b".to_string(),// yellow
+        }
+    }
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            theme: ThemeData {
-                default_fg: "#ABB2BF".to_string(),
-                active_border: ThemeColor {
-                    color: "#61AFEF".to_string(),
-                    modifiers: Some(vec!["bold".to_string()]),
-                },
-                inactive_border: "#3E4451".to_string(),
-                options_text: "#56B6C2".to_string(),
-                searching_active_box: ThemeColor {
-                    color: "#E5C07B".to_string(),
-                    modifiers: Some(vec!["bold".to_string()]),
-                },
-                selected_line_bg: ThemeColor {
-                    color: "#39414f".to_string(),
-                    modifiers: Some(vec!["bold".to_string()]),
-                },
-                selected_range_bg: "#39414f".to_string(),
-
-                merging_conflict_bg: "#5c2a2a".to_string(),
-                merging_conflict_fg: "#E06C75".to_string(),
-                merging_unresolved_bg: "#4b2f2f".to_string(),
-                merging_unresolved_fg: "#E06C75".to_string(),
-                merging_resolved_bg: "#2a4b2a".to_string(),
-                merging_resolved_fg: "#98C379".to_string(),
-
-                cherry_picked_commit_bg: "#2b3a2b".to_string(),
-                cherry_picked_commit_fg: "#98C379".to_string(),
-
-                alert_header_bg: "#3E4451".to_string(),
-                alert_header_text: "#E06C75".to_string(),
-            },
+            palette: Palette::default(),
+            ui: UiTheme::default(),
+            syntax: SyntaxTheme::default(),
+            icons: IconTheme::default(),
+            markdown: MarkdownTheme::default(),
+            statusbar: StatusBarTheme::default(),
         }
     }
 }
@@ -85,56 +294,109 @@ impl Default for Theme {
 /// Processed theme colors ready for UI consumption
 #[derive(Debug, Clone)]
 pub struct ThemeColors {
-    pub default_fg: Style,
+    // Palette colors
+    pub red: Color,
+    pub green: Color,
+    pub yellow: Color,
+    pub blue: Color,
+    pub purple: Color,
+    pub cyan: Color,
+    pub orange: Color,
+    pub gray: Color,
+    pub light_gray: Color,
+    pub fg: Color,
+    pub bg: Color,
+    pub bg_dark: Color,
+    pub bg_lighter: Color,
+    pub bg_highlight: Color,
+    pub selection: Color,
+    pub black: Color,
+
+    // UI styles
     pub active_border: Style,
     pub inactive_border: Style,
-    pub options_text: Style,
-    pub searching_active_box: Style,
-    pub selected_line_bg: Style,
-    pub selected_range_bg: Style,
-
-    // Merge conflict states
-    pub merging_conflict_bg: Style,
-    pub merging_conflict_fg: Style,
-    pub merging_unresolved_bg: Style,
-    pub merging_unresolved_fg: Style,
-    pub merging_resolved_bg: Style,
-    pub merging_resolved_fg: Style,
-
-    // Commit/status accents
-    pub cherry_picked_commit_bg: Style,
-    pub cherry_picked_commit_fg: Style,
-
-    // Alert styles
-    pub alert_header_bg: Style,
-    pub alert_header_text: Style,
-
-    // Additional commonly used styles derived from theme
-    pub normal: Style,
     pub selected: Style,
-    pub search_active: Style,
-    pub search_inactive: Style,
-    pub success: Style,
-    pub error: Style,
-    pub warning: Style,
-    pub info: Style,
-    pub directory: Style,
-    pub file: Style,
-    pub highlight: Style,
+    pub normal: Style,
     pub disabled: Style,
-    pub loading: Style,
+    pub search_highlight: Style,
+    pub info: Style,
+    pub success: Style,
+    pub warning: Style,
+    pub error: Style,
+    pub muted: Style,
     pub global_search: Style,
     pub local_search: Style,
-    pub search_highlight: Style,
 
-    // Modern UI muted colors
-    pub muted_text: Style,     // For file sizes, dates, metadata
-    pub separator: Style,      // For subtle dividers
-    pub panel_bg: Style,       // Panel background for modern mode
+    // Icon colors
+    pub icon_directory: Color,
+    pub icon_rust: Color,
+    pub icon_javascript: Color,
+    pub icon_typescript: Color,
+    pub icon_python: Color,
+    pub icon_go: Color,
+    pub icon_java: Color,
+    pub icon_c: Color,
+    pub icon_cpp: Color,
+    pub icon_ruby: Color,
+    pub icon_php: Color,
+    pub icon_swift: Color,
+    pub icon_kotlin: Color,
+    pub icon_lua: Color,
+    pub icon_shell: Color,
+    pub icon_html: Color,
+    pub icon_css: Color,
+    pub icon_vue: Color,
+    pub icon_react: Color,
+    pub icon_svelte: Color,
+    pub icon_json: Color,
+    pub icon_yaml: Color,
+    pub icon_toml: Color,
+    pub icon_xml: Color,
+    pub icon_markdown: Color,
+    pub icon_config: Color,
+    pub icon_image: Color,
+    pub icon_video: Color,
+    pub icon_audio: Color,
+    pub icon_pdf: Color,
+    pub icon_archive: Color,
+    pub icon_git: Color,
+    pub icon_key: Color,
+    pub icon_lock: Color,
+    pub icon_database: Color,
+    pub icon_docker: Color,
+    pub icon_license: Color,
+    pub icon_readme: Color,
+    pub icon_binary: Color,
+    pub icon_font: Color,
+    pub icon_default: Color,
+
+    // Markdown colors
+    pub md_header_1: Color,
+    pub md_header_2: Color,
+    pub md_header_3: Color,
+    pub md_header_4: Color,
+    pub md_bold: Color,
+    pub md_italic: Color,
+    pub md_code: Color,
+    pub md_code_bg: Color,
+    pub md_link: Color,
+    pub md_link_url: Color,
+    pub md_blockquote: Color,
+    pub md_list_marker: Color,
+    pub md_table_border: Color,
+    pub md_horizontal_rule: Color,
+
+    // Status bar colors
+    pub statusbar_bg: Color,
+    pub statusbar_fg: Color,
+    pub statusbar_mode_normal: Color,
+    pub statusbar_mode_insert: Color,
+    pub statusbar_mode_visual: Color,
+    pub statusbar_mode_command: Color,
 }
 
 impl Theme {
-    /// Load theme from TOML file by name (e.g., "onedark")
+    /// Load theme from TOML file by name (e.g., "onedark-darker")
     pub fn load(theme_name: &str) -> AppResult<Self> {
         Self::create_default_if_missing(theme_name)?;
 
@@ -200,8 +462,6 @@ impl Theme {
         if !theme_path.exists() {
             let default_theme = Self::default();
             default_theme.save_to_file(&theme_path)?;
-
-            println!("Created default theme file at: {}", theme_path.display());
         }
 
         Ok(())
@@ -209,100 +469,143 @@ impl Theme {
 
     /// Convert theme data to processed colors ready for UI
     pub fn to_colors(&self) -> AppResult<ThemeColors> {
-        let theme = &self.theme;
+        let p = &self.palette;
+        let ui = &self.ui;
+        let icons = &self.icons;
+        let md = &self.markdown;
+        let sb = &self.statusbar;
 
-        let default_fg = Self::parse_style(&theme.default_fg, None)?;
-        let active_border = Self::parse_themed_color(&theme.active_border)?;
-        let inactive_border = Self::parse_style(&theme.inactive_border, None)?;
-        let options_text = Self::parse_style(&theme.options_text, None)?;
-        let searching_active_box = Self::parse_themed_color(&theme.searching_active_box)?;
-        let selected_line_bg = Self::parse_themed_color(&theme.selected_line_bg)?;
-        let selected_range_bg = Self::parse_style(&theme.selected_range_bg, None)?;
+        // Parse palette colors
+        let red = Self::parse_color(&p.red)?;
+        let green = Self::parse_color(&p.green)?;
+        let yellow = Self::parse_color(&p.yellow)?;
+        let blue = Self::parse_color(&p.blue)?;
+        let purple = Self::parse_color(&p.purple)?;
+        let cyan = Self::parse_color(&p.cyan)?;
+        let orange = Self::parse_color(&p.orange)?;
+        let gray = Self::parse_color(&p.gray)?;
+        let light_gray = Self::parse_color(&p.light_gray)?;
+        let fg = Self::parse_color(&p.fg)?;
+        let bg = Self::parse_color(&p.bg)?;
+        let bg_dark = Self::parse_color(&p.bg_dark)?;
+        let bg_lighter = Self::parse_color(&p.bg_lighter)?;
+        let bg_highlight = Self::parse_color(&p.bg_highlight)?;
+        let selection = Self::parse_color(&p.selection)?;
+        let black = Self::parse_color(&p.black)?;
+
+        // Parse UI colors
+        let active_border_color = Self::parse_color(&ui.active_border)?;
+        let inactive_border_color = Self::parse_color(&ui.inactive_border)?;
+        let selected_bg = Self::parse_color(&ui.selected_bg)?;
+        let selected_fg = Self::parse_color(&ui.selected_fg)?;
+        let search_match_bg = Self::parse_color(&ui.search_match_bg)?;
+        let search_match_fg = Self::parse_color(&ui.search_match_fg)?;
 
         Ok(ThemeColors {
-            default_fg: default_fg.clone(),
-            active_border: active_border.clone(),
-            inactive_border: inactive_border.clone(),
-            options_text: options_text.clone(),
-            searching_active_box: searching_active_box.clone(),
-            selected_line_bg: selected_line_bg.clone(),
-            selected_range_bg: selected_range_bg.clone(),
+            // Palette
+            red,
+            green,
+            yellow,
+            blue,
+            purple,
+            cyan,
+            orange,
+            gray,
+            light_gray,
+            fg,
+            bg,
+            bg_dark,
+            bg_lighter,
+            bg_highlight,
+            selection,
+            black,
 
-            merging_conflict_bg: Self::parse_style(&theme.merging_conflict_bg, None)?,
-            merging_conflict_fg: Self::parse_style(&theme.merging_conflict_fg, None)?,
-            merging_unresolved_bg: Self::parse_style(&theme.merging_unresolved_bg, None)?,
-            merging_unresolved_fg: Self::parse_style(&theme.merging_unresolved_fg, None)?,
-            merging_resolved_bg: Self::parse_style(&theme.merging_resolved_bg, None)?,
-            merging_resolved_fg: Self::parse_style(&theme.merging_resolved_fg, None)?,
+            // UI styles
+            active_border: Style::default().fg(active_border_color).add_modifier(Modifier::BOLD),
+            inactive_border: Style::default().fg(inactive_border_color),
+            selected: Style::default().fg(selected_fg).bg(selected_bg).add_modifier(Modifier::BOLD),
+            normal: Style::default().fg(fg),
+            disabled: Style::default().fg(gray),
+            search_highlight: Style::default().fg(search_match_fg).bg(search_match_bg).add_modifier(Modifier::BOLD),
+            info: Style::default().fg(cyan),
+            success: Style::default().fg(green),
+            warning: Style::default().fg(yellow),
+            error: Style::default().fg(red),
+            muted: Style::default().fg(gray),
+            global_search: Style::default().fg(yellow).add_modifier(Modifier::BOLD),
+            local_search: Style::default().fg(green).add_modifier(Modifier::BOLD),
 
-            cherry_picked_commit_bg: Self::parse_style(&theme.cherry_picked_commit_bg, None)?,
-            cherry_picked_commit_fg: Self::parse_style(&theme.cherry_picked_commit_fg, None)?,
+            // Icon colors
+            icon_directory: Self::parse_color(&icons.directory)?,
+            icon_rust: Self::parse_color(&icons.rust)?,
+            icon_javascript: Self::parse_color(&icons.javascript)?,
+            icon_typescript: Self::parse_color(&icons.typescript)?,
+            icon_python: Self::parse_color(&icons.python)?,
+            icon_go: Self::parse_color(&icons.go)?,
+            icon_java: Self::parse_color(&icons.java)?,
+            icon_c: Self::parse_color(&icons.c)?,
+            icon_cpp: Self::parse_color(&icons.cpp)?,
+            icon_ruby: Self::parse_color(&icons.ruby)?,
+            icon_php: Self::parse_color(&icons.php)?,
+            icon_swift: Self::parse_color(&icons.swift)?,
+            icon_kotlin: Self::parse_color(&icons.kotlin)?,
+            icon_lua: Self::parse_color(&icons.lua)?,
+            icon_shell: Self::parse_color(&icons.shell)?,
+            icon_html: Self::parse_color(&icons.html)?,
+            icon_css: Self::parse_color(&icons.css)?,
+            icon_vue: Self::parse_color(&icons.vue)?,
+            icon_react: Self::parse_color(&icons.react)?,
+            icon_svelte: Self::parse_color(&icons.svelte)?,
+            icon_json: Self::parse_color(&icons.json)?,
+            icon_yaml: Self::parse_color(&icons.yaml)?,
+            icon_toml: Self::parse_color(&icons.toml)?,
+            icon_xml: Self::parse_color(&icons.xml)?,
+            icon_markdown: Self::parse_color(&icons.markdown)?,
+            icon_config: Self::parse_color(&icons.config)?,
+            icon_image: Self::parse_color(&icons.image)?,
+            icon_video: Self::parse_color(&icons.video)?,
+            icon_audio: Self::parse_color(&icons.audio)?,
+            icon_pdf: Self::parse_color(&icons.pdf)?,
+            icon_archive: Self::parse_color(&icons.archive)?,
+            icon_git: Self::parse_color(&icons.git)?,
+            icon_key: Self::parse_color(&icons.key)?,
+            icon_lock: Self::parse_color(&icons.lock)?,
+            icon_database: Self::parse_color(&icons.database)?,
+            icon_docker: Self::parse_color(&icons.docker)?,
+            icon_license: Self::parse_color(&icons.license)?,
+            icon_readme: Self::parse_color(&icons.readme)?,
+            icon_binary: Self::parse_color(&icons.binary)?,
+            icon_font: Self::parse_color(&icons.font)?,
+            icon_default: Self::parse_color(&icons.default)?,
 
-            alert_header_bg: Self::parse_style(&theme.alert_header_bg, None)?,
-            alert_header_text: Self::parse_style(&theme.alert_header_text, None)?,
+            // Markdown colors
+            md_header_1: Self::parse_color(&md.header_1)?,
+            md_header_2: Self::parse_color(&md.header_2)?,
+            md_header_3: Self::parse_color(&md.header_3)?,
+            md_header_4: Self::parse_color(&md.header_4)?,
+            md_bold: Self::parse_color(&md.bold)?,
+            md_italic: Self::parse_color(&md.italic)?,
+            md_code: Self::parse_color(&md.code)?,
+            md_code_bg: Self::parse_color(&md.code_bg)?,
+            md_link: Self::parse_color(&md.link)?,
+            md_link_url: Self::parse_color(&md.link_url)?,
+            md_blockquote: Self::parse_color(&md.blockquote)?,
+            md_list_marker: Self::parse_color(&md.list_marker)?,
+            md_table_border: Self::parse_color(&md.table_border)?,
+            md_horizontal_rule: Self::parse_color(&md.horizontal_rule)?,
 
-            // Derived styles
-            normal: default_fg.clone(),
-            selected: selected_line_bg.clone(),
-            search_active: searching_active_box.clone(),
-            search_inactive: inactive_border.clone(),
-            success: Self::parse_style("#98C379", None)?, // Green
-            error: Self::parse_style("#E06C75", None)?,   // Red
-            warning: Self::parse_style("#E5C07B", None)?, // Yellow
-            info: options_text.clone(),
-            directory: Self::parse_style("#61AFEF", None)?, // Blue
-            file: default_fg.clone(),
-            highlight: Self::parse_style("#E5C07B", Some(&["bold"]))?, // Yellow + Bold
-            disabled: inactive_border.clone(),
-            loading: Self::parse_style("#E5C07B", None)?, // Yellow
-            global_search: Self::parse_style("#C678DD", Some(&["bold"]))?, // Purple + Bold
-            local_search: Self::parse_style("#56B6C2", Some(&["bold"]))?, // Cyan + Bold
-            search_highlight: Style::default()
-                .fg(Color::Black)
-                .bg(Self::parse_color("#E5C07B")?) // Black text on yellow background
-                .add_modifier(Modifier::BOLD),
-
-            // Modern UI muted colors
-            muted_text: Self::parse_style("#5C6370", None)?,    // Gray for metadata
-            separator: Self::parse_style("#3E4451", None)?,     // Subtle dividers
-            panel_bg: Style::default().bg(Self::parse_color("#21252B")?), // Dark panel bg
+            // Status bar colors
+            statusbar_bg: Self::parse_color(&sb.background)?,
+            statusbar_fg: Self::parse_color(&sb.foreground)?,
+            statusbar_mode_normal: Self::parse_color(&sb.mode_normal)?,
+            statusbar_mode_insert: Self::parse_color(&sb.mode_insert)?,
+            statusbar_mode_visual: Self::parse_color(&sb.mode_visual)?,
+            statusbar_mode_command: Self::parse_color(&sb.mode_command)?,
         })
     }
 
-    /// Parse a ThemeColor (with potential modifiers) into a Style
-    fn parse_themed_color(theme_color: &ThemeColor) -> AppResult<Style> {
-        let modifiers = theme_color
-            .modifiers
-            .as_ref()
-            .map(|m| m.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        Self::parse_style(&theme_color.color, Some(&modifiers))
-    }
-
-    /// Parse a color string and optional modifiers into a Style
-    fn parse_style(color_str: &str, modifiers: Option<&[&str]>) -> AppResult<Style> {
-        let color = Self::parse_color(color_str)?;
-        let mut style = Style::default().fg(color);
-
-        if let Some(mods) = modifiers {
-            for modifier in mods {
-                match *modifier {
-                    "bold" => style = style.add_modifier(Modifier::BOLD),
-                    "italic" => style = style.add_modifier(Modifier::ITALIC),
-                    "underlined" => style = style.add_modifier(Modifier::UNDERLINED),
-                    "dim" => style = style.add_modifier(Modifier::DIM),
-                    "crossed_out" => style = style.add_modifier(Modifier::CROSSED_OUT),
-                    _ => {} // Ignore unknown modifiers
-                }
-            }
-        }
-
-        Ok(style)
-    }
-
     /// Parse a hex color string into a Color
-    fn parse_color(color_str: &str) -> AppResult<Color> {
+    pub fn parse_color(color_str: &str) -> AppResult<Color> {
         let color_str = color_str.trim_start_matches('#');
 
         if color_str.len() != 6 {

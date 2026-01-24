@@ -9,6 +9,7 @@ use std::path::Path;
 use ratatui::style::Color;
 
 use crate::config::settings::NerdFontSetting;
+use crate::config::theme::ThemeColors;
 
 /// Colored icon result - contains the icon string and its color
 #[derive(Debug, Clone, Copy)]
@@ -34,80 +35,6 @@ impl IconPair {
     const fn new(nerd: &'static str, emoji: &'static str) -> Self {
         Self { nerd, emoji }
     }
-}
-
-/// Colors for different file types (yazi-inspired)
-pub mod colors {
-    use ratatui::style::Color;
-
-    // Directories - Blue
-    pub const DIRECTORY: Color = Color::Rgb(97, 175, 239);     // #61AFEF - bright blue
-
-    // Programming languages
-    pub const RUST: Color = Color::Rgb(222, 165, 132);         // #DEA584 - rust orange
-    pub const JAVASCRIPT: Color = Color::Rgb(241, 224, 90);    // #F1E05A - JS yellow
-    pub const TYPESCRIPT: Color = Color::Rgb(49, 120, 198);    // #3178C6 - TS blue
-    pub const PYTHON: Color = Color::Rgb(53, 114, 165);        // #3572A5 - Python blue
-    pub const GO: Color = Color::Rgb(0, 173, 216);             // #00ADD8 - Go cyan
-    pub const JAVA: Color = Color::Rgb(176, 114, 25);          // #B07219 - Java orange
-    pub const C: Color = Color::Rgb(85, 85, 85);               // #555555 - C gray
-    pub const CPP: Color = Color::Rgb(243, 75, 125);           // #F34B7D - C++ pink
-    pub const RUBY: Color = Color::Rgb(112, 21, 22);           // #701516 - Ruby red
-    pub const PHP: Color = Color::Rgb(79, 93, 149);            // #4F5D95 - PHP purple
-    pub const SWIFT: Color = Color::Rgb(240, 81, 56);          // #F05138 - Swift orange
-    pub const KOTLIN: Color = Color::Rgb(169, 123, 255);       // #A97BFF - Kotlin purple
-    pub const LUA: Color = Color::Rgb(0, 0, 128);              // #000080 - Lua blue
-    pub const SHELL: Color = Color::Rgb(137, 224, 81);         // #89E051 - Shell green
-
-    // Web
-    pub const HTML: Color = Color::Rgb(227, 76, 38);           // #E34C26 - HTML orange
-    pub const CSS: Color = Color::Rgb(86, 61, 124);            // #563D7C - CSS purple
-    pub const VUE: Color = Color::Rgb(65, 184, 131);           // #41B883 - Vue green
-    pub const REACT: Color = Color::Rgb(97, 218, 251);         // #61DAFB - React cyan
-    pub const SVELTE: Color = Color::Rgb(255, 62, 0);          // #FF3E00 - Svelte orange
-
-    // Data/Config
-    pub const JSON: Color = Color::Rgb(203, 203, 65);          // #CBCB41 - JSON yellow
-    pub const YAML: Color = Color::Rgb(203, 23, 30);           // #CB171E - YAML red
-    pub const TOML: Color = Color::Rgb(156, 66, 33);           // #9C4221 - TOML brown
-    pub const XML: Color = Color::Rgb(0, 96, 172);             // #0060AC - XML blue
-    pub const MARKDOWN: Color = Color::Rgb(8, 51, 68);         // #083344 - Markdown teal
-    pub const CONFIG: Color = Color::Rgb(109, 117, 126);       // #6D757E - Config gray
-
-    // Media
-    pub const IMAGE: Color = Color::Rgb(168, 100, 253);        // #A864FD - Image purple
-    pub const VIDEO: Color = Color::Rgb(253, 100, 100);        // #FD6464 - Video red
-    pub const AUDIO: Color = Color::Rgb(253, 183, 100);        // #FDB764 - Audio orange
-    pub const PDF: Color = Color::Rgb(236, 47, 41);            // #EC2F29 - PDF red
-
-    // Archives
-    pub const ARCHIVE: Color = Color::Rgb(175, 180, 43);       // #AFB42B - Archive olive
-
-    // Git
-    pub const GIT: Color = Color::Rgb(241, 80, 47);            // #F1502F - Git orange
-
-    // Security
-    pub const KEY: Color = Color::Rgb(255, 213, 79);           // #FFD54F - Key yellow
-    pub const LOCK: Color = Color::Rgb(255, 193, 7);           // #FFC107 - Lock amber
-
-    // Database
-    pub const DATABASE: Color = Color::Rgb(0, 188, 212);       // #00BCD4 - Database cyan
-
-    // Docker
-    pub const DOCKER: Color = Color::Rgb(13, 183, 237);        // #0DB7ED - Docker blue
-
-    // License/Readme
-    pub const LICENSE: Color = Color::Rgb(214, 157, 133);      // #D69D85 - License tan
-    pub const README: Color = Color::Rgb(255, 200, 100);       // #FFC864 - Readme gold
-
-    // Binary
-    pub const BINARY: Color = Color::Rgb(144, 164, 174);       // #90A4AE - Binary gray
-
-    // Font
-    pub const FONT: Color = Color::Rgb(244, 67, 54);           // #F44336 - Font red
-
-    // Default file
-    pub const DEFAULT: Color = Color::Rgb(171, 178, 191);      // #ABB2BF - Default gray
 }
 
 /// Common icons used throughout the UI
@@ -255,13 +182,13 @@ impl IconProvider {
 
     /// Get icon for a file based on its path (returns just the icon string)
     pub fn get_for_path(&self, path: &Path, is_directory: bool) -> &'static str {
-        self.get_colored_for_path(path, is_directory).icon
+        self.get_icon_pair_for_path(path, is_directory)
     }
 
-    /// Get colored icon for a file based on its path
-    pub fn get_colored_for_path(&self, path: &Path, is_directory: bool) -> ColoredIcon {
+    /// Get the icon pair for a path (without color - for backwards compatibility)
+    fn get_icon_pair_for_path(&self, path: &Path, is_directory: bool) -> &'static str {
         if is_directory {
-            return ColoredIcon::new(self.get(icons::DIRECTORY), colors::DIRECTORY);
+            return self.get(icons::DIRECTORY);
         }
 
         // Get extension
@@ -278,135 +205,163 @@ impl IconProvider {
 
         // Check for special filenames first
         if let Some(ref name) = filename {
-            let result = match name.as_str() {
-                "dockerfile" | "dockerfile.dev" | "dockerfile.prod" => {
-                    Some((icons::DOCKERFILE, colors::DOCKER))
-                }
-                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => {
-                    Some((icons::DOCKER, colors::DOCKER))
-                }
-                "makefile" | "gnumakefile" => Some((icons::MAKEFILE, colors::CONFIG)),
-                "cargo.toml" => Some((icons::RUST, colors::RUST)),
-                "cargo.lock" => Some((icons::LOCK, colors::LOCK)),
-                "package.json" | "package-lock.json" => Some((icons::JAVASCRIPT, colors::JAVASCRIPT)),
-                "tsconfig.json" => Some((icons::TYPESCRIPT, colors::TYPESCRIPT)),
-                "readme" | "readme.md" | "readme.txt" | "readme.rst" => {
-                    Some((icons::README, colors::README))
-                }
-                "license" | "license.md" | "license.txt" | "copying" => {
-                    Some((icons::LICENSE, colors::LICENSE))
-                }
-                ".gitignore" | ".gitattributes" | ".gitmodules" => Some((icons::GITIGNORE, colors::GIT)),
-                ".env" | ".env.local" | ".env.development" | ".env.production" => {
-                    Some((icons::CONFIG, colors::CONFIG))
-                }
-                "requirements.txt" | "pyproject.toml" | "setup.py" => {
-                    Some((icons::PYTHON, colors::PYTHON))
-                }
-                "gemfile" | "gemfile.lock" => Some((icons::RUBY, colors::RUBY)),
+            let icon = match name.as_str() {
+                "dockerfile" | "dockerfile.dev" | "dockerfile.prod" => Some(icons::DOCKERFILE),
+                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => Some(icons::DOCKER),
+                "makefile" | "gnumakefile" => Some(icons::MAKEFILE),
+                "cargo.toml" => Some(icons::RUST),
+                "cargo.lock" => Some(icons::LOCK),
+                "package.json" | "package-lock.json" => Some(icons::JAVASCRIPT),
+                "tsconfig.json" => Some(icons::TYPESCRIPT),
+                "readme" | "readme.md" | "readme.txt" | "readme.rst" => Some(icons::README),
+                "license" | "license.md" | "license.txt" | "copying" => Some(icons::LICENSE),
+                ".gitignore" | ".gitattributes" | ".gitmodules" => Some(icons::GITIGNORE),
+                ".env" | ".env.local" | ".env.development" | ".env.production" => Some(icons::CONFIG),
+                "requirements.txt" | "pyproject.toml" | "setup.py" => Some(icons::PYTHON),
+                "gemfile" | "gemfile.lock" => Some(icons::RUBY),
                 _ => None,
             };
 
-            if let Some((icon, color)) = result {
-                return ColoredIcon::new(self.get(icon), color);
+            if let Some(icon) = icon {
+                return self.get(icon);
             }
         }
 
         // Check by extension
-        let (icon, color) = match extension.as_deref() {
-            // Rust
-            Some("rs") => (icons::RUST, colors::RUST),
-
-            // JavaScript/TypeScript
-            Some("js" | "mjs" | "cjs") => (icons::JAVASCRIPT, colors::JAVASCRIPT),
-            Some("ts" | "mts" | "cts") => (icons::TYPESCRIPT, colors::TYPESCRIPT),
-            Some("jsx") => (icons::REACT, colors::REACT),
-            Some("tsx") => (icons::REACT, colors::REACT),
-
-            // Web
-            Some("html" | "htm") => (icons::HTML, colors::HTML),
-            Some("css") => (icons::CSS, colors::CSS),
-            Some("scss" | "sass") => (icons::SCSS, colors::CSS),
-            Some("vue") => (icons::VUE, colors::VUE),
-            Some("svelte") => (icons::SVELTE, colors::SVELTE),
-
-            // Python
-            Some("py" | "pyw" | "pyi") => (icons::PYTHON, colors::PYTHON),
-
-            // Go
-            Some("go") => (icons::GO, colors::GO),
-
-            // Java/Kotlin
-            Some("java") => (icons::JAVA, colors::JAVA),
-            Some("kt" | "kts") => (icons::KOTLIN, colors::KOTLIN),
-
-            // C/C++
-            Some("c" | "h") => (icons::C, colors::C),
-            Some("cpp" | "cc" | "cxx" | "hpp" | "hxx") => (icons::CPP, colors::CPP),
-
-            // Ruby
-            Some("rb" | "rake" | "gemspec") => (icons::RUBY, colors::RUBY),
-
-            // PHP
-            Some("php") => (icons::PHP, colors::PHP),
-
-            // Swift
-            Some("swift") => (icons::SWIFT, colors::SWIFT),
-
-            // Lua
-            Some("lua") => (icons::LUA, colors::LUA),
-
-            // Shell
-            Some("sh" | "bash" | "zsh" | "fish") => (icons::SHELL, colors::SHELL),
-
-            // Data/Config
-            Some("json" | "jsonc" | "json5") => (icons::JSON, colors::JSON),
-            Some("yaml" | "yml") => (icons::YAML, colors::YAML),
-            Some("toml") => (icons::TOML, colors::TOML),
-            Some("xml" | "plist") => (icons::XML, colors::XML),
-            Some("md" | "markdown" | "rst") => (icons::MARKDOWN, colors::MARKDOWN),
-            Some("ini" | "cfg" | "conf" | "config") => (icons::CONFIG, colors::CONFIG),
-
-            // Media
-            Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => {
-                (icons::IMAGE, colors::IMAGE)
-            }
-            Some("mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm") => {
-                (icons::VIDEO, colors::VIDEO)
-            }
-            Some("mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a") => (icons::AUDIO, colors::AUDIO),
-            Some("pdf") => (icons::PDF, colors::PDF),
-
-            // Archives
-            Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => {
-                (icons::ARCHIVE, colors::ARCHIVE)
-            }
-
-            // Git
-            Some("git") => (icons::GIT, colors::GIT),
-
-            // Security
-            Some("pem" | "crt" | "cer" | "key" | "pub") => (icons::KEY, colors::KEY),
-
-            // Database
-            Some("sql" | "sqlite" | "db") => (icons::DATABASE, colors::DATABASE),
-
-            // Fonts
-            Some("ttf" | "otf" | "woff" | "woff2") => (icons::FONT, colors::FONT),
-
-            // Binary/Executable
-            Some("exe" | "dll" | "so" | "dylib" | "bin" | "o" | "a") => {
-                (icons::BINARY, colors::BINARY)
-            }
-
-            // Lock files
-            Some("lock") => (icons::LOCK, colors::LOCK),
-
-            // Default
-            _ => (icons::FILE_DEFAULT, colors::DEFAULT),
+        let icon = match extension.as_deref() {
+            Some("rs") => icons::RUST,
+            Some("js" | "mjs" | "cjs") => icons::JAVASCRIPT,
+            Some("ts" | "mts" | "cts") => icons::TYPESCRIPT,
+            Some("jsx" | "tsx") => icons::REACT,
+            Some("html" | "htm") => icons::HTML,
+            Some("css") => icons::CSS,
+            Some("scss" | "sass") => icons::SCSS,
+            Some("vue") => icons::VUE,
+            Some("svelte") => icons::SVELTE,
+            Some("py" | "pyw" | "pyi") => icons::PYTHON,
+            Some("go") => icons::GO,
+            Some("java") => icons::JAVA,
+            Some("kt" | "kts") => icons::KOTLIN,
+            Some("c" | "h") => icons::C,
+            Some("cpp" | "cc" | "cxx" | "hpp" | "hxx") => icons::CPP,
+            Some("rb" | "rake" | "gemspec") => icons::RUBY,
+            Some("php") => icons::PHP,
+            Some("swift") => icons::SWIFT,
+            Some("lua") => icons::LUA,
+            Some("sh" | "bash" | "zsh" | "fish") => icons::SHELL,
+            Some("json" | "jsonc" | "json5") => icons::JSON,
+            Some("yaml" | "yml") => icons::YAML,
+            Some("toml") => icons::TOML,
+            Some("xml" | "plist") => icons::XML,
+            Some("md" | "markdown" | "rst") => icons::MARKDOWN,
+            Some("ini" | "cfg" | "conf" | "config") => icons::CONFIG,
+            Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => icons::IMAGE,
+            Some("mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm") => icons::VIDEO,
+            Some("mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a") => icons::AUDIO,
+            Some("pdf") => icons::PDF,
+            Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => icons::ARCHIVE,
+            Some("git") => icons::GIT,
+            Some("pem" | "crt" | "cer" | "key" | "pub") => icons::KEY,
+            Some("sql" | "sqlite" | "db") => icons::DATABASE,
+            Some("ttf" | "otf" | "woff" | "woff2") => icons::FONT,
+            Some("exe" | "dll" | "so" | "dylib" | "bin" | "o" | "a") => icons::BINARY,
+            Some("lock") => icons::LOCK,
+            _ => icons::FILE_DEFAULT,
         };
 
-        ColoredIcon::new(self.get(icon), color)
+        self.get(icon)
+    }
+
+    /// Get colored icon for a file based on its path, using theme colors
+    pub fn get_colored_for_path(&self, path: &Path, is_directory: bool, theme: &ThemeColors) -> ColoredIcon {
+        let icon = self.get_icon_pair_for_path(path, is_directory);
+        let color = Self::get_color_for_path(path, is_directory, theme);
+        ColoredIcon::new(icon, color)
+    }
+
+    /// Get the color for a file path based on theme
+    pub fn get_color_for_path(path: &Path, is_directory: bool, theme: &ThemeColors) -> Color {
+        if is_directory {
+            return theme.icon_directory;
+        }
+
+        // Get extension
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase());
+
+        // Get filename for special files
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.to_lowercase());
+
+        // Check for special filenames first
+        if let Some(ref name) = filename {
+            let color = match name.as_str() {
+                "dockerfile" | "dockerfile.dev" | "dockerfile.prod" => Some(theme.icon_docker),
+                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => Some(theme.icon_docker),
+                "makefile" | "gnumakefile" => Some(theme.icon_config),
+                "cargo.toml" => Some(theme.icon_rust),
+                "cargo.lock" => Some(theme.icon_lock),
+                "package.json" | "package-lock.json" => Some(theme.icon_javascript),
+                "tsconfig.json" => Some(theme.icon_typescript),
+                "readme" | "readme.md" | "readme.txt" | "readme.rst" => Some(theme.icon_readme),
+                "license" | "license.md" | "license.txt" | "copying" => Some(theme.icon_license),
+                ".gitignore" | ".gitattributes" | ".gitmodules" => Some(theme.icon_git),
+                ".env" | ".env.local" | ".env.development" | ".env.production" => Some(theme.icon_config),
+                "requirements.txt" | "pyproject.toml" | "setup.py" => Some(theme.icon_python),
+                "gemfile" | "gemfile.lock" => Some(theme.icon_ruby),
+                _ => None,
+            };
+
+            if let Some(color) = color {
+                return color;
+            }
+        }
+
+        // Check by extension
+        match extension.as_deref() {
+            Some("rs") => theme.icon_rust,
+            Some("js" | "mjs" | "cjs") => theme.icon_javascript,
+            Some("ts" | "mts" | "cts") => theme.icon_typescript,
+            Some("jsx" | "tsx") => theme.icon_react,
+            Some("html" | "htm") => theme.icon_html,
+            Some("css") => theme.icon_css,
+            Some("scss" | "sass") => theme.icon_css,
+            Some("vue") => theme.icon_vue,
+            Some("svelte") => theme.icon_svelte,
+            Some("py" | "pyw" | "pyi") => theme.icon_python,
+            Some("go") => theme.icon_go,
+            Some("java") => theme.icon_java,
+            Some("kt" | "kts") => theme.icon_kotlin,
+            Some("c" | "h") => theme.icon_c,
+            Some("cpp" | "cc" | "cxx" | "hpp" | "hxx") => theme.icon_cpp,
+            Some("rb" | "rake" | "gemspec") => theme.icon_ruby,
+            Some("php") => theme.icon_php,
+            Some("swift") => theme.icon_swift,
+            Some("lua") => theme.icon_lua,
+            Some("sh" | "bash" | "zsh" | "fish") => theme.icon_shell,
+            Some("json" | "jsonc" | "json5") => theme.icon_json,
+            Some("yaml" | "yml") => theme.icon_yaml,
+            Some("toml") => theme.icon_toml,
+            Some("xml" | "plist") => theme.icon_xml,
+            Some("md" | "markdown" | "rst") => theme.icon_markdown,
+            Some("ini" | "cfg" | "conf" | "config") => theme.icon_config,
+            Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => theme.icon_image,
+            Some("mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm") => theme.icon_video,
+            Some("mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a") => theme.icon_audio,
+            Some("pdf") => theme.icon_pdf,
+            Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => theme.icon_archive,
+            Some("git") => theme.icon_git,
+            Some("pem" | "crt" | "cer" | "key" | "pub") => theme.icon_key,
+            Some("sql" | "sqlite" | "db") => theme.icon_database,
+            Some("ttf" | "otf" | "woff" | "woff2") => theme.icon_font,
+            Some("exe" | "dll" | "so" | "dylib" | "bin" | "o" | "a") => theme.icon_binary,
+            Some("lock") => theme.icon_lock,
+            _ => theme.icon_default,
+        }
     }
 
     /// Check if using nerd fonts

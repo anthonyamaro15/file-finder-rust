@@ -12,6 +12,9 @@ use ratatui::{
     style::Color,
     widgets::Paragraph,
 };
+
+// Use centralized theme colors for markdown
+use crate::ui::theme::markdown as markdown_colors;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -329,26 +332,6 @@ pub fn load_image_async(
     };
 
     let _ = sender.send(ImageLoadResult { path, result });
-}
-
-/// Markdown styling colors (One Dark theme inspired)
-mod markdown_colors {
-    use ratatui::style::Color;
-
-    pub const HEADER_1: Color = Color::Rgb(224, 108, 117);   // Red - h1
-    pub const HEADER_2: Color = Color::Rgb(229, 192, 123);   // Yellow - h2
-    pub const HEADER_3: Color = Color::Rgb(152, 195, 121);   // Green - h3
-    pub const HEADER_4: Color = Color::Rgb(97, 175, 239);    // Blue - h4
-    pub const BOLD: Color = Color::Rgb(229, 192, 123);       // Yellow for bold
-    pub const ITALIC: Color = Color::Rgb(198, 120, 221);     // Purple for italic
-    pub const CODE: Color = Color::Rgb(152, 195, 121);       // Green for code
-    pub const CODE_BG: Color = Color::Rgb(40, 44, 52);       // Dark background for code blocks
-    pub const LINK: Color = Color::Rgb(97, 175, 239);        // Blue for links
-    pub const LINK_URL: Color = Color::Rgb(92, 99, 112);     // Muted for URL
-    pub const BLOCKQUOTE: Color = Color::Rgb(92, 99, 112);   // Muted for blockquotes
-    pub const LIST_MARKER: Color = Color::Rgb(198, 120, 221); // Purple for list markers
-    pub const TABLE_BORDER: Color = Color::Rgb(92, 99, 112); // Muted for table borders
-    pub const HORIZONTAL_RULE: Color = Color::Rgb(62, 68, 81); // Dim for hr
 }
 
 /// Render markdown content to styled ratatui Lines
