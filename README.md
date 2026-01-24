@@ -220,6 +220,46 @@ Image preview uses terminal graphics protocols when available:
 | Foot      | Sixel    | Full support        |
 | Alacritty | -        | Halfblock fallback  |
 
+### Nerd Font Icons
+
+For the best visual experience, ff supports [Nerd Fonts](https://www.nerdfonts.com/) - patched fonts with file-type icons. Icons are colored based on file type (Rust=orange, JS=yellow, directories=blue, etc.).
+
+**Auto-detection**: ff automatically detects these terminals and enables nerd font icons:
+- Ghostty, iTerm2, Kitty, WezTerm, Alacritty, Hyper, VS Code, Tabby, Warp
+
+**Installation**:
+
+1. Install a Nerd Font:
+```bash
+# macOS (Homebrew)
+brew install --cask font-jetbrains-mono-nerd-font
+
+# Or other popular options:
+brew install --cask font-fira-code-nerd-font
+brew install --cask font-hack-nerd-font
+```
+
+Or download from [nerdfonts.com](https://www.nerdfonts.com/)
+
+2. Configure your terminal to use it:
+
+| Terminal  | Configuration |
+| --------- | ------------- |
+| Ghostty   | `font-family = JetBrainsMono Nerd Font` in `~/.config/ghostty/config` |
+| iTerm2    | Preferences → Profiles → Text → Font |
+| Alacritty | `font.normal.family` in `~/.config/alacritty/alacritty.toml` |
+| Kitty     | `font_family` in `~/.config/kitty/kitty.conf` |
+| WezTerm   | `font` in `~/.wezterm.lua` |
+
+3. Restart your terminal
+
+**Manual override** (in `~/.config/ff/settings.toml`):
+```toml
+use_nerd_fonts = "always"  # Force nerd fonts
+use_nerd_fonts = "never"   # Force emoji fallback (📁, 📄)
+use_nerd_fonts = "auto"    # Auto-detect (default)
+```
+
 ---
 
 ## ⚙️ Configuration

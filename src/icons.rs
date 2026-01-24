@@ -138,6 +138,7 @@ impl IconProvider {
                 "vscode",
                 "Tabby",
                 "Warp",
+                "ghostty",
             ];
             if known_terminals.iter().any(|t| term_program.contains(t)) {
                 return true;
