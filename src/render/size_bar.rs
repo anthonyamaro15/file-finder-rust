@@ -13,7 +13,8 @@ pub fn create_size_text(file_size: u64) -> Span<'static> {
     }
 
     let size_str = format_file_size(file_size);
-    Span::styled(size_str, Style::default().fg(Color::DarkGray))
+    // Use a very muted gray for file sizes (yazi-style)
+    Span::styled(size_str, Style::default().fg(Color::Rgb(92, 99, 112)))
 }
 
 /// Get file size for a path (returns 0 for directories or errors)
@@ -56,6 +57,7 @@ mod tests {
     #[test]
     fn test_create_size_text_color() {
         let span = create_size_text(1024);
-        assert!(matches!(span.style.fg, Some(Color::DarkGray)));
+        // Muted gray color for file sizes
+        assert!(matches!(span.style.fg, Some(Color::Rgb(92, 99, 112))));
     }
 }

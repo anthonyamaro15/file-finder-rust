@@ -6,6 +6,7 @@ pub mod directory_store;
 pub mod errors;
 pub mod file_reader_content;
 pub mod highlight;
+pub mod icons;
 pub mod operations;
 pub mod pane;
 pub mod perf_test;

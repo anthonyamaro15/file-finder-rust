@@ -252,6 +252,156 @@ impl StatusBar {
         frame.render_widget(system_widget, chunks[5]);
     }
 
+    /// Render minimal status bar - single clean line with essential info
+    /// Format:  NOR  ~/path  position  size  permissions
+    pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App) {
+        let (mode_text, mode_color) = Self::get_mode_indicator_short(&app.input_mode);
+
+        // Calculate position indicator
+        let position = Self::get_position_indicator(app);
+
+        // Get selected file size and permissions
+        let (size_text, perms_text) = self.get_selected_file_info(app);
+
+        // Format path with home directory abbreviation
+        let path = Self::abbreviate_home_path(&self.current_directory);
+
+        // Build the status line with spans
+        let spans = vec![
+            // Mode indicator with background
+            Span::styled(
+                format!(" {} ", mode_text),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(mode_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            // Path
+            Span::styled(path, Style::default().fg(Color::White)),
+            Span::raw("  "),
+            // Position
+            Span::styled(position, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+            Span::raw("  "),
+            // Size
+            Span::styled(size_text, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+            Span::raw("  "),
+            // Permissions
+            Span::styled(perms_text, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+        ];
+
+        let paragraph = Paragraph::new(Line::from(spans));
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Get short mode indicator for minimal status bar
+    fn get_mode_indicator_short(input_mode: &InputMode) -> (&'static str, Color) {
+        match input_mode {
+            InputMode::Normal => ("NOR", Color::Green),
+            InputMode::Editing => ("SRC", Color::Blue),
+            InputMode::WatchDelete => ("DEL", Color::Red),
+            InputMode::WatchCreate => ("NEW", Color::Yellow),
+            InputMode::WatchRename => ("REN", Color::Cyan),
+            InputMode::WatchSort => ("SRT", Color::Magenta),
+            InputMode::WatchKeyBinding => ("HLP", Color::White),
+            InputMode::CacheLoading => ("...", Color::Yellow),
+        }
+    }
+
+    /// Get position indicator: "Top", "Bot", or "N/M"
+    fn get_position_indicator(app: &App) -> String {
+        let total = if app.global_search_mode && !app.search_results.is_empty() {
+            app.search_results.len()
+        } else {
+            app.files.len()
+        };
+
+        if total == 0 {
+            return "Empty".to_string();
+        }
+
+        let current = app.curr_index.unwrap_or(0) + 1; // 1-indexed for display
+
+        if current == 1 {
+            "Top".to_string()
+        } else if current == total {
+            "Bot".to_string()
+        } else {
+            format!("{}/{}", current, total)
+        }
+    }
+
+    /// Abbreviate home directory path with ~
+    fn abbreviate_home_path(path: &str) -> String {
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            if path.starts_with(home_str.as_ref()) {
+                return path.replacen(home_str.as_ref(), "~", 1);
+            }
+        }
+        path.to_string()
+    }
+
+    /// Get size and permissions for selected file
+    fn get_selected_file_info(&self, app: &App) -> (String, String) {
+        if let Some(index) = app.curr_index {
+            let file_path = if app.global_search_mode && !app.search_results.is_empty() {
+                app.search_results.get(index).map(|r| r.file_path.as_str())
+            } else {
+                app.files.get(index).map(|s| s.as_str())
+            };
+
+            if let Some(path) = file_path {
+                if let Ok(metadata) = fs::metadata(path) {
+                    let size = Self::format_file_size(metadata.len());
+                    let perms = Self::format_permissions(&metadata);
+                    return (size, perms);
+                }
+            }
+        }
+        ("--".to_string(), "----------".to_string())
+    }
+
+    /// Format Unix-style permissions string
+    #[cfg(unix)]
+    fn format_permissions(metadata: &fs::Metadata) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+
+        let file_type = if metadata.is_dir() {
+            'd'
+        } else if metadata.file_type().is_symlink() {
+            'l'
+        } else {
+            '-'
+        };
+
+        let user = Self::format_permission_triplet((mode >> 6) & 0o7);
+        let group = Self::format_permission_triplet((mode >> 3) & 0o7);
+        let other = Self::format_permission_triplet(mode & 0o7);
+
+        format!("{}{}{}{}", file_type, user, group, other)
+    }
+
+    #[cfg(not(unix))]
+    fn format_permissions(metadata: &fs::Metadata) -> String {
+        if metadata.is_dir() {
+            "d---------".to_string()
+        } else if metadata.permissions().readonly() {
+            "-r--r--r--".to_string()
+        } else {
+            "-rw-rw-rw-".to_string()
+        }
+    }
+
+    #[cfg(unix)]
+    fn format_permission_triplet(mode: u32) -> String {
+        let r = if mode & 0o4 != 0 { 'r' } else { '-' };
+        let w = if mode & 0o2 != 0 { 'w' } else { '-' };
+        let x = if mode & 0o1 != 0 { 'x' } else { '-' };
+        format!("{}{}{}", r, w, x)
+    }
+
     pub fn render_detailed(&self, frame: &mut Frame, area: Rect, app: &App) {
         // More detailed status bar for when there's more vertical space
         let chunks = Layout::default()

@@ -1,3 +1,4 @@
+use crate::config::settings::LayoutStyle;
 use crate::config::Settings;
 use clap::{Parser, ValueEnum};
 use log::{debug, warn};
@@ -33,6 +34,10 @@ pub struct CliArgs {
     #[arg(long)]
     pub rebuild_cache: bool,
 
+    /// UI layout style (classic, modern, miller)
+    #[arg(long, short = 'l', value_enum)]
+    pub layout: Option<LayoutArg>,
+
     /// Optional positional path argument (if --start also provided, --start takes precedence)
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
@@ -56,6 +61,27 @@ impl std::fmt::Display for Editor {
     }
 }
 
+/// Layout style for CLI
+#[derive(Debug, Clone, ValueEnum)]
+pub enum LayoutArg {
+    /// Classic UI with heavy borders and emoji icons
+    Classic,
+    /// Modern UI with minimal borders and nerd font icons (default)
+    Modern,
+    /// Miller columns three-pane layout
+    Miller,
+}
+
+impl From<LayoutArg> for LayoutStyle {
+    fn from(arg: LayoutArg) -> Self {
+        match arg {
+            LayoutArg::Classic => LayoutStyle::Classic,
+            LayoutArg::Modern => LayoutStyle::Modern,
+            LayoutArg::Miller => LayoutStyle::Miller,
+        }
+    }
+}
+
 /// Effective configuration after applying precedence rules
 /// Precedence: CLI > ENV (future) > settings.toml > built-in defaults
 #[derive(Debug, Clone)]
@@ -63,6 +89,7 @@ pub struct EffectiveConfig {
     pub start_path: PathBuf,
     pub theme: Option<String>,
     pub editor: Option<Editor>,
+    pub layout_style: LayoutStyle,
 }
 
 impl CliArgs {
@@ -155,16 +182,25 @@ pub fn compute_effective_config(
     // Determine effective editor (CLI > settings > none)
     let editor = cli_args.editor.clone();
 
+    // Determine effective layout style (CLI > settings > default)
+    let layout_style = cli_args
+        .layout
+        .clone()
+        .map(LayoutStyle::from)
+        .unwrap_or_else(|| settings.layout_style.clone());
+
     debug!(
-        "Effective config - Start: {}, Theme: {:?}, Editor: {:?}",
+        "Effective config - Start: {}, Theme: {:?}, Editor: {:?}, Layout: {:?}",
         start_path.display(),
         theme,
-        editor
+        editor,
+        layout_style
     );
 
     Ok(EffectiveConfig {
         start_path,
         theme,
         editor,
+        layout_style,
     })
 }
