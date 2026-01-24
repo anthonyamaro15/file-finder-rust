@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::mpsc;
 use std::time::Instant;
 
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -7,11 +8,35 @@ use log::debug;
 
 use crate::directory_store::DirectoryStore;
 use crate::errors::{AppError, AppResult};
+use crate::file_reader_content::FileType;
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 use crate::config::{Settings, Theme, ThemeColors};
 
 extern crate copypasta;
+
+/// Message sent from async preview loading thread
+#[derive(Debug, Clone)]
+pub enum PreviewMessage {
+    /// Preview content loaded successfully
+    Loaded {
+        path: String,
+        content: String,
+        file_type: FileType,
+        /// Pre-highlighted content for source code files
+        highlighted_content: Option<String>,
+    },
+    /// Directory contents loaded
+    DirectoryListing {
+        path: String,
+        entries: Vec<String>,
+    },
+    /// Preview loading failed
+    Error {
+        path: String,
+        message: String,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IDE {
@@ -174,6 +199,24 @@ pub struct App {
 
     // Selection preservation for file operations
     pub preserved_selection_index: Option<usize>,
+
+    // Preview debounce tracking
+    pub preview_pending_path: Option<String>,
+    pub preview_pending_since: Option<Instant>,
+
+    // Async preview loading
+    pub preview_receiver: Option<mpsc::Receiver<PreviewMessage>>,
+    pub preview_loading: bool,
+    pub preview_loading_path: Option<String>,
+
+    // Async image loading (separate channel because DynamicImage has different traits)
+    pub image_receiver: Option<mpsc::Receiver<ImageLoadResult>>,
+}
+
+/// Result of async image loading
+pub struct ImageLoadResult {
+    pub path: String,
+    pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
 }
 
 impl App {
@@ -262,6 +305,18 @@ impl App {
 
             // Initialize selection preservation
             preserved_selection_index: None,
+
+            // Initialize preview debounce tracking
+            preview_pending_path: None,
+            preview_pending_since: None,
+
+            // Initialize async preview loading
+            preview_receiver: None,
+            preview_loading: false,
+            preview_loading_path: None,
+
+            // Initialize async image loading
+            image_receiver: None,
         }
     }
 
@@ -904,6 +959,32 @@ impl App {
         self.right_pane.refresh_files();
     }
 
+    /// Request a preview update with debouncing
+    /// Instead of loading immediately, stores the path and timestamp
+    pub fn request_preview(&mut self, path: String) {
+        self.preview_pending_path = Some(path);
+        self.preview_pending_since = Some(Instant::now());
+    }
+
+    /// Check if a pending preview is ready to load (debounce period elapsed)
+    /// Returns the path if ready, None otherwise
+    pub fn take_ready_preview(&mut self, debounce_ms: u64) -> Option<String> {
+        if let (Some(path), Some(since)) = (&self.preview_pending_path, self.preview_pending_since) {
+            if since.elapsed().as_millis() >= debounce_ms as u128 {
+                let path = path.clone();
+                self.preview_pending_path = None;
+                self.preview_pending_since = None;
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// Clear any pending preview request (e.g., when selection changes)
+    pub fn clear_pending_preview(&mut self) {
+        self.preview_pending_path = None;
+        self.preview_pending_since = None;
+    }
 }
 
 
