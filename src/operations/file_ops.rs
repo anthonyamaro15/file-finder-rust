@@ -3,9 +3,31 @@
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
+
+use log::warn;
+use walkdir::WalkDir;
 
 use crate::app::App;
 use crate::errors::{validation, FileOperationError, FileOperationResult};
+
+/// Progress message for delete operations.
+#[derive(Debug, Clone)]
+pub enum DeleteMessage {
+    /// Counting files before deletion
+    Counting { files_counted: usize },
+    /// Progress during deletion
+    Progress {
+        files_deleted: usize,
+        total_files: usize,
+        current_file: String,
+    },
+    /// Deletion completed
+    Completed { success: bool, message: String },
+    /// Error occurred
+    Error(String),
+}
 
 /// Delete a file at the specified path.
 pub fn delete_file(file_path: &str) -> FileOperationResult<()> {
@@ -72,6 +94,112 @@ pub fn handle_delete_based_on_type(file_path: &str) -> FileOperationResult<()> {
     } else {
         delete_file(file_path)
     }
+}
+
+/// Delete a file or directory asynchronously with progress updates.
+/// Returns a receiver for progress messages.
+pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
+    let (tx, rx) = mpsc::channel();
+    let path = file_path.to_string();
+
+    thread::spawn(move || {
+        let src = Path::new(&path);
+
+        // Check if path exists
+        if !src.exists() {
+            let _ = tx.send(DeleteMessage::Completed {
+                success: true,
+                message: "File already deleted".to_string(),
+            });
+            return;
+        }
+
+        if src.is_file() {
+            // Single file delete - quick operation
+            let file_name = src.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let _ = tx.send(DeleteMessage::Progress {
+                files_deleted: 0,
+                total_files: 1,
+                current_file: file_name.clone(),
+            });
+
+            match fs::remove_file(src) {
+                Ok(()) => {
+                    let _ = tx.send(DeleteMessage::Completed {
+                        success: true,
+                        message: format!("Deleted: {}", file_name),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(DeleteMessage::Error(format!(
+                        "Failed to delete '{}': {}",
+                        file_name, e
+                    )));
+                }
+            }
+        } else if src.is_dir() {
+            // Directory delete - collect files first, then delete in reverse order
+            // (files first, then directories from deepest to shallowest)
+
+            // Count files first
+            let mut file_count = 0;
+            let _ = tx.send(DeleteMessage::Counting { files_counted: 0 });
+
+            let entries: Vec<_> = WalkDir::new(src)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .collect();
+
+            file_count = entries.len();
+            let _ = tx.send(DeleteMessage::Counting { files_counted: file_count });
+
+            // Sort by depth (deepest first) so we delete children before parents
+            let mut paths: Vec<_> = entries.iter().map(|e| e.path().to_path_buf()).collect();
+            paths.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+
+            let mut deleted = 0;
+            const UPDATE_INTERVAL: usize = 100;
+
+            for entry_path in &paths {
+                let file_name = entry_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                let result = if entry_path.is_dir() {
+                    fs::remove_dir(entry_path)
+                } else {
+                    fs::remove_file(entry_path)
+                };
+
+                if let Err(e) = result {
+                    warn!("Failed to delete '{}': {}", entry_path.display(), e);
+                    // Continue deleting other files
+                }
+
+                deleted += 1;
+                if deleted % UPDATE_INTERVAL == 0 || deleted == file_count {
+                    let _ = tx.send(DeleteMessage::Progress {
+                        files_deleted: deleted,
+                        total_files: file_count,
+                        current_file: file_name,
+                    });
+                }
+            }
+
+            let _ = tx.send(DeleteMessage::Completed {
+                success: true,
+                message: format!("Deleted {} items", deleted),
+            });
+        }
+    });
+
+    rx
 }
 
 /// Create a new directory.
