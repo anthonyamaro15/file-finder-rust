@@ -301,6 +301,11 @@ impl FileOperationError {
         }
     }
 
+    /// Check if this is a "file not found" error
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::FileNotFound { .. })
+    }
+
     /// Get a user-friendly error message for UI display
     pub fn user_message(&self) -> String {
         match self {
@@ -507,7 +512,8 @@ pub mod validation {
                 }
 
                 // Try to check if directory is writable by attempting to create a temp file
-                let temp_path = parent.join(".ff_permission_test");
+                // Use process ID to avoid conflicts with user files
+                let temp_path = parent.join(format!(".ff_perm_test_{}", std::process::id()));
                 if let Err(_) = std::fs::File::create(&temp_path) {
                     return Err(FileOperationError::permission_denied(
                         parent,

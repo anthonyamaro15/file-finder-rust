@@ -1133,7 +1133,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(rename_input_block, popup_chunks[0]);
                 }
                 InputMode::WatchSort => {
-                    let sort_popup = create_sort_options_popup(&app.sort_type);
+                    let sort_popup = create_sort_options_popup(&app.sort_by, &app.sort_type);
                     f.render_widget(Clear, sort_options_chunks[0]);
                     f.render_widget(sort_popup, sort_options_chunks[0]);
                 }
@@ -2008,44 +2008,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     split_path.pop();
                                     let current_dir = split_path.join("/");
 
-                                    match handle_delete_based_on_type(selected) {
-                                        Ok(_) => {
-                                            // Refresh file list first
-                                            let file_path_list = get_file_path_data(
-                                                current_dir,
-                                                app.show_hidden_files,
-                                                app.sort_by.clone(),
-                                                &app.sort_type,
-                                            )?;
-                                            app.render_popup = false;
-                                            app.files = file_path_list.clone();
-                                            app.read_only_files = file_path_list.clone();
-                                            app.update_file_references();
-                                            status_bar.invalidate_cache();
+                                    // Handle TOCTOU: if file was deleted externally, treat as success
+                                    let delete_result = handle_delete_based_on_type(selected);
+                                    let is_success = match &delete_result {
+                                        Ok(_) => true,
+                                        Err(e) => e.is_not_found(), // File already gone = success
+                                    };
 
-                                            // Calculate selection AFTER refresh based on new list length
-                                            let new_len = app.files.len();
-                                            let next_selection_index = if new_len == 0 {
-                                                None
-                                            } else if selected_indx >= new_len {
-                                                // Deleted item was at or past new end, select last item
-                                                Some(new_len - 1)
-                                            } else {
-                                                // Select same index (item after deleted one moved up)
-                                                Some(selected_indx)
-                                            };
+                                    if is_success {
+                                        // Refresh file list first
+                                        let file_path_list = get_file_path_data(
+                                            current_dir,
+                                            app.show_hidden_files,
+                                            app.sort_by.clone(),
+                                            &app.sort_type,
+                                        )?;
+                                        app.render_popup = false;
+                                        app.files = file_path_list.clone();
+                                        app.read_only_files = file_path_list.clone();
+                                        app.update_file_references();
+                                        status_bar.invalidate_cache();
 
-                                            // Apply selection
-                                            state.select(next_selection_index);
-                                            app.input_mode = InputMode::Normal;
-                                        }
-                                        Err(e) => {
-                                            // Show error in status bar
-                                            status_bar.show_error(e.user_message(), None);
-                                            warn!("Delete operation failed: {}", e.user_message());
-                                            app.render_popup = false;
-                                            app.input_mode = InputMode::Normal;
-                                        }
+                                        // Calculate selection AFTER refresh based on new list length
+                                        let new_len = app.files.len();
+                                        let next_selection_index = if new_len == 0 {
+                                            None
+                                        } else if selected_indx >= new_len {
+                                            // Deleted item was at or past new end, select last item
+                                            Some(new_len - 1)
+                                        } else {
+                                            // Select same index (item after deleted one moved up)
+                                            Some(selected_indx)
+                                        };
+
+                                        // Apply selection
+                                        state.select(next_selection_index);
+                                        app.input_mode = InputMode::Normal;
+                                    } else if let Err(e) = delete_result {
+                                        // Show error in status bar
+                                        status_bar.show_error(e.user_message(), None);
+                                        warn!("Delete operation failed: {}", e.user_message());
+                                        app.render_popup = false;
+                                        app.input_mode = InputMode::Normal;
                                     }
                                 }
                             }
