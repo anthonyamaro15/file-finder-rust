@@ -341,16 +341,20 @@ fn update_preview_for_path(
 
 /// Apply a sort operation to the current file list.
 /// This consolidates the duplicated sort logic from the WatchSort handlers.
-fn apply_sort(app: &mut App, sort_by: SortBy, sort_type: &SortType) -> anyhow::Result<()> {
+/// Also persists the sort state to app for future refreshes.
+fn apply_sort(app: &mut App, sort_by: SortBy) -> anyhow::Result<()> {
     if app.files.is_empty() {
         return Ok(());
     }
 
+    // Save sort preference to app state
+    app.sort_by = sort_by.clone();
+
     // Get current directory path from first file in list
     let cur_path = get_curr_path(app.files[0].clone());
 
-    // Get sorted file list
-    let file_path_list = get_file_path_data(cur_path, app.show_hidden_files, sort_by, sort_type)?;
+    // Get sorted file list using app's persisted sort state
+    let file_path_list = get_file_path_data(cur_path, app.show_hidden_files, app.sort_by.clone(), &app.sort_type)?;
 
     // Update app state
     app.files = file_path_list.clone();
@@ -451,18 +455,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         effective_config.editor
     );
 
-    let mut sort_type = SortType::ASC;
     let mut file_reader_content = FileContent::new(ps, ts);
     // Apply syntax theme from settings
     file_reader_content.set_syntax_theme(&settings.syntax_theme);
     let mut image_renderer = ImageRenderer::new();
     // Setup terminal
 
+    // Initial file list uses default sort (will be stored in app.sort_by/sort_type)
     let file_strings = get_file_path_data(
         effective_config.start_path.to_string_lossy().to_string(),
         false,
         SortBy::Default,
-        &sort_type,
+        &SortType::ASC,
     )?;
     let mut app = App::new(file_strings.clone());
 
@@ -1125,7 +1129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(rename_input_block, popup_chunks[0]);
                 }
                 InputMode::WatchSort => {
-                    let sort_popup = create_sort_options_popup(&sort_type);
+                    let sort_popup = create_sort_options_popup(&app.sort_type);
                     f.render_widget(Clear, sort_options_chunks[0]);
                     f.render_widget(sort_popup, sort_options_chunks[0]);
                 }
@@ -1201,8 +1205,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Ok(file_path_list) = get_file_path_data(
                                 refresh_dir,
                                 app.show_hidden_files,
-                                SortBy::Default,
-                                &sort_type,
+                                app.sort_by.clone(),
+                                &app.sort_type,
                             ) {
                                 app.files = file_path_list.clone();
                                 app.read_only_files = file_path_list;
@@ -1247,8 +1251,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(file_path_list) = get_file_path_data(
                 refresh_dir,
                 app.show_hidden_files,
-                SortBy::Default,
-                &sort_type,
+                app.sort_by.clone(),
+                &app.sort_type,
             ) {
                 app.files = file_path_list.clone();
                 app.read_only_files = file_path_list;
@@ -1307,8 +1311,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     get_file_path_data(
                         settings.start_path.clone(),
                         false,
-                        SortBy::Default,
-                        &sort_type,
+                        app.sort_by.clone(),
+                        &app.sort_type,
                     )
                     .unwrap_or_else(|_| Vec::new())
                 };
@@ -1406,7 +1410,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let selected = &app.files[state.selected().unwrap()];
                                     let mut split_path = selected.split("/").collect::<Vec<&str>>();
 
-                                    let sort_type_copy = sort_type.clone();
                                     // TODO: refactor this to be more idiomatic
                                     if split_path.len() > 4 {
                                         split_path.pop();
@@ -1416,8 +1419,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let files_strings = get_inner_files_info(
                                             new_path.clone(),
                                             app.show_hidden_files,
-                                            SortBy::Default,
-                                            &sort_type_copy,
+                                            app.sort_by.clone(),
+                                            &app.sort_type,
                                         )
                                         .unwrap();
 
@@ -1440,12 +1443,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 } else {
-                                    let copy = sort_type.clone();
                                     let files_strings = get_inner_files_info(
                                         app.prev_dir.clone(),
                                         app.show_hidden_files,
-                                        SortBy::Default,
-                                        &copy,
+                                        app.sort_by.clone(),
+                                        &app.sort_type,
                                     )
                                     .unwrap();
 
@@ -1475,8 +1477,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             match get_inner_files_info(
                                                 selected.to_string(),
                                                 app.show_hidden_files,
-                                                SortBy::Default,
-                                                &sort_type,
+                                                app.sort_by.clone(),
+                                                &app.sort_type,
                                             ) {
                                                 Ok(files_strings) => {
                                                     if let Some(files_strs) = files_strings {
@@ -1585,8 +1587,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         get_inner_files_info(
                                                             app.current_directory.clone(),
                                                             app.show_hidden_files,
-                                                            SortBy::Default,
-                                                            &SortType::ASC,
+                                                            app.sort_by.clone(),
+                                                            &app.sort_type,
                                                         )
                                                     {
                                                         app.files = new_files;
@@ -1642,8 +1644,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 if let Ok(Some(new_files)) = get_inner_files_info(
                                                     app.current_directory.clone(),
                                                     app.show_hidden_files,
-                                                    SortBy::Default,
-                                                    &SortType::ASC,
+                                                    app.sort_by.clone(),
+                                                    &app.sort_type,
                                                 ) {
                                                     app.files = new_files;
                                                     app.update_file_references();
@@ -1719,8 +1721,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     match get_inner_files_info(
                                         new_path,
                                         is_hidden,
-                                        SortBy::Default,
-                                        &sort_type,
+                                        app.sort_by.clone(),
+                                        &app.sort_type,
                                     ) {
                                         Ok(files) => {
                                             if let Some(file_strs) = files {
@@ -1847,12 +1849,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !check_if_exists(new_path) {
                                         match handle_rename(&app) {
                                             Ok(_) => {
+                                                let current_dir = app.current_path_to_edit.clone();
                                                 app.reset_create_edit_values();
                                                 let file_path_list = get_file_path_data(
-                                                    settings.start_path.to_owned(),
+                                                    current_dir,
                                                     app.show_hidden_files,
-                                                    SortBy::Default,
-                                                    &sort_type,
+                                                    app.sort_by.clone(),
+                                                    &app.sort_type,
                                                 )?;
                                                 app.files = file_path_list.clone();
                                                 app.read_only_files = file_path_list.clone();
@@ -1897,11 +1900,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if !app.create_edit_file_name.is_empty() {
                                     let selected_index = state.selected();
                                     let selected = &app.files[selected_index.unwrap()];
-                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                                    split_path.pop();
-                                    let new_path = split_path.join("/");
+                                    // If selected is a directory, create inside it
+                                    // If selected is a file, create next to it (in parent dir)
+                                    let new_path = if Path::new(selected).is_dir() {
+                                        selected.clone()
+                                    } else {
+                                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                                        split_path.pop();
+                                        split_path.join("/")
+                                    };
                                     match create_item_based_on_type(
-                                        new_path,
+                                        new_path.clone(),
                                         app.create_edit_file_name.clone(),
                                     ) {
                                         Ok(_) => {
@@ -1909,15 +1918,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                             app.reset_create_edit_values();
                                             let file_path_list = get_file_path_data(
-                                                settings.start_path.to_owned(),
+                                                new_path,
                                                 app.show_hidden_files,
-                                                SortBy::Default,
-                                                &sort_type,
+                                                app.sort_by.clone(),
+                                                &app.sort_type,
                                             )?;
                                             app.files = file_path_list.clone();
                                             app.read_only_files = file_path_list.clone();
                                             app.update_file_references();
                                             status_bar.invalidate_cache();
+                                            // Reset selection to first item to avoid index out of bounds
+                                            state.select(Some(0));
                                         }
                                         Err(e) => {
                                             app.is_create_edit_error = true;
@@ -1966,6 +1977,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if let Some(selected_indx) = selected_index {
                                     let selected = &app.files[selected_indx];
+                                    // Get parent directory for refresh
+                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                                    split_path.pop();
+                                    let current_dir = split_path.join("/");
 
                                     match handle_delete_based_on_type(selected) {
                                         Ok(_) => {
@@ -1988,10 +2003,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             };
 
                                             let file_path_list = get_file_path_data(
-                                                settings.start_path.to_owned(),
+                                                current_dir,
                                                 app.show_hidden_files,
-                                                SortBy::Default,
-                                                &sort_type,
+                                                app.sort_by.clone(),
+                                                &app.sort_type,
                                             )?;
                                             app.render_popup = false;
                                             app.files = file_path_list.clone();
@@ -2020,19 +2035,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.input_mode = InputMode::Normal;
                             }
                             KeyCode::Char('n') => {
-                                apply_sort(&mut app, SortBy::Name, &sort_type)?;
+                                apply_sort(&mut app, SortBy::Name)?;
                             }
                             KeyCode::Char('s') => {
-                                apply_sort(&mut app, SortBy::Size, &sort_type)?;
+                                apply_sort(&mut app, SortBy::Size)?;
                             }
                             KeyCode::Char('t') => {
-                                apply_sort(&mut app, SortBy::DateAdded, &sort_type)?;
+                                apply_sort(&mut app, SortBy::DateAdded)?;
                             }
                             KeyCode::Char('a') => {
-                                sort_type = SortType::ASC;
+                                app.sort_type = SortType::ASC;
                             }
                             KeyCode::Char('d') => {
-                                sort_type = SortType::DESC;
+                                app.sort_type = SortType::DESC;
                             }
                             _ => {}
                         },

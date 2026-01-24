@@ -12,6 +12,7 @@ use crate::file_reader_content::FileType;
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 use crate::config::{Settings, Theme, ThemeColors};
+use crate::utils::files::{SortBy, SortType};
 
 extern crate copypasta;
 
@@ -197,6 +198,10 @@ pub struct App {
     pub settings: Settings,
     pub theme_colors: ThemeColors,
 
+    // Sort state - persisted across file operations
+    pub sort_by: SortBy,
+    pub sort_type: SortType,
+
     // Selection preservation for file operations
     pub preserved_selection_index: Option<usize>,
 
@@ -302,6 +307,10 @@ impl App {
                 // Fallback to hardcoded theme if parsing fails
                 panic!("Failed to parse default theme")
             }),
+
+            // Initialize sort state - defaults to ascending by name
+            sort_by: SortBy::Default,
+            sort_type: SortType::ASC,
 
             // Initialize selection preservation
             preserved_selection_index: None,
