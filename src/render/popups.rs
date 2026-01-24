@@ -8,7 +8,7 @@ use ratatui::{
 };
 
 use crate::theme::OneDarkTheme;
-use crate::utils::{format_file_size, SortType};
+use crate::utils::{format_file_size, SortBy, SortType};
 
 /// Calculate a centered popup area within the given rect.
 ///
@@ -32,13 +32,19 @@ pub fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     .split(popup_layout[1])[1]
 }
 
-/// Generate the sort type display string.
-pub fn generate_sort_by_string(sort_type: &SortType) -> String {
-    let str_sort_type = match sort_type {
+/// Generate the sort indicator display string showing field and direction.
+pub fn generate_sort_indicator(sort_by: &SortBy, sort_type: &SortType) -> String {
+    let field = match sort_by {
+        SortBy::Name => "Name",
+        SortBy::Size => "Size",
+        SortBy::DateAdded => "Date",
+        SortBy::Default => "Default",
+    };
+    let direction = match sort_type {
         SortType::ASC => "ASC",
         SortType::DESC => "DESC",
     };
-    format!("Sort By: '{}'", str_sort_type)
+    format!("Current: {} {}", field, direction)
 }
 
 /// Create the delete confirmation popup with file info.
@@ -80,6 +86,8 @@ pub fn create_delete_confirmation_popup<'a>(
 }
 
 /// Create the create file/dir input popup widget.
+/// Shows "Create File" if input contains a dot (has extension),
+/// or "Create Directory" if no dot is present.
 pub fn create_create_input_popup<'a>(
     input_text: &'a str,
     is_error: bool,
@@ -87,8 +95,12 @@ pub fn create_create_input_popup<'a>(
 ) -> Paragraph<'a> {
     let title = if is_error {
         format!("Error: {}", error_message)
-    } else {
+    } else if input_text.is_empty() {
         "Create File/Dir".to_string()
+    } else if input_text.contains('.') {
+        "Create File".to_string()
+    } else {
+        "Create Directory".to_string()
     };
 
     let style = if is_error {
@@ -115,15 +127,17 @@ pub fn create_rename_input_popup<'a>(input_text: &'a str) -> Paragraph<'a> {
 }
 
 /// Create the sort options popup widget.
-pub fn create_sort_options_popup<'a>(sort_type: &SortType) -> Paragraph<'a> {
+pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> Paragraph<'a> {
+    let current_indicator = generate_sort_indicator(sort_by, sort_type);
+
     let lines = vec![
-        Line::from("Press (a) to sort ASC or (d) to sort DESC, (q) to exit"),
-        Line::from("Name: (n)"),
-        Line::from("Date Created: (t)"),
-        Line::from("Size: (s)"),
+        Line::from(current_indicator),
+        Line::from(""),
+        Line::from("Sort by:  (n) Name  (s) Size  (t) Date"),
+        Line::from("Order:    (a) ASC   (d) DESC"),
+        Line::from("          (q) Close"),
     ];
 
-    let sort_by_text = generate_sort_by_string(sort_type);
     let list_items = Text::from(lines);
 
     Paragraph::new(list_items)
@@ -131,7 +145,7 @@ pub fn create_sort_options_popup<'a>(sort_type: &SortType) -> Paragraph<'a> {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .title(sort_by_text),
+                .title("Sort Options"),
         )
         .style(OneDarkTheme::info())
 }
@@ -226,14 +240,14 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_sort_by_string_asc() {
-        let result = generate_sort_by_string(&SortType::ASC);
-        assert_eq!(result, "Sort By: 'ASC'");
+    fn test_generate_sort_indicator_name_asc() {
+        let result = generate_sort_indicator(&SortBy::Name, &SortType::ASC);
+        assert_eq!(result, "Current: Name ASC");
     }
 
     #[test]
-    fn test_generate_sort_by_string_desc() {
-        let result = generate_sort_by_string(&SortType::DESC);
-        assert_eq!(result, "Sort By: 'DESC'");
+    fn test_generate_sort_indicator_size_desc() {
+        let result = generate_sort_indicator(&SortBy::Size, &SortType::DESC);
+        assert_eq!(result, "Current: Size DESC");
     }
 }
