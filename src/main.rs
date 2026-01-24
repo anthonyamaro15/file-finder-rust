@@ -895,10 +895,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Render the status bar based on style setting
             match settings.status_bar_style {
                 crate::config::settings::StatusBarStyle::Classic => {
-                    status_bar.render(f, chunks[3], &app);
+                    status_bar.render(f, chunks[3], &app, &app.theme_colors);
                 }
                 crate::config::settings::StatusBarStyle::Minimal => {
-                    status_bar.render_minimal(f, chunks[3], &app);
+                    status_bar.render_minimal(f, chunks[3], &app, &app.theme_colors);
                 }
             }
             let text = Text::from(Line::from(msg)).patch_style(style);

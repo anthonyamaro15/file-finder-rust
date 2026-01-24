@@ -1,4 +1,5 @@
 use crate::app::{App, InputMode, ViewMode};
+use crate::config::theme::ThemeColors;
 use crate::utils::format::format_path_for_display;
 use ratatui::{
     prelude::*,
@@ -167,28 +168,28 @@ impl StatusBar {
         }
     }
 
-    fn get_mode_indicator(input_mode: &InputMode) -> (&'static str, Color) {
+    fn get_mode_indicator(input_mode: &InputMode, theme: &ThemeColors) -> (&'static str, Color) {
         match input_mode {
-            InputMode::Normal => ("NORMAL", Color::Green),
-            InputMode::Editing => ("SEARCH", Color::Blue),
-            InputMode::WatchDelete => ("DELETE", Color::Red),
-            InputMode::WatchCreate => ("CREATE", Color::Yellow),
-            InputMode::WatchRename => ("RENAME", Color::Cyan),
-            InputMode::WatchSort => ("SORT", Color::Magenta),
-            InputMode::WatchKeyBinding => ("HELP", Color::White),
-            InputMode::CacheLoading => ("LOADING", Color::Yellow),
+            InputMode::Normal => ("NORMAL", theme.green),
+            InputMode::Editing => ("SEARCH", theme.blue),
+            InputMode::WatchDelete => ("DELETE", theme.red),
+            InputMode::WatchCreate => ("CREATE", theme.yellow),
+            InputMode::WatchRename => ("RENAME", theme.cyan),
+            InputMode::WatchSort => ("SORT", theme.purple),
+            InputMode::WatchKeyBinding => ("HELP", theme.fg),
+            InputMode::CacheLoading => ("LOADING", theme.yellow),
         }
     }
 
-    fn get_view_mode_indicator(view_mode: &ViewMode) -> (&'static str, Color) {
+    fn get_view_mode_indicator(view_mode: &ViewMode, theme: &ThemeColors) -> (&'static str, Color) {
         match view_mode {
-            ViewMode::Normal => ("Normal", Color::White),
-            ViewMode::FullList => ("Full", Color::Cyan),
-            ViewMode::DualPane => ("Dual", Color::Magenta),
+            ViewMode::Normal => ("Normal", theme.fg),
+            ViewMode::FullList => ("Full", theme.cyan),
+            ViewMode::DualPane => ("Dual", theme.purple),
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, app: &App) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -203,7 +204,7 @@ impl StatusBar {
             .split(area);
 
         // Mode indicator with rounded borders
-        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode);
+        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
         let mode_widget = Paragraph::new(mode_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED))
             .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
@@ -211,7 +212,7 @@ impl StatusBar {
         frame.render_widget(mode_widget, chunks[0]);
 
         // View mode indicator
-        let (view_text, view_color) = Self::get_view_mode_indicator(&app.view_mode);
+        let (view_text, view_color) = Self::get_view_mode_indicator(&app.view_mode, theme);
         let view_widget = Paragraph::new(view_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("View"))
             .style(Style::default().fg(view_color))
@@ -225,14 +226,14 @@ impl StatusBar {
 
         let dir_widget = Paragraph::new(dir_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Directory"))
-            .style(Style::default().fg(Color::White));
+            .style(Style::default().fg(theme.fg));
         frame.render_widget(dir_widget, chunks[2]);
 
         // File and directory counts
         let counts_text = format!("{}F {}D", self.file_count, self.directory_count);
         let counts_widget = Paragraph::new(counts_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Items"))
-            .style(Style::default().fg(Color::Cyan))
+            .style(Style::default().fg(theme.cyan))
             .alignment(Alignment::Center);
         frame.render_widget(counts_widget, chunks[3]);
 
@@ -240,22 +241,22 @@ impl StatusBar {
         let size_text = Self::format_file_size(self.total_size);
         let size_widget = Paragraph::new(size_text)
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Size"))
-            .style(Style::default().fg(Color::Yellow))
+            .style(Style::default().fg(theme.yellow))
             .alignment(Alignment::Center);
         frame.render_widget(size_widget, chunks[4]);
 
         // System info
         let system_widget = Paragraph::new(self.system_info.clone())
             .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("System"))
-            .style(Style::default().fg(Color::Gray))
+            .style(Style::default().fg(theme.gray))
             .alignment(Alignment::Center);
         frame.render_widget(system_widget, chunks[5]);
     }
 
     /// Render minimal status bar - single clean line with essential info
     /// Format:  NOR  ~/path  position  size  permissions
-    pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App) {
-        let (mode_text, mode_color) = Self::get_mode_indicator_short(&app.input_mode);
+    pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
+        let (mode_text, mode_color) = Self::get_mode_indicator_short(&app.input_mode, theme);
 
         // Calculate position indicator
         let position = Self::get_position_indicator(app);
@@ -272,22 +273,22 @@ impl StatusBar {
             Span::styled(
                 format!(" {} ", mode_text),
                 Style::default()
-                    .fg(Color::Black)
+                    .fg(theme.black)
                     .bg(mode_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
             // Path
-            Span::styled(path, Style::default().fg(Color::White)),
+            Span::styled(path, Style::default().fg(theme.fg)),
             Span::raw("  "),
             // Position
-            Span::styled(position, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+            Span::styled(position, Style::default().fg(theme.gray)), // Muted
             Span::raw("  "),
             // Size
-            Span::styled(size_text, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+            Span::styled(size_text, Style::default().fg(theme.gray)), // Muted
             Span::raw("  "),
             // Permissions
-            Span::styled(perms_text, Style::default().fg(Color::Rgb(92, 99, 112))), // Muted
+            Span::styled(perms_text, Style::default().fg(theme.gray)), // Muted
         ];
 
         let paragraph = Paragraph::new(Line::from(spans));
@@ -295,16 +296,16 @@ impl StatusBar {
     }
 
     /// Get short mode indicator for minimal status bar
-    fn get_mode_indicator_short(input_mode: &InputMode) -> (&'static str, Color) {
+    fn get_mode_indicator_short(input_mode: &InputMode, theme: &ThemeColors) -> (&'static str, Color) {
         match input_mode {
-            InputMode::Normal => ("NOR", Color::Green),
-            InputMode::Editing => ("SRC", Color::Blue),
-            InputMode::WatchDelete => ("DEL", Color::Red),
-            InputMode::WatchCreate => ("NEW", Color::Yellow),
-            InputMode::WatchRename => ("REN", Color::Cyan),
-            InputMode::WatchSort => ("SRT", Color::Magenta),
-            InputMode::WatchKeyBinding => ("HLP", Color::White),
-            InputMode::CacheLoading => ("...", Color::Yellow),
+            InputMode::Normal => ("NOR", theme.green),
+            InputMode::Editing => ("SRC", theme.blue),
+            InputMode::WatchDelete => ("DEL", theme.red),
+            InputMode::WatchCreate => ("NEW", theme.yellow),
+            InputMode::WatchRename => ("REN", theme.cyan),
+            InputMode::WatchSort => ("SRT", theme.purple),
+            InputMode::WatchKeyBinding => ("HLP", theme.fg),
+            InputMode::CacheLoading => ("...", theme.yellow),
         }
     }
 
@@ -402,7 +403,7 @@ impl StatusBar {
         format!("{}{}{}", r, w, x)
     }
 
-    pub fn render_detailed(&self, frame: &mut Frame, area: Rect, app: &App) {
+    pub fn render_detailed(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
         // More detailed status bar for when there's more vertical space
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -413,12 +414,12 @@ impl StatusBar {
             .split(area);
 
         // Render main status bar
-        self.render(frame, chunks[0], app);
+        self.render(frame, chunks[0], app, theme);
 
         // Selected item details
         let selected_widget = Paragraph::new(self.selected_item_info.clone())
             .block(Block::default().borders(Borders::ALL).title("Selection"))
-            .style(Style::default().fg(Color::LightGreen));
+            .style(Style::default().fg(theme.green));
         frame.render_widget(selected_widget, chunks[1]);
     }
 
@@ -485,17 +486,17 @@ impl StatusBar {
         }
     }
 
-    pub fn get_status_text(&self, app: &App) -> Vec<Line> {
-        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode);
+    pub fn get_status_text(&self, app: &App, theme: &ThemeColors) -> Vec<Line> {
+        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
 
         // If there's an error, show it in the status line
         if let Some(ref error_msg) = self.error_message {
             return vec![Line::from(vec![
                 Span::styled(
-                    "❌ ERROR: ",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    "ERROR: ",
+                    Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(error_msg.clone(), Style::default().fg(Color::White)),
+                Span::styled(error_msg.clone(), Style::default().fg(theme.fg)),
             ])];
         }
 
@@ -505,19 +506,19 @@ impl StatusBar {
                 Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(&self.current_directory, Style::default().fg(Color::White)),
+            Span::styled(&self.current_directory, Style::default().fg(theme.fg)),
             Span::raw(" | "),
             Span::styled(
                 format!("{}F/{}D", self.file_count, self.directory_count),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.cyan),
             ),
             Span::raw(" | "),
             Span::styled(
                 Self::format_file_size(self.total_size),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.yellow),
             ),
             Span::raw(" | "),
-            Span::styled(&self.system_info, Style::default().fg(Color::Gray)),
+            Span::styled(&self.system_info, Style::default().fg(theme.gray)),
         ])]
     }
 }
