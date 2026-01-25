@@ -130,10 +130,20 @@ impl Ui {
                 })
         } else {
             // Modern mode: no borders, clean look
+            // Use active/inactive title style in dual pane mode
+            let title_style = if app.view_mode == ViewMode::DualPane {
+                if app.is_right_pane_active() {
+                    OneDarkTheme::inactive_title()
+                } else {
+                    OneDarkTheme::active_title()
+                }
+            } else {
+                Style::default().fg(Color::Rgb(92, 99, 112)) // Default muted title
+            };
             Block::default()
                 .borders(Borders::NONE)
                 .title(list_title.as_str())
-                .title_style(Style::default().fg(Color::Rgb(92, 99, 112))) // Muted title
+                .title_style(title_style)
                 .padding(ratatui::widgets::Padding::horizontal(1))
         };
 
@@ -241,16 +251,29 @@ impl Ui {
             }
         } else {
             let total = app.files.len();
+            let is_left_active = !app.is_right_pane_active();
             if settings.show_borders {
                 // Classic mode with borders
                 if app.view_mode == ViewMode::DualPane {
-                    format!("Left: Files ({})", total)
+                    if is_left_active {
+                        format!("▸ Left: Files ({})", total)
+                    } else {
+                        format!("  Left: Files ({})", total)
+                    }
                 } else {
                     format!("Files ({})", total)
                 }
             } else {
                 // Modern mode - minimal title, position in status bar
-                format!("{} items", total)
+                if app.view_mode == ViewMode::DualPane {
+                    if is_left_active {
+                        format!("▸ {} items", total)
+                    } else {
+                        format!("{} items", total)
+                    }
+                } else {
+                    format!("{} items", total)
+                }
             }
         }
     }
@@ -386,14 +409,27 @@ impl Ui {
 
                         ListItem::from(ratatui::text::Line::from(spans))
                     } else {
-                        // Normal display with colored icon
-                        let mut spans = vec![
-                            Span::styled(
-                                format!("{} ", colored_icon.icon),
-                                Style::default().fg(colored_icon.color),
-                            ),
-                            Span::raw(file_name.to_string()),
-                        ];
+                        // Check if this is a dotfile (hidden file)
+                        let is_dotfile = file_name.starts_with('.');
+
+                        // Normal display with colored icon (dimmed for dotfiles)
+                        let mut spans = if is_dotfile {
+                            vec![
+                                Span::styled(
+                                    format!("{} ", colored_icon.icon),
+                                    OneDarkTheme::dotfile(),
+                                ),
+                                Span::styled(file_name.to_string(), OneDarkTheme::dotfile()),
+                            ]
+                        } else {
+                            vec![
+                                Span::styled(
+                                    format!("{} ", colored_icon.icon),
+                                    Style::default().fg(colored_icon.color),
+                                ),
+                                Span::raw(file_name.to_string()),
+                            ]
+                        };
 
                         // Add file size for files (not directories)
                         if show_file_sizes && !is_dir {

@@ -142,6 +142,8 @@ pub struct App {
     pub files: Vec<String>,
     pub read_only_files: Vec<String>,
     pub selected_id: Option<IDE>,
+    /// Print path to stdout instead of copying to clipboard (for shell integration)
+    pub print_path: bool,
     pub render_popup: bool,
     pub prev_dir: String,
 
@@ -266,6 +268,7 @@ impl App {
             read_only_files: files_clone,
             character_index: 0,
             selected_id: None,
+            print_path: false,
             render_popup: false,
             prev_dir: String::new(),
             show_hidden_files: false,
@@ -884,7 +887,8 @@ impl App {
         // Convert theme to processed colors
         self.theme_colors = theme.to_colors()?;
 
-        println!("Loaded configuration with theme: {}", self.settings.theme);
+        // Debug info moved to log file to avoid interfering with --print-path
+        debug!("Loaded configuration with theme: {}", self.settings.theme);
 
         Ok(())
     }

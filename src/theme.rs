@@ -80,6 +80,21 @@ impl OneDarkTheme {
         Style::default().fg(Self::DIM)
     }
 
+    /// Dotfile style (dimmed for hidden files starting with '.')
+    pub fn dotfile() -> Style {
+        Style::default().fg(Self::DIM)
+    }
+
+    /// Active pane title style (for borderless mode)
+    pub fn active_title() -> Style {
+        Style::default().fg(Self::BLUE).add_modifier(Modifier::BOLD)
+    }
+
+    /// Inactive pane title style (for borderless mode)
+    pub fn inactive_title() -> Style {
+        Style::default().fg(Self::DIM)
+    }
+
     pub fn loading() -> Style {
         Style::default().fg(Self::YELLOW)
     }

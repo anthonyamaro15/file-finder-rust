@@ -419,6 +419,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     init();
 
+    // Handle subcommands first
+    if let Some(command) = &cli_args.command {
+        match command {
+            cli::Commands::Init { shell } => {
+                println!("{}", shell.generate_script());
+                return Ok(());
+            }
+        }
+    }
+
     // Check for --reset-config flag (from CLI args)
     if cli_args.reset_config {
         println!("Resetting configuration to defaults...");
@@ -497,10 +507,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug!("Set editor from CLI: {:?}", editor);
     }
 
+    // Set print_path mode from CLI
+    app.print_path = effective_config.print_path;
+
+    // Debug: write marker file when print_path is enabled
+    if app.print_path {
+        let _ = std::fs::write("/tmp/ff_print_path_enabled", "1");
+    }
+
     let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         match load_directory_from_file(&settings.cache_directory.to_owned()) {
             Ok(res) => {
-                println!("Loading directory cache from file");
+                debug!("Loading directory cache from file");
                 res
             }
             Err(e) => {
@@ -510,7 +528,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     } else {
-        println!("Starting asynchronous directory cache build...");
+        debug!("Starting asynchronous directory cache build...");
 
         // Start async cache building
         let start_time = std::time::Instant::now();
@@ -1046,8 +1064,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else if app.view_mode.is_dual_pane() {
                 // DualPane mode: render right pane file list
                 let right_pane = &app.right_pane;
+                let is_right_active = app.is_right_pane_active();
 
-                // Generate list items for right pane using icon provider
+                // Generate list items for right pane using icon provider (with dotfile dimming)
                 let right_items: Vec<ListItem> = right_pane.file_labels.iter().enumerate().map(|(idx, label)| {
                     let is_dir = right_pane.files.get(idx)
                         .map(|p| std::path::Path::new(p).is_dir())
@@ -1056,26 +1075,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|p| std::path::Path::new(p))
                         .unwrap_or(std::path::Path::new(""));
                     let icon = widgets_ui.icon_provider.get_for_path(path, is_dir);
-                    ListItem::new(format!("{} {}", icon, label))
+
+                    // Check if this is a dotfile (hidden file)
+                    let is_dotfile = label.starts_with('.');
+
+                    if is_dotfile {
+                        // Dim dotfiles
+                        ListItem::new(ratatui::text::Line::from(vec![
+                            ratatui::text::Span::styled(
+                                format!("{} {}", icon, label),
+                                OneDarkTheme::dotfile(),
+                            ),
+                        ]))
+                    } else {
+                        ListItem::new(format!("{} {}", icon, label))
+                    }
                 }).collect();
 
-                // Create title with directory info
+                // Create title with directory info and active indicator
+                let dir_name = std::path::Path::new(&right_pane.current_directory)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("...");
+
                 let right_title = if settings.show_borders {
-                    format!("Right: {}", std::path::Path::new(&right_pane.current_directory)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("..."))
+                    if is_right_active {
+                        format!("▸ Right: {}", dir_name)
+                    } else {
+                        format!("  Right: {}", dir_name)
+                    }
                 } else {
-                    std::path::Path::new(&right_pane.current_directory)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("...")
-                        .to_string()
+                    if is_right_active {
+                        format!("▸ {}", dir_name)
+                    } else {
+                        dir_name.to_string()
+                    }
                 };
 
                 // Create block based on settings
                 let block = if settings.show_borders {
-                    let right_border_style = if app.is_right_pane_active() {
+                    let right_border_style = if is_right_active {
                         OneDarkTheme::active_border()
                     } else {
                         OneDarkTheme::inactive_border()
@@ -1086,11 +1125,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .title(right_title)
                         .style(right_border_style)
                 } else {
+                    // Borderless mode - use title style for active indicator
+                    let title_style = if is_right_active {
+                        OneDarkTheme::active_title()
+                    } else {
+                        OneDarkTheme::inactive_title()
+                    };
                     Block::default()
                         .borders(Borders::LEFT)
                         .border_style(Style::default().fg(Color::Rgb(62, 68, 81)))
                         .title(right_title)
-                        .title_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+                        .title_style(title_style)
                 };
 
                 let right_list = List::new(right_items)
@@ -1403,7 +1448,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 settings.cache_directory
                             );
                             if let Some(ms) = app.cache_build_elapsed_ms {
-                                println!("Directory cache built and saved in {} ms", ms);
+                                debug!("Directory cache built and saved in {} ms", ms);
                             }
                         }
                         Err(e) => {
@@ -1925,6 +1970,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if let Some(selected) = selected_path {
                                     app.input = selected.clone();
+
+                                    // Check if print_path mode - write to temp file for shell integration
+                                    if app.print_path {
+                                        // Write to temp file before restoring terminal
+                                        let temp_path = std::path::PathBuf::from("/tmp/ff_result");
+                                        let _ = std::fs::write(&temp_path, &selected);
+
+                                        // Restore terminal
+                                        disable_raw_mode()?;
+                                        execute!(
+                                            terminal.backend_mut(),
+                                            LeaveAlternateScreen,
+                                            DisableMouseCapture
+                                        )?;
+                                        terminal.show_cursor()?;
+                                        return Ok(());
+                                    }
 
                                     // Check if IDE is configured - if so, open file, otherwise copy to clipboard
                                     if app.get_selected_ide().is_some() {
