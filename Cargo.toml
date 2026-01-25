@@ -1,6 +1,22 @@
+[workspace]
+members = ["."]
+
+[workspace.metadata.dist]
+ci = "github"
+cargo-dist-version = "0.29.0"
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu"
+]
+installers = ["homebrew"]
+tap = "anthonyamaro15/homebrew-tap"
+formula = "ff"
+unix-archive = ".tar.gz"
+
 [package]
 name = "ff"
-version = "0.1.7"  # Update this when releasing a new version
+version = "0.1.8"  # Update this when releasing a new version
 edition = "2021"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
 homepage = "https://github.com/anthonyamaro15/file-finder-rust"
