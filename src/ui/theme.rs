@@ -129,6 +129,23 @@ impl OneDarkTheme {
         Style::default().fg(palette::GRAY)
     }
 
+    /// Dotfile style (dimmed for hidden files starting with '.')
+    pub fn dotfile() -> Style {
+        Style::default().fg(palette::GRAY)
+    }
+
+    /// Active pane title style (for borderless mode)
+    pub fn active_title() -> Style {
+        Style::default()
+            .fg(palette::BLUE)
+            .add_modifier(Modifier::BOLD)
+    }
+
+    /// Inactive pane title style (for borderless mode)
+    pub fn inactive_title() -> Style {
+        Style::default().fg(palette::GRAY)
+    }
+
     /// Score/rank display
     pub fn score() -> Style {
         Style::default().fg(palette::LIGHT_GRAY)
