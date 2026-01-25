@@ -99,18 +99,23 @@ ff ~/Documents   # Launch in specific directory
 ### CLI Options
 
 ```bash
-ff [OPTIONS] [PATH]
+ff [OPTIONS] [PATH] [COMMAND]
 ```
 
-| Option              | Short | Description              | Example              |
-| ------------------- | ----- | ------------------------ | -------------------- |
-| `--start <PATH>`    | `-s`  | Starting directory path  | `ff -s ~/Documents`  |
-| `--editor <EDITOR>` | `-e`  | Open file with editor    | `ff -e nvim`         |
-| `--theme <THEME>`   | `-t`  | Theme name or theme file | `ff -t onedark`      |
-| `--reset-config`    |       | Reset config to defaults | `ff --reset-config`  |
-| `--rebuild-cache`   |       | Rebuild directory cache  | `ff --rebuild-cache` |
-| `--help`            | `-h`  | Show help                | `ff --help`          |
-| `--version`         | `-V`  | Show version             | `ff --version`       |
+| Option              | Short | Description                          | Example              |
+| ------------------- | ----- | ------------------------------------ | -------------------- |
+| `--start <PATH>`    | `-s`  | Starting directory path              | `ff -s ~/Documents`  |
+| `--editor <EDITOR>` | `-e`  | Open file with editor                | `ff -e nvim`         |
+| `--theme <THEME>`   | `-t`  | Theme name or theme file             | `ff -t onedark`      |
+| `--print-path`      |       | Print path to stdout (shell cd)      | `ff --print-path`    |
+| `--reset-config`    |       | Reset config to defaults             | `ff --reset-config`  |
+| `--rebuild-cache`   |       | Rebuild directory cache              | `ff --rebuild-cache` |
+| `--help`            | `-h`  | Show help                            | `ff --help`          |
+| `--version`         | `-V`  | Show version                         | `ff --version`       |
+
+| Command             | Description                          | Example              |
+| ------------------- | ------------------------------------ | -------------------- |
+| `init <SHELL>`      | Generate shell integration script    | `ff init zsh`        |
 
 ### Path Examples
 
@@ -131,6 +136,32 @@ ff ~/Desktop -e vscode
 ```
 
 If no editor is set, the selected file path is copied to clipboard.
+
+### Shell Integration (cd on exit)
+
+Want to `cd` directly to a selected directory? Add one line to your shell config:
+
+**Zsh** (`~/.zshrc`):
+```bash
+eval "$(ff init zsh)"
+```
+
+**Bash** (`~/.bashrc`):
+```bash
+eval "$(ff init bash)"
+```
+
+Then reload your shell (`source ~/.zshrc` or `source ~/.bashrc`).
+
+Now when you press Enter on a directory, your shell automatically `cd`s there:
+
+```bash
+ff              # Search for project
+# Select directory, press Enter
+pwd             # You're now in that directory!
+```
+
+For files, the path is copied to your clipboard.
 
 ---
 
