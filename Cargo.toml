@@ -1,6 +1,6 @@
 [package]
 name = "ff"
-version = "0.1.6"  # Update this when releasing a new version
+version = "0.1.7"  # Update this when releasing a new version
 edition = "2021"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
 homepage = "https://github.com/anthonyamaro15/file-finder-rust"
@@ -55,6 +55,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# cargo-dist config
+[package.metadata.dist]
+dist = true
 
 # Ensure the shipped binary is named `ff`
 [[bin]]
