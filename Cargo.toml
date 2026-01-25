@@ -56,6 +56,27 @@ criterion = { version = "0.5", features = ["html_reports"] }
 inherits = "release"
 lto = "thin"
 
+# Config for cargo-dist
+[workspace.metadata.dist]
+# CI backends to support
+ci = "github"
+# The preferred cargo-dist version to use
+cargo-dist-version = "0.29.0"
+# Target platforms
+targets = [
+    "aarch64-apple-darwin",    # macOS Apple Silicon
+    "x86_64-apple-darwin",     # macOS Intel
+    "x86_64-unknown-linux-gnu" # Linux
+]
+# Installers to generate
+installers = ["homebrew"]
+# Publish to Homebrew tap
+tap = "anthonyamaro15/homebrew-tap"
+# Formula name
+formula = "ff"
+# The archive format to use
+unix-archive = ".tar.gz"
+
 # Ensure the shipped binary is named `ff`
 [[bin]]
 name = "ff"
