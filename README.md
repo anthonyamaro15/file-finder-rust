@@ -72,17 +72,28 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 
 ## 🛠 Installation
 
-### Prerequisites
+### Homebrew (macOS/Linux)
 
-- Rust 1.70+
-- macOS or Linux
+```bash
+brew install anthonyamaro15/tap/ff
+```
+
+Then add shell integration to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+eval "$(ff init zsh)"   # For zsh
+eval "$(ff init bash)"  # For bash
+```
 
 ### From Source
 
+Prerequisites: Rust 1.70+, macOS or Linux
+
 ```bash
-git clone https://github.com/your-username/rust-file-finder.git
-cd rust-file-finder
+git clone https://github.com/anthonyamaro15/file-finder-rust.git
+cd file-finder-rust
 cargo build --release
+cp target/release/ff /usr/local/bin/
 ```
 
 ---
@@ -324,9 +335,9 @@ ff --reset-config
 
 **Command not found?**
 
+If installed from source, make sure the binary is in your PATH:
 ```bash
-./target/release/file-finder --help
-alias ff='./target/release/file-finder'
+cp target/release/ff /usr/local/bin/
 ```
 
 **Editor not opening?**
