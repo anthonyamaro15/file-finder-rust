@@ -10,13 +10,15 @@ targets = [
     "x86_64-unknown-linux-gnu"
 ]
 installers = ["homebrew"]
+publish-jobs = ["homebrew"]
 tap = "anthonyamaro15/homebrew-tap"
 formula = "ff"
 unix-archive = ".tar.gz"
+allow-dirty = ["ci"]
 
 [package]
 name = "ff"
-version = "0.1.8"  # Update this when releasing a new version
+version = "0.1.9"  # Update this when releasing a new version
 edition = "2021"
 repository = "https://github.com/anthonyamaro15/file-finder-rust"
 homepage = "https://github.com/anthonyamaro15/file-finder-rust"
