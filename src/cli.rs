@@ -7,7 +7,7 @@ use std::{env, io, path::PathBuf};
 /// File Finder - Terminal-based file navigation and search tool
 #[derive(Parser)]
 #[command(name = "ff")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "A fast, interactive file finder with editor integration")]
 #[command(
     long_about = "File Finder (ff) is a terminal-based file navigation and search tool built in Rust.
