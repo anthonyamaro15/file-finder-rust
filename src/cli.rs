@@ -1,6 +1,6 @@
 use crate::config::settings::LayoutStyle;
 use crate::config::Settings;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, warn};
 use std::{env, io, path::PathBuf};
 
@@ -10,7 +10,7 @@ use std::{env, io, path::PathBuf};
 #[command(version = "0.1.0")]
 #[command(about = "A fast, interactive file finder with editor integration")]
 #[command(
-    long_about = "File Finder (ff) is a terminal-based file navigation and search tool built in Rust. 
+    long_about = "File Finder (ff) is a terminal-based file navigation and search tool built in Rust.
 It provides an interactive file browser with editor integration, search capabilities, and file preview functionality."
 )]
 pub struct CliArgs {
@@ -38,9 +38,73 @@ pub struct CliArgs {
     #[arg(long, short = 'l', value_enum)]
     pub layout: Option<LayoutArg>,
 
+    /// Print selected path to stdout instead of copying to clipboard.
+    /// Useful for shell integration (e.g., `cd $(ff --print-path)`)
+    #[arg(long)]
+    pub print_path: bool,
+
     /// Optional positional path argument (if --start also provided, --start takes precedence)
     #[arg(value_name = "PATH")]
     pub path: Option<PathBuf>,
+
+    /// Subcommand (e.g., init)
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+/// Available subcommands
+#[derive(Subcommand, Debug, Clone)]
+pub enum Commands {
+    /// Generate shell integration script
+    Init {
+        /// Shell type to generate script for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+/// Supported shells for init command
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Shell {
+    /// Zsh shell
+    Zsh,
+    /// Bash shell
+    Bash,
+}
+
+impl Shell {
+    /// Generate the shell integration script
+    pub fn generate_script(&self) -> &'static str {
+        match self {
+            Shell::Zsh | Shell::Bash => {
+                r#"# ff shell integration
+ff() {
+    # Remove any stale result file
+    rm -f /tmp/ff_result
+
+    # Run ff with print-path mode (writes selected path to /tmp/ff_result)
+    command ff --print-path "$@"
+
+    # Check if a path was selected
+    if [[ -f /tmp/ff_result ]]; then
+        local result
+        result=$(cat /tmp/ff_result)
+        rm -f /tmp/ff_result
+
+        if [[ -n "$result" ]]; then
+            if [[ -d "$result" ]]; then
+                cd "$result"
+            else
+                # It's a file - copy to clipboard (macOS)
+                echo "$result" | pbcopy
+                echo "Path copied: $result"
+            fi
+        fi
+    fi
+}"#
+            }
+        }
+    }
 }
 
 /// Supported editors
@@ -90,6 +154,8 @@ pub struct EffectiveConfig {
     pub theme: Option<String>,
     pub editor: Option<Editor>,
     pub layout_style: LayoutStyle,
+    /// Print selected path to stdout instead of copying to clipboard
+    pub print_path: bool,
 }
 
 impl CliArgs {
@@ -189,12 +255,16 @@ pub fn compute_effective_config(
         .map(LayoutStyle::from)
         .unwrap_or_else(|| settings.layout_style.clone());
 
+    // Print path mode (CLI only, no settings equivalent)
+    let print_path = cli_args.print_path;
+
     debug!(
-        "Effective config - Start: {}, Theme: {:?}, Editor: {:?}, Layout: {:?}",
+        "Effective config - Start: {}, Theme: {:?}, Editor: {:?}, Layout: {:?}, PrintPath: {}",
         start_path.display(),
         theme,
         editor,
-        layout_style
+        layout_style,
+        print_path
     );
 
     Ok(EffectiveConfig {
@@ -202,5 +272,6 @@ pub fn compute_effective_config(
         theme,
         editor,
         layout_style,
+        print_path,
     })
 }
