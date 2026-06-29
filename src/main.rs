@@ -58,7 +58,7 @@ use crate::{
     event::{
         file_actions::{
             containing_directory, containing_directory_or_current, create_target_directory,
-            rename_target,
+            refresh_file_list, rename_target,
         },
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
         search::handle_search_key,
@@ -71,8 +71,8 @@ use crate::{
     },
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
-        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup, draw_popup,
-        split_popup_area, split_popup_area_vertical,
+        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
+        draw_input_popup, draw_popup, split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
@@ -1174,8 +1174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Popup areas using render module helpers
-            let popup_area = draw_popup(f.size(), 40, 7);
-            let popup_chunks = split_popup_area(popup_area);
+            let input_popup_area = draw_input_popup(f.size());
             let sort_option_area = draw_popup(f.size(), 90, 20);
             let sort_options_chunks = split_popup_area_vertical(sort_option_area);
             let keybinding_area = draw_popup(f.size(), 55, 75);
@@ -1188,12 +1187,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.is_create_edit_error,
                         &app.error_message,
                     );
-                    f.render_widget(Clear, popup_chunks[0]);
-                    f.render_widget(create_input_block, popup_chunks[0]);
+                    f.render_widget(Clear, input_popup_area);
+                    f.render_widget(create_input_block, input_popup_area);
                 }
                 InputMode::WatchRename => {
                     let rename_input_block = create_rename_input_popup(&app.create_edit_file_name);
-                    f.render_widget(rename_input_block, popup_chunks[0]);
+                    f.render_widget(Clear, input_popup_area);
+                    f.render_widget(rename_input_block, input_popup_area);
                 }
                 InputMode::WatchSort => {
                     let sort_popup = create_sort_options_popup(&app.sort_by, &app.sort_type);
@@ -2108,15 +2108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             app.input_mode = InputMode::Normal;
 
                                             app.reset_create_edit_values();
-                                            let file_path_list = get_file_path_data(
-                                                new_path,
-                                                app.show_hidden_files,
-                                                app.sort_by.clone(),
-                                                &app.sort_type,
-                                            )?;
-                                            app.files = file_path_list.clone();
-                                            app.read_only_files = file_path_list.clone();
-                                            app.update_file_references();
+                                            refresh_file_list(&mut app, Path::new(&new_path))?;
                                             status_bar.invalidate_cache();
                                             // Reset selection to first item to avoid index out of bounds
                                             state.select(Some(0));

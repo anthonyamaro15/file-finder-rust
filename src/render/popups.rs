@@ -32,6 +32,41 @@ pub fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     .split(popup_layout[1])[1]
 }
 
+/// Calculate a centered input popup area with a minimum size.
+pub fn draw_input_popup(rect: Rect) -> Rect {
+    draw_popup_with_min_size(rect, 40, 20, 30, 5)
+}
+
+fn draw_popup_with_min_size(
+    rect: Rect,
+    percent_x: u16,
+    percent_y: u16,
+    min_width: u16,
+    min_height: u16,
+) -> Rect {
+    let width = rect
+        .width
+        .saturating_mul(percent_x)
+        .checked_div(100)
+        .unwrap_or(0)
+        .max(min_width)
+        .min(rect.width);
+    let height = rect
+        .height
+        .saturating_mul(percent_y)
+        .checked_div(100)
+        .unwrap_or(0)
+        .max(min_height)
+        .min(rect.height);
+
+    Rect {
+        x: rect.x + rect.width.saturating_sub(width) / 2,
+        y: rect.y + rect.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
 /// Generate the sort indicator display string showing field and direction.
 pub fn generate_sort_indicator(sort_by: &SortBy, sort_type: &SortType) -> String {
     let field = match sort_by {
@@ -203,16 +238,6 @@ pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
         .style(OneDarkTheme::normal())
 }
 
-/// Split an area for popup content with margins.
-pub fn split_popup_area(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .margin(1)
-        .constraints([Constraint::Percentage(100)])
-        .split(area)
-        .to_vec()
-}
-
 /// Split an area for vertical popup content with margins.
 pub fn split_popup_area_vertical(area: Rect) -> Vec<Rect> {
     Layout::default()
@@ -237,6 +262,14 @@ mod tests {
         assert!(popup.y > 0);
         assert!(popup.width < outer.width);
         assert!(popup.height < outer.height);
+    }
+
+    #[test]
+    fn test_draw_input_popup_has_enough_height_for_bordered_input() {
+        let outer = Rect::new(0, 0, 160, 24);
+        let popup = draw_input_popup(outer);
+
+        assert!(popup.height >= 5);
     }
 
     #[test]
