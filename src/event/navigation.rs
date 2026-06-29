@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 pub fn parent_directory(path: &Path) -> Option<PathBuf> {
-    path.parent().map(Path::to_path_buf)
+    path.parent()
+        .map(Path::to_path_buf)
+        .or_else(|| path.has_root().then(|| PathBuf::from("/")))
 }
 
 pub fn next_index(current: Option<usize>, len: usize) -> Option<usize> {
@@ -65,6 +67,11 @@ mod tests {
             parent_directory(Path::new("/tmp/example/file.txt")),
             Some(PathBuf::from("/tmp/example"))
         );
+    }
+
+    #[test]
+    fn parent_directory_of_root_stays_root() {
+        assert_eq!(parent_directory(Path::new("/")), Some(PathBuf::from("/")));
     }
 
     #[test]

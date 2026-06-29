@@ -281,9 +281,10 @@ pub fn check_if_exists(new_path: String) -> bool {
 
 /// Get the parent directory path from a file path.
 pub fn get_curr_path(path: String) -> String {
-    let mut split_path = path.split('/').collect::<Vec<&str>>();
-    split_path.pop();
-    split_path.join("/")
+    Path::new(&path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Get directory statistics (file count and total size).
@@ -333,7 +334,7 @@ mod tests {
     fn test_get_curr_path() {
         assert_eq!(get_curr_path("/foo/bar/baz.txt".to_string()), "/foo/bar");
         assert_eq!(get_curr_path("/foo/bar".to_string()), "/foo");
-        assert_eq!(get_curr_path("/foo".to_string()), "");
+        assert_eq!(get_curr_path("/foo".to_string()), "/");
     }
 
     #[test]

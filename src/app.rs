@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -932,16 +932,24 @@ impl App {
         }
     }
 
-    /// Get the current directory path from the first file in the list.
-    /// Returns the parent directory of the first file, or an empty string if no files.
+    /// Get the active current directory as a string.
     pub fn get_current_dir(&self) -> String {
-        if let Some(first_file) = self.files.first() {
-            let path = Path::new(first_file);
-            path.parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
+        self.current_directory_path().to_string_lossy().to_string()
+    }
+
+    /// Get the active current directory as a path.
+    pub fn current_directory_path(&self) -> PathBuf {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            PathBuf::from(&self.right_pane.current_directory)
+        } else if !self.current_directory.is_empty() {
+            PathBuf::from(&self.current_directory)
+        } else if let Some(first_file) = self.files.first() {
+            Path::new(first_file)
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
         } else {
-            String::new()
+            PathBuf::from(".")
         }
     }
 
@@ -1029,3 +1037,37 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn current_directory_path_falls_back_to_dot_without_state() {
+        let app = App::new(Vec::new());
+
+        assert_eq!(app.current_directory_path(), PathBuf::from("."));
+    }
+
+    #[test]
+    fn current_directory_path_uses_watched_directory_when_files_empty() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/tmp/ff-empty-current".to_string();
+
+        assert_eq!(
+            app.current_directory_path(),
+            PathBuf::from("/tmp/ff-empty-current")
+        );
+    }
+
+    #[test]
+    fn current_directory_path_uses_active_right_pane_directory() {
+        let mut app = App::new(vec!["/tmp/ff-left/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-left".to_string();
+        app.view_mode = ViewMode::DualPane;
+        app.active_pane = PanePosition::Right;
+        app.right_pane = crate::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
+
+        assert_eq!(app.current_directory_path(), PathBuf::from("/tmp/ff-right"));
+    }
+}
