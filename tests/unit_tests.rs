@@ -146,7 +146,7 @@ mod path_handling_tests {
     fn test_get_curr_path_root() {
         let path = "/file.txt".to_string();
         let parent = get_curr_path(path);
-        assert_eq!(parent, "");
+        assert_eq!(parent, "/");
     }
 
     #[test]

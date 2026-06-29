@@ -68,8 +68,11 @@ mod tests {
     }
 
     #[test]
-    fn containing_directory_or_current_falls_back_to_current_directory() {
-        assert_eq!(containing_directory_or_current(Path::new("/")), PathBuf::from("."));
+    fn containing_directory_or_current_preserves_root_directory() {
+        assert_eq!(
+            containing_directory_or_current(Path::new("/")),
+            PathBuf::from("/")
+        );
     }
 
     #[test]

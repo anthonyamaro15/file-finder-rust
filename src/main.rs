@@ -5,7 +5,7 @@
 // Standard library imports
 use std::{
     io::{self, Stdout},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     sync::mpsc,
 };
@@ -114,12 +114,12 @@ fn startup_paths(effective_config: &crate::cli::EffectiveConfig) -> StartupPaths
 }
 
 fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
-    if !app.files.is_empty() {
-        get_curr_path(app.files[0].clone())
-    } else if !app.current_directory.is_empty() {
-        app.current_directory.clone()
-    } else {
+    let current_directory = app.current_directory_path();
+
+    if current_directory == PathBuf::from(".") {
         fallback_start_path.to_string()
+    } else {
+        current_directory.to_string_lossy().to_string()
     }
 }
 
@@ -493,6 +493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &SortType::ASC,
     )?;
     let mut app = App::new(file_strings.clone());
+    app.current_directory = startup_paths.file_list_path.clone();
 
     // Initialize config and theme after app creation
     if let Err(e) = app.initialize_config_and_theme() {
@@ -2289,13 +2290,13 @@ mod tests {
     }
 
     #[test]
-    fn refresh_directory_prefers_visible_file_list_when_available() {
+    fn refresh_directory_prefers_tracked_current_directory_when_available() {
         let mut app = App::new(vec!["/tmp/ff-visible/file.txt".to_string()]);
-        app.current_directory = "/tmp/ff-stale-current".to_string();
+        app.current_directory = "/tmp/ff-current".to_string();
 
         assert_eq!(
             current_refresh_directory(&app, "/tmp/ff-settings-start"),
-            "/tmp/ff-visible"
+            "/tmp/ff-current"
         );
     }
 }
