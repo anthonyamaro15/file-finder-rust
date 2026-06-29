@@ -1,104 +1,22 @@
 mod common;
 
 use common::*;
+use file_finder::utils::files::{
+    convert_file_path_to_string, generate_copy_file_dir_name, get_curr_path, is_file,
+    sort_entries_by_type, SortBy, SortType,
+};
 use std::fs;
-use std::path::PathBuf;
-use tempfile::tempdir;
-
-// We need to make the functions in main.rs accessible for testing
-// For now, I'll test the logic by creating similar functions
 
 #[cfg(test)]
 mod sorting_tests {
     use super::*;
-
-    #[derive(Clone)]
-    pub enum SortType {
-        ASC,
-        DESC,
-    }
-
-    #[derive(Clone)]
-    pub enum SortBy {
-        Name,
-        Size,
-        DateAdded,
-        Default,
-    }
-
-    // Replicate the sorting function for testing
-    fn sort_entries_by_type(
-        sort_by: SortBy,
-        sort_type: SortType,
-        mut entries: Vec<PathBuf>,
-    ) -> Vec<PathBuf> {
-        match sort_type {
-            SortType::ASC => match sort_by {
-                SortBy::Name => entries.sort_by(|a, b| {
-                    a.file_name()
-                        .unwrap()
-                        .to_ascii_lowercase()
-                        .cmp(&b.file_name().unwrap().to_ascii_lowercase())
-                }),
-                SortBy::Size => entries.sort_by(|a, b| {
-                    a.metadata()
-                        .ok()
-                        .map(|meta| meta.len())
-                        .unwrap_or(0)
-                        .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-                }),
-                SortBy::DateAdded => entries.sort_by(|a, b| {
-                    a.metadata()
-                        .ok()
-                        .and_then(|meta| meta.created().ok())
-                        .unwrap_or(std::time::SystemTime::now())
-                        .cmp(
-                            &b.metadata()
-                                .ok()
-                                .and_then(|meta| meta.created().ok())
-                                .unwrap_or(std::time::SystemTime::now()),
-                        )
-                }),
-                _ => {}
-            },
-            SortType::DESC => match sort_by {
-                SortBy::Name => entries.sort_by(|a, b| {
-                    b.file_name()
-                        .unwrap()
-                        .to_ascii_lowercase()
-                        .cmp(&a.file_name().unwrap().to_ascii_lowercase())
-                }),
-                SortBy::Size => entries.sort_by(|a, b| {
-                    b.metadata()
-                        .ok()
-                        .map(|meta| meta.len())
-                        .unwrap_or(0)
-                        .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-                }),
-                SortBy::DateAdded => entries.sort_by(|a, b| {
-                    b.metadata()
-                        .ok()
-                        .and_then(|meta| meta.created().ok())
-                        .unwrap_or(std::time::SystemTime::now())
-                        .cmp(
-                            &a.metadata()
-                                .ok()
-                                .and_then(|meta| meta.created().ok())
-                                .unwrap_or(std::time::SystemTime::now()),
-                        )
-                }),
-                _ => {}
-            },
-        }
-        entries
-    }
 
     #[test]
     fn test_sort_by_name_ascending() {
         let temp_dir = setup_simple_test_directory().expect("Failed to create test directory");
         let base_path = temp_dir.path();
 
-        let mut entries = vec![
+        let entries = vec![
             base_path.join("zebra.txt"),
             base_path.join("apple.txt"),
             base_path.join("banana.txt"),
@@ -130,7 +48,7 @@ mod sorting_tests {
         let temp_dir = setup_simple_test_directory().expect("Failed to create test directory");
         let base_path = temp_dir.path();
 
-        let mut entries = vec![
+        let entries = vec![
             base_path.join("apple.txt"),
             base_path.join("zebra.txt"),
             base_path.join("banana.txt"),
@@ -217,23 +135,6 @@ mod sorting_tests {
 mod path_handling_tests {
     use super::*;
 
-    fn get_curr_path(path: String) -> String {
-        let mut split_path = path.split("/").collect::<Vec<&str>>();
-        split_path.pop();
-        let vec_to_str = split_path.join("/");
-        vec_to_str
-    }
-
-    fn is_file(path: String) -> bool {
-        match fs::metadata(path) {
-            Ok(file) => {
-                let file_t = file.file_type();
-                file_t.is_file()
-            }
-            Err(_) => false,
-        }
-    }
-
     #[test]
     fn test_get_curr_path() {
         let path = "/home/user/documents/file.txt".to_string();
@@ -274,32 +175,7 @@ mod path_handling_tests {
 
 #[cfg(test)]
 mod string_conversion_tests {
-    use super::sorting_tests::{SortBy, SortType};
     use super::*;
-
-    fn convert_file_path_to_string(
-        entries: Vec<PathBuf>,
-        show_hidden: bool,
-        _sort_by: SortBy,
-        _sort_type: SortType,
-    ) -> Vec<String> {
-        let mut file_strings: Vec<String> = Vec::new();
-
-        for entry in entries {
-            if entry.is_dir() {
-                let file = entry.into_os_string().to_str().unwrap().to_string();
-                file_strings.push(file);
-            } else if entry.is_file() {
-                let file_name = entry.file_name().unwrap().to_str().unwrap();
-                if show_hidden || !file_name.starts_with(".") {
-                    let entry_value = entry.to_str().unwrap().to_string();
-                    file_strings.push(entry_value);
-                }
-            }
-        }
-
-        file_strings
-    }
 
     #[test]
     fn test_convert_paths_show_all() {
@@ -342,25 +218,6 @@ mod string_conversion_tests {
 mod utility_tests {
     use super::*;
 
-    fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
-        let get_info = std::path::Path::new(&curr_path);
-        let file_name = get_info.file_name().unwrap().to_str().unwrap();
-        format!("{}/copy_{}", new_path, file_name)
-    }
-
-    fn create_item_based_on_type(
-        current_file_path: String,
-        new_item: String,
-    ) -> Result<bool, Box<dyn std::error::Error>> {
-        if new_item.contains(".") {
-            // It's a file
-            Ok(true)
-        } else {
-            // It's a directory
-            Ok(false)
-        }
-    }
-
     #[test]
     fn test_generate_copy_file_dir_name() {
         let curr_path = "/home/user/document.txt".to_string();
@@ -368,23 +225,5 @@ mod utility_tests {
 
         let result = generate_copy_file_dir_name(curr_path, new_path);
         assert_eq!(result, "/home/user/backup/copy_document.txt");
-    }
-
-    #[test]
-    fn test_create_item_based_on_type_file() {
-        let current_path = "/tmp".to_string();
-        let new_item = "test.txt".to_string();
-
-        let result = create_item_based_on_type(current_path, new_item).unwrap();
-        assert!(result); // Should be true for files
-    }
-
-    #[test]
-    fn test_create_item_based_on_type_directory() {
-        let current_path = "/tmp".to_string();
-        let new_item = "new_directory".to_string();
-
-        let result = create_item_based_on_type(current_path, new_item).unwrap();
-        assert!(!result); // Should be false for directories
     }
 }

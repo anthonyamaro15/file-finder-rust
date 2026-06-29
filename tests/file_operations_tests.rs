@@ -1,5 +1,11 @@
 mod common;
 
+use file_finder::app::App;
+use file_finder::operations::file_ops::{create_new_dir, create_new_file, delete_dir, delete_file};
+use file_finder::operations::{
+    copy_dir_file_helper, create_item_based_on_type, handle_delete_based_on_type, handle_rename,
+};
+use file_finder::utils::files::{check_if_exists, generate_copy_file_dir_name};
 use std::fs;
 use std::path::Path;
 use tempfile::tempdir;
@@ -7,33 +13,6 @@ use tempfile::tempdir;
 #[cfg(test)]
 mod file_creation_tests {
     use super::*;
-
-    fn create_new_file(current_file_path: String, file_name: String) -> anyhow::Result<()> {
-        let append_path = format!("{}/{}", current_file_path, file_name);
-        match fs::File::create_new(append_path) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn create_new_dir(current_file_path: String, new_item: String) -> anyhow::Result<()> {
-        let append_path = format!("{}/{}", current_file_path, new_item);
-        match fs::create_dir(append_path) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn create_item_based_on_type(
-        current_file_path: String,
-        new_item: String,
-    ) -> anyhow::Result<()> {
-        if new_item.contains(".") {
-            create_new_file(current_file_path, new_item)
-        } else {
-            create_new_dir(current_file_path, new_item)
-        }
-    }
 
     #[test]
     fn test_create_new_file_success() {
@@ -119,32 +98,6 @@ mod file_creation_tests {
 #[cfg(test)]
 mod file_deletion_tests {
     use super::*;
-
-    fn delete_file(file: &str) -> anyhow::Result<()> {
-        match fs::remove_file(file) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn delete_dir(file: &str) -> anyhow::Result<()> {
-        match fs::remove_dir_all(file) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    fn handle_delete_based_on_type(file: &str) -> anyhow::Result<()> {
-        let metadata = fs::metadata(file)?;
-        let file_type = metadata.file_type();
-
-        if file_type.is_dir() {
-            delete_dir(file)?;
-        } else {
-            delete_file(file)?;
-        }
-        Ok(())
-    }
 
     #[test]
     fn test_delete_file_success() {
@@ -234,16 +187,13 @@ mod file_deletion_tests {
 #[cfg(test)]
 mod file_rename_tests {
     use super::*;
-    use std::io;
 
-    fn handle_rename(old_path: String, new_name: String, current_dir: String) -> io::Result<()> {
-        let curr_path = format!("{}/{}", current_dir, old_path);
-        let new_path = format!("{}/{}", current_dir, new_name);
-
-        match fs::rename(curr_path, new_path) {
-            Ok(res) => Ok(res),
-            Err(error) => Err(error),
-        }
+    fn rename_app(current_dir: String, current_name: &str, new_name: &str) -> App {
+        let mut app = App::new(Vec::new());
+        app.current_path_to_edit = current_dir;
+        app.current_name_to_edit = current_name.to_string();
+        app.create_edit_file_name = new_name.to_string();
+        app
     }
 
     #[test]
@@ -259,11 +209,8 @@ mod file_rename_tests {
         fs::write(temp_dir.path().join(old_name), file_content)
             .expect("Failed to create test file");
 
-        let result = handle_rename(
-            old_name.to_string(),
-            new_name.to_string(),
-            temp_path.clone(),
-        );
+        let app = rename_app(temp_path.clone(), old_name, new_name);
+        let result = handle_rename(&app);
 
         assert!(result.is_ok());
         assert!(!Path::new(&format!("{}/{}", temp_path, old_name)).exists());
@@ -289,11 +236,8 @@ mod file_rename_tests {
         fs::write(old_dir_path.join("file.txt"), "content")
             .expect("Failed to create file in directory");
 
-        let result = handle_rename(
-            old_name.to_string(),
-            new_name.to_string(),
-            temp_path.clone(),
-        );
+        let app = rename_app(temp_path.clone(), old_name, new_name);
+        let result = handle_rename(&app);
 
         assert!(result.is_ok());
         assert!(!Path::new(&format!("{}/{}", temp_path, old_name)).exists());
@@ -313,7 +257,8 @@ mod file_rename_tests {
         let old_name = "nonexistent.txt";
         let new_name = "new_file.txt";
 
-        let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path);
+        let app = rename_app(temp_path, old_name, new_name);
+        let result = handle_rename(&app);
 
         assert!(result.is_err());
     }
@@ -332,57 +277,18 @@ mod file_rename_tests {
         fs::write(temp_dir.path().join(new_name), "target content")
             .expect("Failed to create target file");
 
-        let result = handle_rename(old_name.to_string(), new_name.to_string(), temp_path);
+        let app = rename_app(temp_path.clone(), old_name, new_name);
+        let result = handle_rename(&app);
 
-        // On most systems, rename should succeed and overwrite the target
-        // But we'll check that one of them doesn't exist anymore
-        assert!(result.is_ok());
+        assert!(result.is_err());
+        assert!(Path::new(&format!("{}/{}", temp_path, old_name)).exists());
+        assert!(Path::new(&format!("{}/{}", temp_path, new_name)).exists());
     }
 }
 
 #[cfg(test)]
 mod file_copy_tests {
     use super::*;
-    use rayon::prelude::*;
-    use std::io::{self, ErrorKind};
-    use walkdir::WalkDir;
-
-    fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
-        if src.is_file() {
-            fs::copy(src, new_src)?;
-        } else {
-            let entries: Vec<_> = WalkDir::new(src)
-                .into_iter()
-                .filter_map(Result::ok)
-                .collect();
-            entries.par_iter().try_for_each(|entry| {
-                let entry_path = entry.path();
-                let relative_path = entry_path.strip_prefix(src).unwrap();
-                let dst_path = new_src.join(relative_path);
-
-                if entry_path.is_dir() {
-                    fs::create_dir_all(&dst_path)?;
-                } else if entry_path.is_file() {
-                    if let Some(parent) = dst_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::copy(entry_path, dst_path)?;
-                } else {
-                    return Err(io::Error::new(ErrorKind::Other, "unsupported file type"));
-                }
-
-                Ok(())
-            })?;
-        }
-
-        Ok(())
-    }
-
-    fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
-        let get_info = Path::new(&curr_path);
-        let file_name = get_info.file_name().unwrap().to_str().unwrap();
-        format!("{}/copy_{}", new_path, file_name)
-    }
 
     #[test]
     fn test_copy_file_success() {
@@ -479,13 +385,6 @@ mod file_copy_tests {
 #[cfg(test)]
 mod path_validation_tests {
     use super::*;
-
-    fn check_if_exists(new_path: String) -> bool {
-        match Path::new(&new_path).try_exists() {
-            Ok(value) => value,
-            Err(_) => false,
-        }
-    }
 
     #[test]
     fn test_check_if_exists_file() {
