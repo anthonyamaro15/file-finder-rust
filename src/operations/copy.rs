@@ -395,7 +395,8 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
 
                         // Track bytes copied (get file size)
                         let file_size = entry_path.metadata().map(|m| m.len()).unwrap_or(0);
-                        let current_bytes = bytes_copied.fetch_add(file_size, Ordering::Relaxed) + file_size;
+                        let current_bytes =
+                            bytes_copied.fetch_add(file_size, Ordering::Relaxed) + file_size;
 
                         let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
                         if count % UPDATE_INTERVAL == 0 || count == total_files {

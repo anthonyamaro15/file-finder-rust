@@ -18,7 +18,11 @@ pub fn create_file_preview<'a>(content: &'a str) -> Paragraph<'a> {
 pub fn create_image_preview<'a>(image_info: &'a str, has_image: bool) -> Paragraph<'a> {
     if has_image {
         Paragraph::new(image_info)
-            .block(Block::default().borders(Borders::ALL).title("Image Preview"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Image Preview"),
+            )
             .style(Style::default().fg(Color::Green))
     } else {
         let display_text = if image_info.is_empty() {

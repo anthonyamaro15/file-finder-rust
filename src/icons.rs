@@ -208,7 +208,9 @@ impl IconProvider {
         if let Some(ref name) = filename {
             let icon = match name.as_str() {
                 "dockerfile" | "dockerfile.dev" | "dockerfile.prod" => Some(icons::DOCKERFILE),
-                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => Some(icons::DOCKER),
+                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => {
+                    Some(icons::DOCKER)
+                }
                 "makefile" | "gnumakefile" => Some(icons::MAKEFILE),
                 "cargo.toml" => Some(icons::RUST),
                 "cargo.lock" => Some(icons::LOCK),
@@ -217,7 +219,9 @@ impl IconProvider {
                 "readme" | "readme.md" | "readme.txt" | "readme.rst" => Some(icons::README),
                 "license" | "license.md" | "license.txt" | "copying" => Some(icons::LICENSE),
                 ".gitignore" | ".gitattributes" | ".gitmodules" => Some(icons::GITIGNORE),
-                ".env" | ".env.local" | ".env.development" | ".env.production" => Some(icons::CONFIG),
+                ".env" | ".env.local" | ".env.development" | ".env.production" => {
+                    Some(icons::CONFIG)
+                }
                 "requirements.txt" | "pyproject.toml" | "setup.py" => Some(icons::PYTHON),
                 "gemfile" | "gemfile.lock" => Some(icons::RUBY),
                 _ => None,
@@ -274,7 +278,12 @@ impl IconProvider {
     }
 
     /// Get colored icon for a file based on its path, using theme colors
-    pub fn get_colored_for_path(&self, path: &Path, is_directory: bool, theme: &ThemeColors) -> ColoredIcon {
+    pub fn get_colored_for_path(
+        &self,
+        path: &Path,
+        is_directory: bool,
+        theme: &ThemeColors,
+    ) -> ColoredIcon {
         let icon = self.get_icon_pair_for_path(path, is_directory);
         let color = Self::get_color_for_path(path, is_directory, theme);
         ColoredIcon::new(icon, color)
@@ -302,7 +311,9 @@ impl IconProvider {
         if let Some(ref name) = filename {
             let color = match name.as_str() {
                 "dockerfile" | "dockerfile.dev" | "dockerfile.prod" => Some(theme.icon_docker),
-                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => Some(theme.icon_docker),
+                "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml" => {
+                    Some(theme.icon_docker)
+                }
                 "makefile" | "gnumakefile" => Some(theme.icon_config),
                 "cargo.toml" => Some(theme.icon_rust),
                 "cargo.lock" => Some(theme.icon_lock),
@@ -311,7 +322,9 @@ impl IconProvider {
                 "readme" | "readme.md" | "readme.txt" | "readme.rst" => Some(theme.icon_readme),
                 "license" | "license.md" | "license.txt" | "copying" => Some(theme.icon_license),
                 ".gitignore" | ".gitattributes" | ".gitmodules" => Some(theme.icon_git),
-                ".env" | ".env.local" | ".env.development" | ".env.production" => Some(theme.icon_config),
+                ".env" | ".env.local" | ".env.development" | ".env.production" => {
+                    Some(theme.icon_config)
+                }
                 "requirements.txt" | "pyproject.toml" | "setup.py" => Some(theme.icon_python),
                 "gemfile" | "gemfile.lock" => Some(theme.icon_ruby),
                 _ => None,
@@ -350,7 +363,9 @@ impl IconProvider {
             Some("xml" | "plist") => theme.icon_xml,
             Some("md" | "markdown" | "rst") => theme.icon_markdown,
             Some("ini" | "cfg" | "conf" | "config") => theme.icon_config,
-            Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => theme.icon_image,
+            Some("png" | "jpg" | "jpeg" | "gif" | "bmp" | "svg" | "ico" | "webp") => {
+                theme.icon_image
+            }
             Some("mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm") => theme.icon_video,
             Some("mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a") => theme.icon_audio,
             Some("pdf") => theme.icon_pdf,

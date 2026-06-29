@@ -139,9 +139,9 @@ impl Pane {
         self.selected_index.and_then(|idx| {
             if !self.search_results.is_empty() {
                 // In search mode, use filtered indexes
-                self.filtered_indexes.get(idx).and_then(|&real_idx| {
-                    self.files.get(real_idx).cloned()
-                })
+                self.filtered_indexes
+                    .get(idx)
+                    .and_then(|&real_idx| self.files.get(real_idx).cloned())
             } else {
                 self.files.get(idx).cloned()
             }
@@ -166,7 +166,11 @@ impl Pane {
 
         let new_index = match self.selected_index {
             Some(i) => {
-                if i >= list_len - 1 { 0 } else { i + 1 }
+                if i >= list_len - 1 {
+                    0
+                } else {
+                    i + 1
+                }
             }
             None => 0,
         };
@@ -184,7 +188,11 @@ impl Pane {
 
         let new_index = match self.selected_index {
             Some(i) => {
-                if i == 0 { list_len - 1 } else { i - 1 }
+                if i == 0 {
+                    list_len - 1
+                } else {
+                    i - 1
+                }
             }
             None => 0,
         };
@@ -355,10 +363,16 @@ mod tests {
         ];
         let mut pane = Pane::new("/home/user".to_string(), files);
 
-        assert_eq!(pane.get_selected_path(), Some("/home/user/a.txt".to_string()));
+        assert_eq!(
+            pane.get_selected_path(),
+            Some("/home/user/a.txt".to_string())
+        );
 
         pane.navigate_down();
-        assert_eq!(pane.get_selected_path(), Some("/home/user/b.txt".to_string()));
+        assert_eq!(
+            pane.get_selected_path(),
+            Some("/home/user/b.txt".to_string())
+        );
     }
 
     #[test]
