@@ -581,6 +581,15 @@ impl App {
         new_cursor_pos.clamp(0, self.create_edit_file_name.chars().count())
     }
 
+    pub fn validate_user_input(&self, input: &str) -> Option<IDE> {
+        match input {
+            "nvim" => Some(IDE::NVIM),
+            "vscode" => Some(IDE::VSCODE),
+            "zed" => Some(IDE::ZED),
+            _ => None,
+        }
+    }
+
     pub fn get_selected_ide(&self) -> Option<String> {
         if let Some(selection) = &self.selected_id {
             match selection {
@@ -1019,5 +1028,4 @@ impl App {
         self.preview_pending_since = None;
     }
 }
-
 

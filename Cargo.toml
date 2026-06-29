@@ -25,6 +25,10 @@ homepage = "https://github.com/anthonyamaro15/file-finder-rust"
 description = "A blazing-fast TUI file finder with fuzzy search, ranking, and IDE integration"
 license = "MIT"
 
+[lib]
+name = "file_finder"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.83"
 clap = { version = "4.0", features = ["derive"] }
@@ -82,4 +86,3 @@ dist = true
 [[bin]]
 name = "ff"
 path = "src/main.rs"
-
