@@ -13,7 +13,7 @@ use std::{
 // External crate imports
 use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{self as crossterm_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -37,6 +37,7 @@ mod config;
 mod configuration;
 mod directory_store;
 mod errors;
+mod event;
 mod file_reader_content;
 mod highlight;
 mod operations;
@@ -54,6 +55,15 @@ use crate::{
     app::{App, InputMode, PanePosition, ViewMode},
     cli::{compute_effective_config, CliArgs},
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
+    event::{
+        file_actions::{
+            containing_directory, containing_directory_or_current, create_target_directory,
+            rename_target,
+        },
+        navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
+        search::handle_search_key,
+        sort::apply_sort,
+    },
     file_reader_content::{FileContent, FileType},
     operations::{
         copy_dir_file_with_progress, create_item_based_on_type, delete_with_progress,
@@ -366,32 +376,6 @@ fn update_preview_for_path(
 
         app.preview_files = Vec::new();
     }
-}
-
-/// Apply a sort operation to the current file list.
-/// This consolidates the duplicated sort logic from the WatchSort handlers.
-/// Also persists the sort state to app for future refreshes.
-fn apply_sort(app: &mut App, sort_by: SortBy) -> anyhow::Result<()> {
-    if app.files.is_empty() {
-        return Ok(());
-    }
-
-    // Save sort preference to app state
-    app.sort_by = sort_by.clone();
-
-    // Get current directory path from first file in list
-    let cur_path = get_curr_path(app.files[0].clone());
-
-    // Get sorted file list using app's persisted sort state
-    let file_path_list = get_file_path_data(cur_path, app.show_hidden_files, app.sort_by.clone(), &app.sort_type)?;
-
-    // Update app state
-    app.files = file_path_list.clone();
-    app.read_only_files = file_path_list;
-    app.update_file_references();
-    app.input_mode = InputMode::Normal;
-
-    Ok(())
 }
 
 fn handle_file_selection(
@@ -1503,9 +1487,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Handle input with timeout for dynamic progress updates
         let timeout = std::time::Duration::from_millis(100); // 100ms timeout
-        if let Ok(available) = event::poll(timeout) {
+        if let Ok(available) = crossterm_event::poll(timeout) {
             if available {
-                if let Event::Key(key) = event::read()? {
+                if let Event::Key(key) = crossterm_event::read()? {
                     match app.input_mode {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('i') => {
@@ -1523,17 +1507,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else {
                                     let list_len = app.get_list_length();
 
-                                    if list_len > 0 {
-                                        let i = match state.selected() {
-                                            Some(i) => {
-                                                if i >= list_len - 1 {
-                                                    0
-                                                } else {
-                                                    i + 1
-                                                }
-                                            }
-                                            None => 0,
-                                        };
+                                    if let Some(i) = next_index_wrapping(state.selected(), list_len)
+                                    {
                                         state.select(Some(i));
                                         app.curr_index = Some(i);
 
@@ -1551,17 +1526,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else {
                                     let list_len = app.get_list_length();
 
-                                    if list_len > 0 {
-                                        let i = match state.selected() {
-                                            Some(i) => {
-                                                if i == 0 {
-                                                    list_len - 1
-                                                } else {
-                                                    i - 1
-                                                }
-                                            }
-                                            None => 0,
-                                        };
+                                    if let Some(i) =
+                                        previous_index_wrapping(state.selected(), list_len)
+                                    {
                                         state.select(Some(i));
                                         app.curr_index = Some(i);
 
@@ -1576,8 +1543,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // In DualPane mode with right pane active, navigate right pane to parent
                                 if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                                     let current_dir = app.right_pane.current_directory.clone();
-                                    if let Some(parent) =
-                                        std::path::Path::new(&current_dir).parent()
+                                    if let Some(parent) = parent_directory(Path::new(&current_dir))
                                     {
                                         if let Some(parent_str) = parent.to_str() {
                                             app.right_pane.navigate_to_directory(parent_str);
@@ -1585,37 +1551,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 } else if app.files.len() > 0 {
                                     let selected = &app.files[state.selected().unwrap()];
-                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
+                                    let selected_path = Path::new(selected);
 
                                     // TODO: refactor this to be more idiomatic
-                                    if split_path.len() > 4 {
-                                        split_path.pop();
-                                        split_path.pop();
+                                    if selected_path.components().count() > 4 {
+                                        let new_path = parent_directory(selected_path)
+                                            .and_then(|path| parent_directory(&path))
+                                            .map(|path| path.to_string_lossy().to_string());
 
-                                        let new_path = split_path.join("/");
-                                        let files_strings = get_inner_files_info(
-                                            new_path.clone(),
-                                            app.show_hidden_files,
-                                            app.sort_by.clone(),
-                                            &app.sort_type,
-                                        )
-                                        .unwrap();
+                                        if let Some(new_path) = new_path {
+                                            let files_strings = get_inner_files_info(
+                                                new_path.clone(),
+                                                app.show_hidden_files,
+                                                app.sort_by.clone(),
+                                                &app.sort_type,
+                                            )
+                                            .unwrap();
 
-                                        if let Some(f_s) = files_strings {
-                                            app.read_only_files = f_s.clone();
-                                            app.files = f_s;
-                                            app.update_file_references();
-                                            state.select(Some(0));
+                                            if let Some(f_s) = files_strings {
+                                                app.read_only_files = f_s.clone();
+                                                app.files = f_s;
+                                                app.update_file_references();
+                                                state.select(Some(0));
 
-                                            // Start watching the new directory
-                                            if let Err(e) = app.start_watching_directory(&new_path)
-                                            {
-                                                debug!(
+                                                // Start watching the new directory
+                                                if let Err(e) =
+                                                    app.start_watching_directory(&new_path)
+                                                {
+                                                    debug!(
                                                     "Failed to start watching directory '{}': {}",
                                                     new_path, e
                                                 );
-                                            } else {
-                                                debug!("Started watching directory: {}", new_path);
+                                                } else {
+                                                    debug!(
+                                                        "Started watching directory: {}",
+                                                        new_path
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -1902,14 +1874,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let selected_index = state.selected();
                                 if let Some(index) = selected_index {
                                     let selected = &app.files[index];
-                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                                    let placeholder_name = split_path.pop().unwrap();
-                                    let new_path = split_path.join("/");
-                                    let placeholder_name_copy = placeholder_name;
-                                    app.current_path_to_edit = new_path;
-                                    app.current_name_to_edit = placeholder_name_copy.to_string();
-                                    app.create_edit_file_name = placeholder_name.to_string();
-                                    app.char_index = placeholder_name.len();
+                                    let selected_path = Path::new(selected);
+                                    if let Some((parent, placeholder_name)) =
+                                        rename_target(selected_path)
+                                    {
+                                        app.current_path_to_edit =
+                                            parent.to_string_lossy().to_string();
+                                        app.current_name_to_edit = placeholder_name.clone();
+                                        app.create_edit_file_name = placeholder_name.clone();
+                                        app.char_index = placeholder_name.len();
+                                    }
                                 }
                                 app.input_mode = InputMode::WatchRename;
                             }
@@ -1920,9 +1894,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(indx) = selected_index {
                                     let selected = &app.files[indx];
 
-                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                                    split_path.pop();
-                                    let new_path = split_path.join("/");
+                                    let new_path = containing_directory(Path::new(selected))
+                                        .to_string_lossy()
+                                        .to_string();
                                     match get_inner_files_info(
                                         new_path,
                                         is_hidden,
@@ -1950,12 +1924,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let src_path = Path::new(selected_path);
 
                                         // Get current directory (parent of selected item)
-                                        let current_dir = if src_path.is_file() {
-                                            src_path.parent().unwrap_or(Path::new("."))
-                                        } else {
-                                            // For directories, get the parent directory
-                                            src_path.parent().unwrap_or(Path::new("."))
-                                        };
+                                        let current_dir = containing_directory_or_current(src_path);
 
                                         // Generate copy name
                                         let new_path_with_new_name = generate_copy_file_dir_name(
@@ -2127,9 +2096,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let new_path = if Path::new(selected).is_dir() {
                                         selected.clone()
                                     } else {
-                                        let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                                        split_path.pop();
-                                        split_path.join("/")
+                                        create_target_directory(Path::new(selected))
+                                            .to_string_lossy()
+                                            .to_string()
                                     };
                                     match create_item_based_on_type(
                                         new_path.clone(),
@@ -2162,27 +2131,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         },
 
-                        InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                            KeyCode::Enter => app.submit_message(),
-                            KeyCode::Char(to_insert) => {
-                                app.enter_char(to_insert, store.clone());
-                            }
-                            KeyCode::Backspace => {
-                                app.delete_char(store.clone());
-                            }
-                            KeyCode::Left => {
-                                app.move_cursor_left();
-                            }
-
-                            KeyCode::Right => {
-                                app.move_cursor_right();
-                            }
-                            KeyCode::Esc => {
-                                app.input_mode = InputMode::Normal;
-                            }
-
-                            _ => {}
-                        },
+                        InputMode::Editing if key.kind == KeyEventKind::Press => {
+                            handle_search_key(&mut app, key.code, &store);
+                        }
                         InputMode::WatchDelete => match key.code {
                             KeyCode::Char('q') => {
                                 app.render_popup = false;
@@ -2200,9 +2151,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(selected_indx) = selected_index {
                                     let selected = &app.files[selected_indx];
                                     // Get parent directory for refresh
-                                    let mut split_path = selected.split("/").collect::<Vec<&str>>();
-                                    split_path.pop();
-                                    let current_dir = split_path.join("/");
+                                    let current_dir = containing_directory(Path::new(selected))
+                                        .to_string_lossy()
+                                        .to_string();
 
                                     let path = Path::new(selected);
 
