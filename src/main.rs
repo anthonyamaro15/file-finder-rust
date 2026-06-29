@@ -84,6 +84,35 @@ const MAX_IMAGE_DIMENSION: u32 = 8192;
 /// Prevents rapid preview updates when scrolling quickly through files
 const PREVIEW_DEBOUNCE_MS: u64 = 50;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartupPaths {
+    file_list_path: String,
+    watcher_path: String,
+    cache_path: String,
+    refresh_fallback_path: String,
+}
+
+fn startup_paths(effective_config: &crate::cli::EffectiveConfig) -> StartupPaths {
+    let start_path = effective_config.start_path.to_string_lossy().to_string();
+
+    StartupPaths {
+        file_list_path: start_path.clone(),
+        watcher_path: start_path.clone(),
+        cache_path: start_path.clone(),
+        refresh_fallback_path: start_path,
+    }
+}
+
+fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
+    if !app.files.is_empty() {
+        get_curr_path(app.files[0].clone())
+    } else if !app.current_directory.is_empty() {
+        app.current_directory.clone()
+    } else {
+        fallback_start_path.to_string()
+    }
+}
+
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
 /// with fallback to Unicode halfblocks for unsupported terminals.
 struct ImageRenderer {
@@ -464,6 +493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         effective_config.theme,
         effective_config.editor
     );
+    let startup_paths = startup_paths(&effective_config);
 
     let mut file_reader_content = FileContent::new(ps, ts);
     // Apply syntax theme from settings
@@ -473,7 +503,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initial file list uses default sort (will be stored in app.sort_by/sort_type)
     let file_strings = get_file_path_data(
-        effective_config.start_path.to_string_lossy().to_string(),
+        startup_paths.file_list_path.clone(),
         false,
         SortBy::Default,
         &SortType::ASC,
@@ -487,13 +517,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Start file system watching for the initial directory
-    if let Err(e) = app.start_watching_directory(&settings.start_path) {
+    if let Err(e) = app.start_watching_directory(&startup_paths.watcher_path) {
         debug!(
             "Failed to start watching directory '{}': {}",
-            settings.start_path, e
+            startup_paths.watcher_path, e
         );
     } else {
-        debug!("Started watching directory: {}", settings.start_path);
+        debug!("Started watching directory: {}", startup_paths.watcher_path);
     }
 
     // Set editor from effective configuration (CLI args have precedence)
@@ -533,7 +563,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Start async cache building
         let start_time = std::time::Instant::now();
         let rx = build_directory_from_store_async(
-            settings.start_path.clone(),
+            startup_paths.cache_path.clone(),
             settings.ignore_directories.clone(),
         );
 
@@ -1255,13 +1285,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             debug!("Copy completed: {}", message);
 
                             // Refresh file lists to show the copied item in the CURRENT directory
-                            let refresh_dir: String = if !app.files.is_empty() {
-                                // Derive current directory from the first listed item
-                                get_curr_path(app.files[0].clone())
-                            } else {
-                                // Fallback to configured start path
-                                settings.start_path.to_owned()
-                            };
+                            let refresh_dir = current_refresh_directory(
+                                &app,
+                                &startup_paths.refresh_fallback_path,
+                            );
 
                             if let Ok(file_path_list) = get_file_path_data(
                                 refresh_dir,
@@ -1396,11 +1423,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let fs_events = app.process_file_system_events();
         if !fs_events.is_empty() {
             // File system changes detected, refresh the CURRENT directory (not the start path)
-            let refresh_dir: String = if !app.files.is_empty() {
-                get_curr_path(app.files[0].clone())
-            } else {
-                settings.start_path.to_owned()
-            };
+            let refresh_dir = current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
 
             if let Ok(file_path_list) = get_file_path_data(
                 refresh_dir,
@@ -1463,7 +1486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     debug!("No completed cache available, falling back to current directory");
                     // Fallback to current directory files
                     get_file_path_data(
-                        settings.start_path.clone(),
+                        startup_paths.refresh_fallback_path.clone(),
                         false,
                         app.sort_by.clone(),
                         &app.sort_type,
@@ -2290,4 +2313,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
     terminal.clear()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn startup_paths_use_effective_start_path_for_display_watch_and_cache() {
+        let effective_config = crate::cli::EffectiveConfig {
+            start_path: PathBuf::from("/tmp/ff-cli-start"),
+            theme: None,
+            editor: None,
+            layout_style: crate::config::settings::LayoutStyle::Modern,
+            print_path: false,
+        };
+
+        let paths = startup_paths(&effective_config);
+
+        assert_eq!(paths.file_list_path, "/tmp/ff-cli-start");
+        assert_eq!(paths.watcher_path, "/tmp/ff-cli-start");
+        assert_eq!(paths.cache_path, "/tmp/ff-cli-start");
+        assert_eq!(paths.refresh_fallback_path, "/tmp/ff-cli-start");
+    }
+
+    #[test]
+    fn refresh_directory_prefers_watched_current_directory_when_list_empty() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/tmp/ff-empty-current".to_string();
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-empty-current"
+        );
+    }
+
+    #[test]
+    fn refresh_directory_prefers_visible_file_list_when_available() {
+        let mut app = App::new(vec!["/tmp/ff-visible/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-stale-current".to_string();
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-visible"
+        );
+    }
 }
