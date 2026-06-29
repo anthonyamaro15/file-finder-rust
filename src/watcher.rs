@@ -4,9 +4,10 @@ use std::thread;
 use std::time::Duration;
 
 use log::{debug, error};
-use notify::{
-    Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Result as NotifyResult, Watcher,
-};
+use notify::PollWatcher;
+use notify::{Config, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+
+type WatcherBackend = PollWatcher;
 
 /// Events that the file watcher can send to the main application
 #[derive(Debug, Clone)]
@@ -31,7 +32,7 @@ pub enum WatcherEvent {
 /// File system watcher that monitors a directory for changes
 #[derive(Debug)]
 pub struct FileSystemWatcher {
-    watcher: Option<RecommendedWatcher>,
+    watcher: Option<WatcherBackend>,
     event_receiver: Receiver<WatcherEvent>,
     _event_sender: Sender<WatcherEvent>, // Keep sender alive
 }
@@ -48,6 +49,16 @@ impl FileSystemWatcher {
         })
     }
 
+    #[cfg(test)]
+    fn watcher_config() -> Config {
+        Config::default().with_poll_interval(Duration::from_millis(50))
+    }
+
+    #[cfg(not(test))]
+    fn watcher_config() -> Config {
+        Config::default().with_poll_interval(Duration::from_millis(250))
+    }
+
     /// Start watching a directory for changes
     pub fn watch_directory<P: AsRef<Path>>(&mut self, path: P) -> Result<(), String> {
         let path = path.as_ref().to_path_buf();
@@ -55,13 +66,13 @@ impl FileSystemWatcher {
         let event_sender = self._event_sender.clone();
 
         // Create the watcher
-        let mut watcher = RecommendedWatcher::new(
+        let mut watcher = WatcherBackend::new(
             move |res: NotifyResult<Event>| {
                 if let Err(e) = tx.send(res) {
                     error!("Failed to send watcher event: {}", e);
                 }
             },
-            Config::default(),
+            Self::watcher_config(),
         )
         .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
@@ -276,6 +287,21 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    fn wait_for_events(watcher: &FileSystemWatcher, timeout: Duration) -> Vec<WatcherEvent> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut events = Vec::new();
+
+        while std::time::Instant::now() < deadline {
+            events.extend(watcher.poll_events());
+            if !events.is_empty() {
+                return events;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        events
+    }
+
     #[test]
     fn test_watcher_creation() {
         let watcher = FileSystemWatcher::new();
@@ -305,11 +331,7 @@ mod tests {
         let test_file = dir.path().join("test.txt");
         fs::write(&test_file, "test content").unwrap();
 
-        // Give the watcher time to detect the change
-        std::thread::sleep(Duration::from_millis(300));
-
-        // Check for events
-        let events = watcher.poll_events();
+        let events = wait_for_events(&watcher, Duration::from_secs(3));
 
         // We should receive at least one event
         assert!(!events.is_empty());
