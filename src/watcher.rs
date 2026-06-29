@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use log::{debug, error};
 use notify::PollWatcher;
-use notify::{Config, Event, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use notify::{
+    Config, Error as NotifyError, ErrorKind as NotifyErrorKind, Event, EventKind, RecursiveMode,
+    Result as NotifyResult, Watcher,
+};
 
 type WatcherBackend = PollWatcher;
 
@@ -141,10 +144,13 @@ impl FileSystemWatcher {
                     }
                 }
                 Ok(Err(e)) => {
-                    error!("File watcher error: {}", e);
-                    if let Err(send_err) =
-                        event_sender.send(WatcherEvent::WatcherError(e.to_string()))
-                    {
+                    let watcher_event = Self::event_from_watcher_error(&e, &watched_path)
+                        .unwrap_or_else(|| {
+                            error!("File watcher error: {}", e);
+                            WatcherEvent::WatcherError(e.to_string())
+                        });
+
+                    if let Err(send_err) = event_sender.send(watcher_event) {
                         error!("Failed to send watcher error: {}", send_err);
                         break;
                     }
@@ -194,6 +200,33 @@ impl FileSystemWatcher {
             }
         }
         false
+    }
+
+    fn event_from_watcher_error(error: &NotifyError, watched_path: &Path) -> Option<WatcherEvent> {
+        if !Self::is_not_found_error(&error.kind) {
+            return None;
+        }
+
+        let deleted_paths: Vec<PathBuf> = error
+            .paths
+            .iter()
+            .filter(|path| path.parent() == Some(watched_path) && !path.exists())
+            .cloned()
+            .collect();
+
+        if deleted_paths.is_empty() {
+            None
+        } else {
+            Some(WatcherEvent::FilesDeleted(deleted_paths))
+        }
+    }
+
+    fn is_not_found_error(error_kind: &NotifyErrorKind) -> bool {
+        matches!(error_kind, NotifyErrorKind::PathNotFound)
+            || matches!(
+                error_kind,
+                NotifyErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound
+            )
     }
 
     /// Process a batch of events and return a single application event
@@ -346,6 +379,21 @@ mod tests {
                 || events
                     .iter()
                     .any(|event| { matches!(event, WatcherEvent::DirectoryChanged) })
+        );
+    }
+
+    #[test]
+    fn not_found_error_for_direct_child_becomes_deleted_event() {
+        let dir = tempdir().unwrap();
+        let deleted_file = dir.path().join("deleted.txt");
+        let error = notify::Error::io(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .set_paths(vec![deleted_file.clone()]);
+
+        let event = FileSystemWatcher::event_from_watcher_error(&error, dir.path());
+
+        assert!(
+            matches!(&event, Some(WatcherEvent::FilesDeleted(paths)) if paths == &vec![deleted_file]),
+            "expected missing direct child error to be treated as delete event, got {event:?}"
         );
     }
 }

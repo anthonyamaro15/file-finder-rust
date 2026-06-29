@@ -32,6 +32,37 @@ pub fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
     .split(popup_layout[1])[1]
 }
 
+/// Calculate a centered input popup area with a minimum size.
+pub fn draw_input_popup(rect: Rect) -> Rect {
+    draw_fixed_height_popup(rect, 40, 30, 3)
+}
+
+fn draw_fixed_height_popup(rect: Rect, percent_x: u16, min_width: u16, height: u16) -> Rect {
+    let width = rect
+        .width
+        .saturating_mul(percent_x)
+        .checked_div(100)
+        .unwrap_or(0)
+        .max(min_width)
+        .min(rect.width);
+    let height = height.min(rect.height);
+
+    Rect {
+        x: rect.x + rect.width.saturating_sub(width) / 2,
+        y: rect.y + rect.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+/// Calculate the terminal cursor position for a one-line bordered input popup.
+pub fn input_popup_cursor_position(area: Rect, char_index: usize) -> (u16, u16) {
+    let inner_width = area.width.saturating_sub(2);
+    let cursor_offset = (char_index as u16).min(inner_width.saturating_sub(1));
+
+    (area.x + 1 + cursor_offset, area.y + 1)
+}
+
 /// Generate the sort indicator display string showing field and direction.
 pub fn generate_sort_indicator(sort_by: &SortBy, sort_type: &SortType) -> String {
     let field = match sort_by {
@@ -203,16 +234,6 @@ pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
         .style(OneDarkTheme::normal())
 }
 
-/// Split an area for popup content with margins.
-pub fn split_popup_area(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .margin(1)
-        .constraints([Constraint::Percentage(100)])
-        .split(area)
-        .to_vec()
-}
-
 /// Split an area for vertical popup content with margins.
 pub fn split_popup_area_vertical(area: Rect) -> Vec<Rect> {
     Layout::default()
@@ -237,6 +258,21 @@ mod tests {
         assert!(popup.y > 0);
         assert!(popup.width < outer.width);
         assert!(popup.height < outer.height);
+    }
+
+    #[test]
+    fn test_draw_input_popup_is_compact_bordered_input() {
+        let outer = Rect::new(0, 0, 160, 24);
+        let popup = draw_input_popup(outer);
+
+        assert_eq!(popup.height, 3);
+    }
+
+    #[test]
+    fn test_input_popup_cursor_position_uses_inner_input_row() {
+        let popup = Rect::new(20, 10, 40, 3);
+
+        assert_eq!(input_popup_cursor_position(popup, 9), (30, 11));
     }
 
     #[test]

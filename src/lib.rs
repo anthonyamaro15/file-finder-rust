@@ -4,6 +4,7 @@ pub mod config;
 pub mod configuration;
 pub mod directory_store;
 pub mod errors;
+pub mod event;
 pub mod file_reader_content;
 pub mod highlight;
 pub mod icons;
