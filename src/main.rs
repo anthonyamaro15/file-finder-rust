@@ -72,7 +72,7 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, split_popup_area_vertical,
+        draw_input_popup, draw_popup, input_popup_cursor_position, split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
@@ -948,19 +948,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match app.input_mode {
                 InputMode::Normal => {}
                 InputMode::WatchDelete => {}
-                InputMode::WatchCreate => {}
+                InputMode::WatchCreate => {
+                    let area = draw_input_popup(f.size());
+                    let (x, y) = input_popup_cursor_position(area, app.char_index);
+                    f.set_cursor(x, y);
+                }
                 InputMode::WatchRename => {
-                    // Place cursor inside the rename popup input, aligned to app.char_index
-                    let area = draw_popup(f.size(), 40, 7);
-                    let popup_chunks = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .margin(1)
-                        .constraints([Constraint::Percentage(100)])
-                        .split(area);
-                    f.set_cursor(
-                        popup_chunks[0].x + app.char_index as u16 + 1,
-                        popup_chunks[0].y + 1,
-                    );
+                    let area = draw_input_popup(f.size());
+                    let (x, y) = input_popup_cursor_position(area, app.char_index);
+                    f.set_cursor(x, y);
                 }
                 InputMode::WatchSort => {}
                 InputMode::Editing => f.set_cursor(

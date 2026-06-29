@@ -34,16 +34,10 @@ pub fn draw_popup(rect: Rect, percent_x: u16, percent_y: u16) -> Rect {
 
 /// Calculate a centered input popup area with a minimum size.
 pub fn draw_input_popup(rect: Rect) -> Rect {
-    draw_popup_with_min_size(rect, 40, 20, 30, 5)
+    draw_fixed_height_popup(rect, 40, 30, 3)
 }
 
-fn draw_popup_with_min_size(
-    rect: Rect,
-    percent_x: u16,
-    percent_y: u16,
-    min_width: u16,
-    min_height: u16,
-) -> Rect {
+fn draw_fixed_height_popup(rect: Rect, percent_x: u16, min_width: u16, height: u16) -> Rect {
     let width = rect
         .width
         .saturating_mul(percent_x)
@@ -51,13 +45,7 @@ fn draw_popup_with_min_size(
         .unwrap_or(0)
         .max(min_width)
         .min(rect.width);
-    let height = rect
-        .height
-        .saturating_mul(percent_y)
-        .checked_div(100)
-        .unwrap_or(0)
-        .max(min_height)
-        .min(rect.height);
+    let height = height.min(rect.height);
 
     Rect {
         x: rect.x + rect.width.saturating_sub(width) / 2,
@@ -65,6 +53,14 @@ fn draw_popup_with_min_size(
         width,
         height,
     }
+}
+
+/// Calculate the terminal cursor position for a one-line bordered input popup.
+pub fn input_popup_cursor_position(area: Rect, char_index: usize) -> (u16, u16) {
+    let inner_width = area.width.saturating_sub(2);
+    let cursor_offset = (char_index as u16).min(inner_width.saturating_sub(1));
+
+    (area.x + 1 + cursor_offset, area.y + 1)
 }
 
 /// Generate the sort indicator display string showing field and direction.
@@ -265,11 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn test_draw_input_popup_has_enough_height_for_bordered_input() {
+    fn test_draw_input_popup_is_compact_bordered_input() {
         let outer = Rect::new(0, 0, 160, 24);
         let popup = draw_input_popup(outer);
 
-        assert!(popup.height >= 5);
+        assert_eq!(popup.height, 3);
+    }
+
+    #[test]
+    fn test_input_popup_cursor_position_uses_inner_input_row() {
+        let popup = Rect::new(20, 10, 40, 3);
+
+        assert_eq!(input_popup_cursor_position(popup, 9), (30, 11));
     }
 
     #[test]
