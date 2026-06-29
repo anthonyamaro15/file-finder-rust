@@ -1,3 +1,8 @@
+//! Active TOML-backed theme configuration for ff.
+//!
+//! Configured runtime colors are loaded here and converted into `ThemeColors`.
+//! Widget-local static style helpers live in `src/ui/theme.rs`.
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;

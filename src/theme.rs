@@ -1,3 +1,8 @@
+//! Legacy OneDark helpers.
+//!
+//! Runtime UI code should prefer `src/config/theme.rs` for configured colors
+//! and `src/ui/theme.rs` for widget-local styles.
+
 use ratatui::style::{Color, Modifier, Style};
 
 /// OneDark theme colors matching lazygit configuration
