@@ -310,6 +310,9 @@ use_nerd_fonts = "auto"    # Auto-detect (default)
 - **Cache**: `~/.config/ff/cache_directory.json`
 - **Themes**: `~/.config/ff/themes/`
 
+`ff` stores active TOML settings under `~/.config/ff/settings.toml`.
+Legacy JSON configuration is compatibility-only and should not be used for new settings.
+
 ### Precedence
 
 1. CLI arguments

@@ -1,3 +1,8 @@
+//! Legacy JSON configuration support.
+//!
+//! This module is kept for compatibility with older tests/config files.
+//! New settings belong in `src/config/settings.rs`.
+
 use std::{
     fs::{self, File},
     io::{BufReader, BufWriter},

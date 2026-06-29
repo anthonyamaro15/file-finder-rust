@@ -1,7 +1,7 @@
-//! One Dark Darker Theme
+//! Widget-local One Dark Darker theme helpers.
 //!
-//! Centralized theme colors based on navarasu/onedark.nvim "darker" style.
-//! All UI colors should reference this module for consistency.
+//! Centralized static styles based on navarasu/onedark.nvim "darker" style.
+//! Configurable runtime colors live in `src/config/theme.rs`.
 
 use ratatui::style::{Color, Modifier, Style};
 
