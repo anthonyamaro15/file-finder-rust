@@ -204,7 +204,13 @@ pub fn format_path_for_display(path: &str, max_width: usize) -> String {
     if result_parts.is_empty() {
         format!("{}{}{}", prefix, sep, last_segment)
     } else {
-        format!("{}{}{}/{}", prefix, sep, result_parts.join("/"), last_segment)
+        format!(
+            "{}{}{}/{}",
+            prefix,
+            sep,
+            result_parts.join("/"),
+            last_segment
+        )
     }
 }
 
@@ -305,9 +311,17 @@ mod tests {
         // Should fit within width
         assert!(result.len() <= 30, "Result '{}' exceeds 30 chars", result);
         // Should preserve last segment
-        assert!(result.ends_with("render"), "Result '{}' doesn't end with 'render'", result);
+        assert!(
+            result.ends_with("render"),
+            "Result '{}' doesn't end with 'render'",
+            result
+        );
         // Should start with ~/
-        assert!(result.starts_with("~/"), "Result '{}' doesn't start with ~/", result);
+        assert!(
+            result.starts_with("~/"),
+            "Result '{}' doesn't start with ~/",
+            result
+        );
     }
 
     #[test]

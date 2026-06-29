@@ -28,15 +28,9 @@ pub enum PreviewMessage {
         highlighted_content: Option<String>,
     },
     /// Directory contents loaded
-    DirectoryListing {
-        path: String,
-        entries: Vec<String>,
-    },
+    DirectoryListing { path: String, entries: Vec<String> },
     /// Preview loading failed
-    Error {
-        path: String,
-        message: String,
-    },
+    Error { path: String, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,7 +121,6 @@ pub struct SearchResult {
     pub original_index: usize,
 }
 
-
 #[derive(Debug)]
 pub struct App {
     pub input: String,
@@ -178,7 +171,6 @@ pub struct App {
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
-
 
     // File system watcher for real-time updates
     pub file_watcher: Option<FileSystemWatcher>,
@@ -297,7 +289,6 @@ impl App {
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
-
 
             // Initialize file watcher
             file_watcher: None,
@@ -650,9 +641,7 @@ impl App {
         if !self.input.is_empty() && self.input_mode != InputMode::Editing {
             self.input.clear();
         }
-
     }
-
 
     /// Start watching a directory for file system changes
     pub fn start_watching_directory<P: AsRef<Path>>(
@@ -989,10 +978,8 @@ impl App {
     /// Called when entering dual-pane mode
     pub fn init_right_pane(&mut self) {
         // Clone current directory and files to right pane
-        self.right_pane = crate::pane::Pane::new(
-            self.current_directory.clone(),
-            self.files.clone(),
-        );
+        self.right_pane =
+            crate::pane::Pane::new(self.current_directory.clone(), self.files.clone());
         self.right_pane.show_hidden_files = self.show_hidden_files;
     }
 
@@ -1019,7 +1006,8 @@ impl App {
     /// Check if a pending preview is ready to load (debounce period elapsed)
     /// Returns the path if ready, None otherwise
     pub fn take_ready_preview(&mut self, debounce_ms: u64) -> Option<String> {
-        if let (Some(path), Some(since)) = (&self.preview_pending_path, self.preview_pending_since) {
+        if let (Some(path), Some(since)) = (&self.preview_pending_path, self.preview_pending_since)
+        {
             if since.elapsed().as_millis() >= debounce_ms as u128 {
                 let path = path.clone();
                 self.preview_pending_path = None;

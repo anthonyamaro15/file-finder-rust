@@ -1,10 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{
-    app::App,
-    event::navigation::parent_directory,
-    utils::get_file_path_data,
-};
+use crate::{app::App, event::navigation::parent_directory, utils::get_file_path_data};
 
 pub fn containing_directory(path: &Path) -> PathBuf {
     parent_directory(path).unwrap_or_default()

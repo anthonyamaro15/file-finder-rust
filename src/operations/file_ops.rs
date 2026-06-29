@@ -116,7 +116,8 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
 
         if src.is_file() {
             // Single file delete - quick operation
-            let file_name = src.file_name()
+            let file_name = src
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
@@ -155,7 +156,9 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
                 .collect();
 
             file_count = entries.len();
-            let _ = tx.send(DeleteMessage::Counting { files_counted: file_count });
+            let _ = tx.send(DeleteMessage::Counting {
+                files_counted: file_count,
+            });
 
             // Sort by depth (deepest first) so we delete children before parents
             let mut paths: Vec<_> = entries.iter().map(|e| e.path().to_path_buf()).collect();
@@ -312,9 +315,10 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
                 Ok(())
             } else {
                 Err(match e.kind() {
-                    io::ErrorKind::PermissionDenied => {
-                        FileOperationError::permission_denied(src, "Cannot move - check permissions")
-                    }
+                    io::ErrorKind::PermissionDenied => FileOperationError::permission_denied(
+                        src,
+                        "Cannot move - check permissions",
+                    ),
                     io::ErrorKind::NotFound => FileOperationError::file_not_found(src),
                     io::ErrorKind::AlreadyExists => FileOperationError::already_exists(&dest),
                     _ => FileOperationError::from(e),

@@ -76,7 +76,6 @@ pub struct Settings {
     pub syntax_theme: String,
 
     // === UI Modernization Settings ===
-
     /// Layout style: "classic", "modern", or "miller"
     #[serde(default)]
     pub layout_style: LayoutStyle,

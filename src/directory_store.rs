@@ -1,3 +1,4 @@
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter};
@@ -6,7 +7,6 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 use std::thread;
-use ignore::WalkBuilder;
 use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -105,11 +105,7 @@ pub fn build_directory_from_store_ignore(
                 if entry.depth() == 0 {
                     continue; // skip the root itself
                 }
-                if entry
-                    .file_type()
-                    .map(|ft| ft.is_dir())
-                    .unwrap_or(false)
-                {
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                     if let Some(s) = entry.path().to_str() {
                         store.insert(s);
                     }
@@ -211,11 +207,7 @@ pub fn build_directory_from_store_async(
                         if entry.depth() == 0 {
                             return ignore::WalkState::Continue;
                         }
-                        if entry
-                            .file_type()
-                            .map(|ft| ft.is_dir())
-                            .unwrap_or(false)
-                        {
+                        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
                             if let Some(s) = entry.path().to_str() {
                                 {
                                     let mut guard = store_arc.lock().unwrap();
@@ -251,7 +243,9 @@ pub fn build_directory_from_store_async(
             let guard = store.lock().unwrap();
             guard.clone()
         };
-        let _ = tx.send(CacheBuildProgress::Completed { store: store_cloned });
+        let _ = tx.send(CacheBuildProgress::Completed {
+            store: store_cloned,
+        });
     });
 
     rx

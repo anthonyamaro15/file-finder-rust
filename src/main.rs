@@ -13,7 +13,10 @@ use std::{
 // External crate imports
 use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
-    event::{self as crossterm_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self as crossterm_event, DisableMouseCapture, EnableMouseCapture, Event, KeyCode,
+        KeyEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -40,11 +43,11 @@ mod errors;
 mod event;
 mod file_reader_content;
 mod highlight;
+mod icons;
 mod operations;
 mod pane;
 mod render;
 mod status_bar;
-mod icons;
 mod theme;
 mod ui;
 mod utils;
@@ -616,7 +619,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let file_type = file_reader_content::detect_file_type(&path);
             let is_cacheable = matches!(
                 file_type,
-                FileType::SourceCode | FileType::ConfigFile | FileType::JSON | FileType::Markdown | FileType::TextFile
+                FileType::SourceCode
+                    | FileType::ConfigFile
+                    | FileType::JSON
+                    | FileType::Markdown
+                    | FileType::TextFile
             );
 
             if is_file_path && is_cacheable && file_reader_content.is_cached(&path) {
@@ -657,7 +664,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(msg) => {
                     use crate::app::PreviewMessage;
                     match msg {
-                        PreviewMessage::Loaded { path, content, file_type, .. } => {
+                        PreviewMessage::Loaded {
+                            path,
+                            content,
+                            file_type,
+                            ..
+                        } => {
                             // Only update if this is still the file we're waiting for
                             if app.preview_loading_path.as_ref() == Some(&path) {
                                 app.preview_loading = false;
@@ -665,16 +677,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 // For text-based files, apply syntax highlighting or markdown rendering
                                 match file_type {
-                                    FileType::SourceCode | FileType::ConfigFile | FileType::JSON => {
+                                    FileType::SourceCode
+                                    | FileType::ConfigFile
+                                    | FileType::JSON => {
                                         // Set current path BEFORE calling get_highlighted_content (used for cache lookup)
                                         file_reader_content.curr_selected_path = path.clone();
-                                        let ext_type = file_reader_content.get_file_extension_type(path.clone());
-                                        let highlighted = file_reader_content.get_highlighted_content(content.clone(), ext_type);
+                                        let ext_type = file_reader_content
+                                            .get_file_extension_type(path.clone());
+                                        let highlighted = file_reader_content
+                                            .get_highlighted_content(content.clone(), ext_type);
                                         app.preview_file_content = highlighted;
                                     }
                                     FileType::Markdown => {
                                         // Render markdown with formatting
-                                        file_reader_content.render_markdown_content(&content, &path);
+                                        file_reader_content
+                                            .render_markdown_content(&content, &path);
                                         app.preview_file_content.clear();
                                     }
                                     FileType::Image => {
@@ -690,12 +707,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Spawn thread to decode image
                                         let path_for_thread = path;
                                         std::thread::spawn(move || {
-                                            file_reader_content::load_image_async(path_for_thread, img_tx);
+                                            file_reader_content::load_image_async(
+                                                path_for_thread,
+                                                img_tx,
+                                            );
                                         });
                                     }
                                     FileType::Binary => {
                                         file_reader_content.hightlighted_content = None;
-                                        app.preview_file_content = file_reader_content.read_binary_hex_view(&path);
+                                        app.preview_file_content =
+                                            file_reader_content.read_binary_hex_view(&path);
                                     }
                                     FileType::ZIP => {
                                         file_reader_content.hightlighted_content = None;
@@ -715,10 +736,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             "gz" if path.to_lowercase().ends_with(".tar.gz") => {
                                                 file_reader_content.read_tar_gz_content(&path)
                                             }
-                                            "bz2" | "tbz2" if path.to_lowercase().ends_with(".tar.bz2") => {
+                                            "bz2" | "tbz2"
+                                                if path.to_lowercase().ends_with(".tar.bz2") =>
+                                            {
                                                 file_reader_content.read_tar_bz2_content(&path)
                                             }
-                                            "xz" | "txz" if path.to_lowercase().ends_with(".tar.xz") => {
+                                            "xz" | "txz"
+                                                if path.to_lowercase().ends_with(".tar.xz") =>
+                                            {
                                                 file_reader_content.read_tar_xz_content(&path)
                                             }
                                             _ => vec![format!("Archive preview not supported")],
@@ -1361,8 +1386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Calculate selection based on preserved index
                                     let new_len = app.files.len();
-                                    let selected_indx =
-                                        app.preserved_selection_index.unwrap_or(0);
+                                    let selected_indx = app.preserved_selection_index.unwrap_or(0);
                                     let next_selection_index = if new_len == 0 {
                                         None
                                     } else if selected_indx >= new_len {
@@ -1694,7 +1718,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         } else {
                                             // For files, get the file size (fast operation)
                                             app.delete_target_file_count = None;
-                                            app.delete_target_total_size = path.metadata().ok().map(|m| m.len());
+                                            app.delete_target_total_size =
+                                                path.metadata().ok().map(|m| m.len());
                                         }
                                     }
                                 }
@@ -2149,7 +2174,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if path.is_dir() {
                                         // For directories, use async delete with progress
                                         app.delete_in_progress = true;
-                                        app.delete_progress_message = "Counting files...".to_string();
+                                        app.delete_progress_message =
+                                            "Counting files...".to_string();
                                         app.preserved_selection_index = Some(selected_indx);
                                         delete_target_dir = Some(current_dir);
                                         delete_receiver = Some(delete_with_progress(selected));

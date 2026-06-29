@@ -8,10 +8,7 @@ use std::{
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::{
-    style::Color,
-    widgets::Paragraph,
-};
+use ratatui::{style::Color, widgets::Paragraph};
 
 // Use centralized theme colors for markdown
 use crate::ui::theme::markdown as markdown_colors;
@@ -127,7 +124,9 @@ impl PreviewCache {
     /// Check if a path has a valid cached preview (file hasn't been modified)
     pub fn contains(&self, path: &str) -> bool {
         let current_mtime = fs::metadata(path).ok().and_then(|m| m.modified().ok());
-        self.entries.iter().any(|e| e.path == path && e.modified_time == current_mtime)
+        self.entries
+            .iter()
+            .any(|e| e.path == path && e.modified_time == current_mtime)
     }
 }
 #[derive(Debug, Clone)]
@@ -157,12 +156,10 @@ pub fn detect_file_type(path: &str) -> FileType {
 
             match ext.as_str() {
                 // Source code files
-                "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "cc" | "cxx"
-                | "h" | "hpp" | "java" | "go" | "php" | "rb" | "scala" | "kt" | "swift"
-                | "dart" | "css" | "scss" | "less" | "html" | "htm" | "xml" | "vue"
-                | "svelte" | "sql" | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" => {
-                    FileType::SourceCode
-                }
+                "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "c" | "cpp" | "cc" | "cxx" | "h"
+                | "hpp" | "java" | "go" | "php" | "rb" | "scala" | "kt" | "swift" | "dart"
+                | "css" | "scss" | "less" | "html" | "htm" | "xml" | "vue" | "svelte" | "sql"
+                | "sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" => FileType::SourceCode,
 
                 // Markdown and documentation
                 "md" | "markdown" | "rst" | "adoc" | "asciidoc" => FileType::Markdown,
@@ -198,8 +195,8 @@ pub fn detect_file_type(path: &str) -> FileType {
                 "pdf" => FileType::PDF,
 
                 // Binary and executable files
-                "exe" | "dll" | "so" | "dylib" | "bin" | "app" | "deb" | "rpm" | "dmg"
-                | "iso" | "img" | "msi" => FileType::Binary,
+                "exe" | "dll" | "so" | "dylib" | "bin" | "app" | "deb" | "rpm" | "dmg" | "iso"
+                | "img" | "msi" => FileType::Binary,
 
                 _ => detect_file_type_by_content_standalone(path),
             }
@@ -275,7 +272,11 @@ pub fn read_pdf_content_standalone(path: &str) -> String {
                 let preview = preview_lines.join("\n");
 
                 if total_lines > 200 {
-                    format!("{}\n\n... (truncated, {} more lines)", preview, total_lines - 200)
+                    format!(
+                        "{}\n\n... (truncated, {} more lines)",
+                        preview,
+                        total_lines - 200
+                    )
                 } else {
                     preview
                 }
@@ -285,7 +286,8 @@ pub fn read_pdf_content_standalone(path: &str) -> String {
             // Check for common PDF issues
             let error_str = e.to_string();
             if error_str.contains("password") || error_str.contains("encrypted") {
-                "PDF file is password-protected.\n\nUnable to extract text without the password.".to_string()
+                "PDF file is password-protected.\n\nUnable to extract text without the password."
+                    .to_string()
             } else {
                 format!("Unable to read PDF content.\n\nError: {}\n\nTry opening with an external PDF viewer.", e)
             }
@@ -457,7 +459,10 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
         // Table row
         else if line.contains('|') && line.trim().starts_with('|') {
             // Check if it's a separator row
-            if line.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' ') {
+            if line
+                .chars()
+                .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
+            {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
                     Style::default().fg(markdown_colors::TABLE_BORDER),
@@ -755,7 +760,10 @@ pub fn load_preview_async(
     let file_type = detect_file_type(&path);
 
     // For binary files, don't try to read as text (but PDF and Image are handled specially)
-    if matches!(file_type, FileType::Binary | FileType::ZIP | FileType::Archive) {
+    if matches!(
+        file_type,
+        FileType::Binary | FileType::ZIP | FileType::Archive
+    ) {
         let _ = sender.send(PreviewMessage::Loaded {
             path,
             content: String::new(), // Content will be handled specially in main
@@ -972,7 +980,9 @@ impl FileContent<'_> {
             let mut spans: Vec<Line<'static>> = vec![];
             let syntax_set = self.syntax_set.clone();
             // Use configured theme, fall back to default if not found
-            let theme = self.theme_set.themes
+            let theme = self
+                .theme_set
+                .themes
                 .get(&self.syntax_theme_name)
                 .cloned()
                 .unwrap_or_else(|| self.theme_set.themes["base16-ocean.dark"].clone());
@@ -1352,14 +1362,21 @@ impl FileContent<'_> {
             if let Ok(file) = archive.by_index(i) {
                 if let Some(fil_path) = file.enclosed_name() {
                     let size = file.size();
-                    list.push(format!("{} ({})", fil_path.display(), Self::format_file_size(size)));
+                    list.push(format!(
+                        "{} ({})",
+                        fil_path.display(),
+                        Self::format_file_size(size)
+                    ));
                 }
             }
         }
 
         // Add truncation message if there are more entries
         if total_entries > MAX_ARCHIVE_ENTRIES {
-            list.push(format!("... and {} more entries", total_entries - MAX_ARCHIVE_ENTRIES));
+            list.push(format!(
+                "... and {} more entries",
+                total_entries - MAX_ARCHIVE_ENTRIES
+            ));
         }
 
         self.curr_zip_content = list;
@@ -1464,7 +1481,11 @@ impl FileContent<'_> {
                     let preview = preview_lines.join("\n");
 
                     if total_lines > 200 {
-                        format!("{}\n\n... (truncated, {} more lines)", preview, total_lines - 200)
+                        format!(
+                            "{}\n\n... (truncated, {} more lines)",
+                            preview,
+                            total_lines - 200
+                        )
                     } else {
                         preview
                     }

@@ -10,24 +10,24 @@ pub mod palette {
     use ratatui::style::Color;
 
     // Core colors
-    pub const RED: Color = Color::Rgb(229, 85, 97);        // #e55561
-    pub const GREEN: Color = Color::Rgb(142, 189, 107);    // #8ebd6b
-    pub const YELLOW: Color = Color::Rgb(226, 184, 107);   // #e2b86b
-    pub const BLUE: Color = Color::Rgb(79, 166, 237);      // #4fa6ed
-    pub const PURPLE: Color = Color::Rgb(191, 104, 217);   // #bf68d9
-    pub const CYAN: Color = Color::Rgb(72, 176, 189);      // #48b0bd
-    pub const ORANGE: Color = Color::Rgb(204, 144, 87);    // #cc9057
+    pub const RED: Color = Color::Rgb(229, 85, 97); // #e55561
+    pub const GREEN: Color = Color::Rgb(142, 189, 107); // #8ebd6b
+    pub const YELLOW: Color = Color::Rgb(226, 184, 107); // #e2b86b
+    pub const BLUE: Color = Color::Rgb(79, 166, 237); // #4fa6ed
+    pub const PURPLE: Color = Color::Rgb(191, 104, 217); // #bf68d9
+    pub const CYAN: Color = Color::Rgb(72, 176, 189); // #48b0bd
+    pub const ORANGE: Color = Color::Rgb(204, 144, 87); // #cc9057
 
     // Grayscale
-    pub const GRAY: Color = Color::Rgb(83, 89, 101);       // #535965
+    pub const GRAY: Color = Color::Rgb(83, 89, 101); // #535965
     pub const LIGHT_GRAY: Color = Color::Rgb(122, 129, 142); // #7a818e
-    pub const FG: Color = Color::Rgb(160, 168, 183);       // #a0a8b7
-    pub const BG: Color = Color::Rgb(31, 35, 41);          // #1f2329
-    pub const BG_DARK: Color = Color::Rgb(24, 27, 32);     // #181b20
-    pub const BG_LIGHTER: Color = Color::Rgb(40, 44, 52);  // #282c34
+    pub const FG: Color = Color::Rgb(160, 168, 183); // #a0a8b7
+    pub const BG: Color = Color::Rgb(31, 35, 41); // #1f2329
+    pub const BG_DARK: Color = Color::Rgb(24, 27, 32); // #181b20
+    pub const BG_LIGHTER: Color = Color::Rgb(40, 44, 52); // #282c34
     pub const BG_HIGHLIGHT: Color = Color::Rgb(48, 54, 63); // #30363f
-    pub const SELECTION: Color = Color::Rgb(50, 54, 65);   // #323641
-    pub const BLACK: Color = Color::Rgb(14, 16, 19);       // #0e1013
+    pub const SELECTION: Color = Color::Rgb(50, 54, 65); // #323641
+    pub const BLACK: Color = Color::Rgb(14, 16, 19); // #0e1013
 }
 
 /// UI element styles
@@ -182,7 +182,7 @@ pub mod icons {
     pub const DIRECTORY: Color = palette::BLUE;
 
     // Programming languages - use language brand colors where appropriate
-    pub const RUST: Color = Color::Rgb(222, 165, 132);      // Rust orange
+    pub const RUST: Color = Color::Rgb(222, 165, 132); // Rust orange
     pub const JAVASCRIPT: Color = palette::YELLOW;
     pub const TYPESCRIPT: Color = palette::BLUE;
     pub const PYTHON: Color = palette::BLUE;

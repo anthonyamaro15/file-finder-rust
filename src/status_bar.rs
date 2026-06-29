@@ -206,7 +206,11 @@ impl StatusBar {
         // Mode indicator with rounded borders
         let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
         let mode_widget = Paragraph::new(mode_text)
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED),
+            )
             .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
             .alignment(Alignment::Center);
         frame.render_widget(mode_widget, chunks[0]);
@@ -214,7 +218,12 @@ impl StatusBar {
         // View mode indicator
         let (view_text, view_color) = Self::get_view_mode_indicator(&app.view_mode, theme);
         let view_widget = Paragraph::new(view_text)
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("View"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .title("View"),
+            )
             .style(Style::default().fg(view_color))
             .alignment(Alignment::Center);
         frame.render_widget(view_widget, chunks[1]);
@@ -225,14 +234,24 @@ impl StatusBar {
         let dir_text = format_path_for_display(&self.current_directory, available_width);
 
         let dir_widget = Paragraph::new(dir_text)
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Directory"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .title("Directory"),
+            )
             .style(Style::default().fg(theme.fg));
         frame.render_widget(dir_widget, chunks[2]);
 
         // File and directory counts
         let counts_text = format!("{}F {}D", self.file_count, self.directory_count);
         let counts_widget = Paragraph::new(counts_text)
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Items"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .title("Items"),
+            )
             .style(Style::default().fg(theme.cyan))
             .alignment(Alignment::Center);
         frame.render_widget(counts_widget, chunks[3]);
@@ -240,14 +259,24 @@ impl StatusBar {
         // Total size
         let size_text = Self::format_file_size(self.total_size);
         let size_widget = Paragraph::new(size_text)
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Size"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .title("Size"),
+            )
             .style(Style::default().fg(theme.yellow))
             .alignment(Alignment::Center);
         frame.render_widget(size_widget, chunks[4]);
 
         // System info
         let system_widget = Paragraph::new(self.system_info.clone())
-            .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("System"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_set(border::ROUNDED)
+                    .title("System"),
+            )
             .style(Style::default().fg(theme.gray))
             .alignment(Alignment::Center);
         frame.render_widget(system_widget, chunks[5]);
@@ -296,7 +325,10 @@ impl StatusBar {
     }
 
     /// Get short mode indicator for minimal status bar
-    fn get_mode_indicator_short(input_mode: &InputMode, theme: &ThemeColors) -> (&'static str, Color) {
+    fn get_mode_indicator_short(
+        input_mode: &InputMode,
+        theme: &ThemeColors,
+    ) -> (&'static str, Color) {
         match input_mode {
             InputMode::Normal => ("NOR", theme.green),
             InputMode::Editing => ("SRC", theme.blue),

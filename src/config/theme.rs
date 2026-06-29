@@ -189,14 +189,14 @@ impl Default for UiTheme {
 impl Default for SyntaxTheme {
     fn default() -> Self {
         Self {
-            keyword: "#bf68d9".to_string(),   // purple
-            function: "#4fa6ed".to_string(),  // blue
-            r#type: "#e2b86b".to_string(),    // yellow
-            string: "#8ebd6b".to_string(),    // green
-            number: "#cc9057".to_string(),    // orange
-            comment: "#535965".to_string(),   // gray
-            operator: "#48b0bd".to_string(),  // cyan
-            variable: "#e55561".to_string(),  // red
+            keyword: "#bf68d9".to_string(),  // purple
+            function: "#4fa6ed".to_string(), // blue
+            r#type: "#e2b86b".to_string(),   // yellow
+            string: "#8ebd6b".to_string(),   // green
+            number: "#cc9057".to_string(),   // orange
+            comment: "#535965".to_string(),  // gray
+            operator: "#48b0bd".to_string(), // cyan
+            variable: "#e55561".to_string(), // red
         }
     }
 }
@@ -204,47 +204,47 @@ impl Default for SyntaxTheme {
 impl Default for IconTheme {
     fn default() -> Self {
         Self {
-            directory: "#4fa6ed".to_string(),   // blue
-            rust: "#dea584".to_string(),        // rust orange
-            javascript: "#e2b86b".to_string(),  // yellow
-            typescript: "#4fa6ed".to_string(),  // blue
-            python: "#4fa6ed".to_string(),      // blue
-            go: "#48b0bd".to_string(),          // cyan
-            java: "#cc9057".to_string(),        // orange
-            c: "#7a818e".to_string(),           // light_gray
-            cpp: "#bf68d9".to_string(),         // purple
-            ruby: "#e55561".to_string(),        // red
-            php: "#bf68d9".to_string(),         // purple
-            swift: "#cc9057".to_string(),       // orange
-            kotlin: "#bf68d9".to_string(),      // purple
-            lua: "#4fa6ed".to_string(),         // blue
-            shell: "#8ebd6b".to_string(),       // green
-            html: "#cc9057".to_string(),        // orange
-            css: "#bf68d9".to_string(),         // purple
-            vue: "#8ebd6b".to_string(),         // green
-            react: "#48b0bd".to_string(),       // cyan
-            svelte: "#cc9057".to_string(),      // orange
-            json: "#e2b86b".to_string(),        // yellow
-            yaml: "#e55561".to_string(),        // red
-            toml: "#cc9057".to_string(),        // orange
-            xml: "#4fa6ed".to_string(),         // blue
-            markdown: "#48b0bd".to_string(),    // cyan
-            config: "#7a818e".to_string(),      // light_gray
-            image: "#bf68d9".to_string(),       // purple
-            video: "#e55561".to_string(),       // red
-            audio: "#cc9057".to_string(),       // orange
-            pdf: "#e55561".to_string(),         // red
-            archive: "#e2b86b".to_string(),     // yellow
-            git: "#cc9057".to_string(),         // orange
-            key: "#e2b86b".to_string(),         // yellow
-            lock: "#e2b86b".to_string(),        // yellow
-            database: "#48b0bd".to_string(),    // cyan
-            docker: "#48b0bd".to_string(),      // cyan
-            license: "#e2b86b".to_string(),     // yellow
-            readme: "#e2b86b".to_string(),      // yellow
-            binary: "#7a818e".to_string(),      // light_gray
-            font: "#e55561".to_string(),        // red
-            default: "#a0a8b7".to_string(),     // fg
+            directory: "#4fa6ed".to_string(),  // blue
+            rust: "#dea584".to_string(),       // rust orange
+            javascript: "#e2b86b".to_string(), // yellow
+            typescript: "#4fa6ed".to_string(), // blue
+            python: "#4fa6ed".to_string(),     // blue
+            go: "#48b0bd".to_string(),         // cyan
+            java: "#cc9057".to_string(),       // orange
+            c: "#7a818e".to_string(),          // light_gray
+            cpp: "#bf68d9".to_string(),        // purple
+            ruby: "#e55561".to_string(),       // red
+            php: "#bf68d9".to_string(),        // purple
+            swift: "#cc9057".to_string(),      // orange
+            kotlin: "#bf68d9".to_string(),     // purple
+            lua: "#4fa6ed".to_string(),        // blue
+            shell: "#8ebd6b".to_string(),      // green
+            html: "#cc9057".to_string(),       // orange
+            css: "#bf68d9".to_string(),        // purple
+            vue: "#8ebd6b".to_string(),        // green
+            react: "#48b0bd".to_string(),      // cyan
+            svelte: "#cc9057".to_string(),     // orange
+            json: "#e2b86b".to_string(),       // yellow
+            yaml: "#e55561".to_string(),       // red
+            toml: "#cc9057".to_string(),       // orange
+            xml: "#4fa6ed".to_string(),        // blue
+            markdown: "#48b0bd".to_string(),   // cyan
+            config: "#7a818e".to_string(),     // light_gray
+            image: "#bf68d9".to_string(),      // purple
+            video: "#e55561".to_string(),      // red
+            audio: "#cc9057".to_string(),      // orange
+            pdf: "#e55561".to_string(),        // red
+            archive: "#e2b86b".to_string(),    // yellow
+            git: "#cc9057".to_string(),        // orange
+            key: "#e2b86b".to_string(),        // yellow
+            lock: "#e2b86b".to_string(),       // yellow
+            database: "#48b0bd".to_string(),   // cyan
+            docker: "#48b0bd".to_string(),     // cyan
+            license: "#e2b86b".to_string(),    // yellow
+            readme: "#e2b86b".to_string(),     // yellow
+            binary: "#7a818e".to_string(),     // light_gray
+            font: "#e55561".to_string(),       // red
+            default: "#a0a8b7".to_string(),    // fg
         }
     }
 }
@@ -252,19 +252,19 @@ impl Default for IconTheme {
 impl Default for MarkdownTheme {
     fn default() -> Self {
         Self {
-            header_1: "#e55561".to_string(),    // red
-            header_2: "#e2b86b".to_string(),    // yellow
-            header_3: "#8ebd6b".to_string(),    // green
-            header_4: "#4fa6ed".to_string(),    // blue
-            bold: "#cc9057".to_string(),        // orange
-            italic: "#bf68d9".to_string(),      // purple
-            code: "#8ebd6b".to_string(),        // green
-            code_bg: "#282c34".to_string(),     // bg_lighter
-            link: "#4fa6ed".to_string(),        // blue
-            link_url: "#535965".to_string(),    // gray
-            blockquote: "#7a818e".to_string(),  // light_gray
-            list_marker: "#bf68d9".to_string(), // purple
-            table_border: "#535965".to_string(),// gray
+            header_1: "#e55561".to_string(),        // red
+            header_2: "#e2b86b".to_string(),        // yellow
+            header_3: "#8ebd6b".to_string(),        // green
+            header_4: "#4fa6ed".to_string(),        // blue
+            bold: "#cc9057".to_string(),            // orange
+            italic: "#bf68d9".to_string(),          // purple
+            code: "#8ebd6b".to_string(),            // green
+            code_bg: "#282c34".to_string(),         // bg_lighter
+            link: "#4fa6ed".to_string(),            // blue
+            link_url: "#535965".to_string(),        // gray
+            blockquote: "#7a818e".to_string(),      // light_gray
+            list_marker: "#bf68d9".to_string(),     // purple
+            table_border: "#535965".to_string(),    // gray
             horizontal_rule: "#535965".to_string(), // gray
         }
     }
@@ -273,12 +273,12 @@ impl Default for MarkdownTheme {
 impl Default for StatusBarTheme {
     fn default() -> Self {
         Self {
-            background: "#181b20".to_string(),  // bg_dark
-            foreground: "#a0a8b7".to_string(),  // fg
-            mode_normal: "#4fa6ed".to_string(), // blue
-            mode_insert: "#8ebd6b".to_string(), // green
-            mode_visual: "#bf68d9".to_string(), // purple
-            mode_command: "#e2b86b".to_string(),// yellow
+            background: "#181b20".to_string(),   // bg_dark
+            foreground: "#a0a8b7".to_string(),   // fg
+            mode_normal: "#4fa6ed".to_string(),  // blue
+            mode_insert: "#8ebd6b".to_string(),  // green
+            mode_visual: "#bf68d9".to_string(),  // purple
+            mode_command: "#e2b86b".to_string(), // yellow
         }
     }
 }
@@ -526,12 +526,20 @@ impl Theme {
             black,
 
             // UI styles
-            active_border: Style::default().fg(active_border_color).add_modifier(Modifier::BOLD),
+            active_border: Style::default()
+                .fg(active_border_color)
+                .add_modifier(Modifier::BOLD),
             inactive_border: Style::default().fg(inactive_border_color),
-            selected: Style::default().fg(selected_fg).bg(selected_bg).add_modifier(Modifier::BOLD),
+            selected: Style::default()
+                .fg(selected_fg)
+                .bg(selected_bg)
+                .add_modifier(Modifier::BOLD),
             normal: Style::default().fg(fg),
             disabled: Style::default().fg(gray),
-            search_highlight: Style::default().fg(search_match_fg).bg(search_match_bg).add_modifier(Modifier::BOLD),
+            search_highlight: Style::default()
+                .fg(search_match_fg)
+                .bg(search_match_bg)
+                .add_modifier(Modifier::BOLD),
             info: Style::default().fg(cyan),
             success: Style::default().fg(green),
             warning: Style::default().fg(yellow),

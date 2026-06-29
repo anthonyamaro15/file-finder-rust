@@ -141,7 +141,12 @@ pub fn create_create_input_popup<'a>(
     };
 
     Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title(title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .title(title),
+        )
         .style(style)
 }
 
