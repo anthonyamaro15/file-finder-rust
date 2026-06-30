@@ -1228,7 +1228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     f.render_widget(sort_popup, sort_options_chunks[0]);
                 }
                 InputMode::WatchKeyBinding => {
-                    let keybindings_popup = create_keybindings_popup();
+                    let keybindings_popup = create_keybindings_popup(&settings.keymap);
                     f.render_widget(Clear, keybinding_chunks[0]);
                     f.render_widget(keybindings_popup, keybinding_chunks[0]);
                 }

@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use crate::config::{Action, KeymapSettings};
 use crate::theme::OneDarkTheme;
 use crate::utils::{format_file_size, SortBy, SortType};
 
@@ -187,45 +188,8 @@ pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> 
 }
 
 /// Create the keybindings help popup widget.
-pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
-    let lines = vec![
-        Line::from(""),
-        Line::styled("── Navigation ──", OneDarkTheme::info()),
-        Line::from("  j / ↓           Move down"),
-        Line::from("  k / ↑           Move up"),
-        Line::from("  h               Go to parent directory"),
-        Line::from("  l               Enter directory"),
-        Line::from("  Enter           Open with IDE / copy path"),
-        Line::from(""),
-        Line::styled("── File Operations ──", OneDarkTheme::info()),
-        Line::from("  a               Create new file/directory"),
-        Line::from("  d               Delete (with confirmation)"),
-        Line::from("  r               Rename file/directory"),
-        Line::from("  c               Copy file/directory"),
-        Line::from("  y               Extract ZIP archive"),
-        Line::from("  o               Open with system default"),
-        Line::from(""),
-        Line::styled("── Search ──", OneDarkTheme::info()),
-        Line::from("  / or i          Search current directory"),
-        Line::from("  Space + /       Search from root cache"),
-        Line::from("  Esc             Exit search mode"),
-        Line::from("  ↑/↓             Search history"),
-        Line::from(""),
-        Line::styled("── View & Sort ──", OneDarkTheme::info()),
-        Line::from("  p               Cycle view mode (Normal/Full/Dual)"),
-        Line::from("  s               Sort options menu"),
-        Line::from("  .               Toggle hidden files"),
-        Line::from("  ?               Show this help"),
-        Line::from(""),
-        Line::styled("── Dual Pane Mode ──", OneDarkTheme::info()),
-        Line::from("  Tab             Switch active pane"),
-        Line::from("  j/k/h/l         Navigate in active pane"),
-        Line::from("  Shift+C         Copy to other pane"),
-        Line::from("  Shift+M         Move to other pane"),
-        Line::from(""),
-        Line::styled("── General ──", OneDarkTheme::info()),
-        Line::from("  q               Quit / Close popup"),
-    ];
+pub fn create_keybindings_popup<'a>(keymap: &KeymapSettings) -> Paragraph<'a> {
+    let lines = keybinding_help_lines(keymap);
 
     let list_items = Text::from(lines);
 
@@ -237,6 +201,112 @@ pub fn create_keybindings_popup<'a>() -> Paragraph<'a> {
                 .title("Keybindings (q to close)"),
         )
         .style(OneDarkTheme::normal())
+}
+
+fn keybinding_help_lines(keymap: &KeymapSettings) -> Vec<Line<'static>> {
+    keybinding_help_text_lines(keymap)
+        .into_iter()
+        .map(|line| {
+            if line.starts_with("──") {
+                Line::styled(line, OneDarkTheme::info())
+            } else {
+                Line::from(line)
+            }
+        })
+        .collect()
+}
+
+fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
+    vec![
+        "".to_string(),
+        "── Navigation ──".to_string(),
+        "  j / ↓           Move down".to_string(),
+        "  k / ↑           Move up".to_string(),
+        "  h               Go to parent directory".to_string(),
+        "  l               Enter directory".to_string(),
+        "  Enter           Open with IDE / copy path".to_string(),
+        "".to_string(),
+        "── File Operations ──".to_string(),
+        "  a               Create new file/directory".to_string(),
+        "  d               Delete (with confirmation)".to_string(),
+        "  r               Rename file/directory".to_string(),
+        "  c               Copy file/directory".to_string(),
+        "  y               Extract ZIP archive".to_string(),
+        "  o               Open with system default".to_string(),
+        "".to_string(),
+        "── Search ──".to_string(),
+        keybinding_help_row(
+            &configured_action_key_labels(keymap, Action::SearchCurrent),
+            "Search current directory",
+        ),
+        keybinding_help_row(
+            &configured_action_key_labels(keymap, Action::SearchRoot),
+            "Search from root cache",
+        ),
+        "  Esc             Exit search mode".to_string(),
+        "  ↑/↓             Search history".to_string(),
+        "".to_string(),
+        "── View & Sort ──".to_string(),
+        "  p               Cycle view mode (Normal/Full/Dual)".to_string(),
+        "  s               Sort options menu".to_string(),
+        "  .               Toggle hidden files".to_string(),
+        "  ?               Show this help".to_string(),
+        "".to_string(),
+        "── Dual Pane Mode ──".to_string(),
+        "  Tab             Switch active pane".to_string(),
+        "  j/k/h/l         Navigate in active pane".to_string(),
+        "  Shift+C         Copy to other pane".to_string(),
+        "  Shift+M         Move to other pane".to_string(),
+        "".to_string(),
+        "── General ──".to_string(),
+        "  q               Quit / Close popup".to_string(),
+    ]
+}
+
+fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> Vec<String> {
+    let mut key_labels: Vec<(bool, String)> = keymap
+        .normal
+        .iter()
+        .filter_map(|(key, configured_action)| {
+            if Action::parse(configured_action) != Some(action.clone()) {
+                return None;
+            }
+
+            Some((
+                key.starts_with("<leader>"),
+                format_key_sequence(key, keymap),
+            ))
+        })
+        .collect();
+
+    key_labels.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    key_labels.into_iter().map(|(_, label)| label).collect()
+}
+
+fn format_key_sequence(key: &str, keymap: &KeymapSettings) -> String {
+    if let Some(rest) = key.strip_prefix("<leader>") {
+        format!("{} + {}", format_key(&keymap.leader), format_key(rest))
+    } else {
+        format_key(key)
+    }
+}
+
+fn format_key(key: &str) -> String {
+    match key {
+        " " => "Space".to_string(),
+        "" => "Unbound".to_string(),
+        value => value.to_string(),
+    }
+}
+
+fn keybinding_help_row(keys: &[String], description: &str) -> String {
+    let key_text = if keys.is_empty() {
+        "Unbound".to_string()
+    } else {
+        keys.join(" or ")
+    };
+
+    format!("  {:<15} {}", key_text, description)
 }
 
 /// Split an area for vertical popup content with margins.
@@ -251,7 +321,37 @@ pub fn split_popup_area_vertical(area: Rect) -> Vec<Rect> {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::KeymapSettings;
+
     use super::*;
+
+    #[test]
+    fn keybinding_help_text_uses_default_configured_search_keys() {
+        let lines = keybinding_help_text_lines(&KeymapSettings::default());
+
+        assert!(lines.contains(&"  / or i          Search current directory".to_string()));
+        assert!(lines.contains(&"  Space + /       Search from root cache".to_string()));
+        assert!(lines.contains(&"  j / ↓           Move down".to_string()));
+    }
+
+    #[test]
+    fn keybinding_help_text_reflects_custom_search_keys() {
+        let mut settings = KeymapSettings::default();
+        settings.leader = ",".to_string();
+        settings
+            .normal
+            .insert("f".to_string(), "search.current".to_string());
+        settings
+            .normal
+            .insert("/".to_string(), "search.root".to_string());
+
+        let lines = keybinding_help_text_lines(&settings);
+
+        assert!(lines.contains(&"  f or i          Search current directory".to_string()));
+        assert!(lines.contains(&"  / or , + /      Search from root cache".to_string()));
+        assert!(!lines.contains(&"  / or i          Search current directory".to_string()));
+        assert!(lines.contains(&"  q               Quit / Close popup".to_string()));
+    }
 
     #[test]
     fn test_draw_popup_centered() {
