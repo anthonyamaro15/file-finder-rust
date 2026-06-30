@@ -374,6 +374,51 @@ mod filtering_tests {
             ]
         );
     }
+
+    #[test]
+    fn root_search_deduplicates_exact_cache_paths() {
+        let mut app = App::new(Vec::new());
+
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+        store.insert("/workspace/project/src");
+        store.insert("/workspace/other/src");
+
+        app.enter_search(SearchScope::Root);
+        app.filter_files("src".to_string(), store);
+
+        let result_paths: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.file_path.as_str())
+            .collect();
+
+        assert_eq!(
+            result_paths,
+            vec!["/workspace/other/src", "/workspace/project/src"]
+        );
+    }
+
+    #[test]
+    fn root_search_prefers_filename_match_before_path_only_match_when_truncating() {
+        let mut app = App::new(Vec::new());
+        app.max_search_results = 1;
+
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/src/src/src/src/noise");
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::Root);
+        app.filter_files("src".to_string(), store);
+
+        let result_paths: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.file_path.as_str())
+            .collect();
+
+        assert_eq!(result_paths, vec!["/workspace/project/src"]);
+    }
 }
 
 #[cfg(test)]
