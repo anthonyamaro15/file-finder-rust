@@ -14,7 +14,8 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 ### 🔍 **Search**
 
 - Local fuzzy search in current directory
-- Global search (prefix with space ` ` or `/`)
+- Root/global search across the directory cache
+- Configurable search keybindings
 - Smart ranking & real-time filtering
 
 ### 📁 **File Management**
@@ -192,9 +193,11 @@ For files, the path is copied to your clipboard.
 
 | Key            | Action                      |
 | -------------- | --------------------------- |
-| `i`            | Enter search mode           |
+| `/` or `i`     | Search current directory    |
 | `Esc`          | Exit search mode            |
-| `Space` or `/` | Global search (entire tree) |
+| `Space` + `/`  | Root search (entire cache)  |
+
+The `?` help popup reflects configured search keybindings.
 
 ### 📁 File Operations
 
@@ -248,6 +251,36 @@ syntax_theme = "base16-ocean.dark"
 ```
 
 Colors are used for file types, syntax highlighting, and modal dialogs (🟢 create, 🔴 delete, 🟡 rename, 🔵 info).
+
+### Keybindings
+
+Search keybindings can be configured in `~/.config/ff/settings.toml`.
+
+Default bindings:
+
+```toml
+[keymap]
+leader = " "
+
+[keymap.normal]
+"/" = "search.current"
+"i" = "search.current"
+"<leader>/" = "search.root"
+```
+
+Example with comma as leader and `f` for current-directory search:
+
+```toml
+[keymap]
+leader = ","
+
+[keymap.normal]
+"f" = "search.current"
+"/" = "search.root"
+"<leader>/" = "search.root"
+```
+
+Open `?` inside ff to see the active search bindings.
 
 ### Terminal Image Support
 
@@ -350,8 +383,9 @@ cp target/release/ff /usr/local/bin/
 
 **Search not working?**
 
-- Press `i` to enter search mode
-- Prefix with space `/` for global search
+- Press `/` or `i` to search the current directory
+- Press `Space` + `/` to search from the root cache
+- Press `?` to confirm your active search keybindings
 
 **Performance issues?**
 
