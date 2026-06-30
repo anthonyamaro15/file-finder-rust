@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config::get_config_dir;
+use crate::config::keymap::KeymapSettings;
 use crate::errors::{AppError, AppResult};
 
 /// Layout style for the main UI
@@ -57,6 +58,31 @@ pub enum StatusBarStyle {
     Minimal,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FinderSettings {
+    #[serde(default = "default_finder_max_results")]
+    pub max_results: usize,
+    #[serde(default = "default_global_search_debounce_ms")]
+    pub global_search_debounce_ms: u64,
+}
+
+fn default_finder_max_results() -> usize {
+    500
+}
+
+fn default_global_search_debounce_ms() -> u64 {
+    80
+}
+
+impl Default for FinderSettings {
+    fn default() -> Self {
+        Self {
+            max_results: default_finder_max_results(),
+            global_search_debounce_ms: default_global_search_debounce_ms(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub start_path: String,
@@ -91,6 +117,14 @@ pub struct Settings {
     /// Status bar style: "classic" or "minimal"
     #[serde(default)]
     pub status_bar_style: StatusBarStyle,
+
+    /// Mode-aware keybindings.
+    #[serde(default)]
+    pub keymap: KeymapSettings,
+
+    /// Finder/search behavior.
+    #[serde(default)]
+    pub finder: FinderSettings,
 }
 
 fn default_show_file_sizes() -> bool {
@@ -143,6 +177,8 @@ impl Default for Settings {
             use_nerd_fonts: NerdFontSetting::default(),
             show_borders: default_show_borders(),
             status_bar_style: StatusBarStyle::default(),
+            keymap: KeymapSettings::default(),
+            finder: FinderSettings::default(),
         }
     }
 }
