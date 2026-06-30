@@ -52,6 +52,12 @@ pub enum InputMode {
     CacheLoading,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    CurrentDirectory,
+    Root,
+}
+
 /// View mode for the main content area
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum ViewMode {
@@ -164,7 +170,9 @@ pub struct App {
 
     // Search functionality
     pub search_results: Vec<SearchResult>,
+    pub search_scope: SearchScope,
     pub global_search_mode: bool,
+    pub max_search_results: usize,
 
     // Copy progress tracking
     pub copy_in_progress: bool,
@@ -282,7 +290,9 @@ impl App {
 
             // Initialize search functionality
             search_results: Vec::new(),
+            search_scope: SearchScope::CurrentDirectory,
             global_search_mode: false,
+            max_search_results: 500,
 
             // Initialize copy progress tracking
             copy_in_progress: false,
@@ -360,20 +370,28 @@ impl App {
         self.move_cursor_right();
     }
 
+    pub fn enter_search(&mut self, scope: SearchScope) {
+        self.input_mode = InputMode::Editing;
+        self.search_scope = scope;
+        self.input.clear();
+        self.character_index = 0;
+        self.filtered_indexes = (0..self.files.len()).collect();
+        self.search_results.clear();
+        self.global_search_mode = matches!(scope, SearchScope::Root);
+    }
+
     pub fn filter_files(&mut self, input: String, store: DirectoryStore) {
         if input.is_empty() {
             // Show all files when no search input
             self.filtered_indexes = (0..self.files.len()).collect();
             self.search_results.clear();
-            self.global_search_mode = false;
+            self.global_search_mode = matches!(self.search_scope, SearchScope::Root);
             return;
         }
 
-        // Determine if this should be a global search (when input starts with space or special char)
-        let is_global_search = input.starts_with(' ') || input.starts_with('/');
-        self.global_search_mode = is_global_search;
+        self.global_search_mode = matches!(self.search_scope, SearchScope::Root);
 
-        if is_global_search {
+        if self.global_search_mode {
             // Global search across directory cache
             self.perform_global_search(input.trim(), &store);
         } else {
