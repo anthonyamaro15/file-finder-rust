@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -147,6 +148,22 @@ fn truncate_top_search_results(search_results: &mut Vec<SearchResult>, max_resul
     }
 
     search_results.sort_unstable_by(search_result_order);
+    search_results.truncate(max_results);
+}
+
+fn deduplicate_sorted_search_results(search_results: &mut Vec<SearchResult>) {
+    let mut seen_paths = HashSet::new();
+    search_results.retain(|result| seen_paths.insert(result.file_path.clone()));
+}
+
+fn truncate_top_unique_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
+    if max_results == 0 {
+        search_results.clear();
+        return;
+    }
+
+    search_results.sort_unstable_by(search_result_order);
+    deduplicate_sorted_search_results(search_results);
     search_results.truncate(max_results);
 }
 
@@ -498,10 +515,14 @@ impl App {
     }
 
     pub fn enter_char(&mut self, new_char: char, store: DirectoryStore) {
-        let index = self.byte_index();
-        self.input.insert(index, new_char);
+        self.insert_char_without_filter(new_char);
         self.filter_files(self.input.clone(), store);
         self.move_cursor_right();
+    }
+
+    pub fn insert_char_without_filter(&mut self, new_char: char) {
+        let index = self.byte_index();
+        self.input.insert(index, new_char);
     }
 
     pub fn enter_search(&mut self, scope: SearchScope) {
@@ -614,7 +635,7 @@ impl App {
                 left
             });
 
-        truncate_top_search_results(&mut search_results, max_results);
+        truncate_top_unique_search_results(&mut search_results, max_results);
         apply_short_unique_display_names(&mut search_results);
 
         // For global search, we don't use filtered_indexes since we're showing different files
@@ -631,6 +652,12 @@ impl App {
     }
 
     pub fn delete_char(&mut self, store: DirectoryStore) {
+        if self.delete_char_without_filter() {
+            self.filter_files(self.input.clone(), store);
+        }
+    }
+
+    pub fn delete_char_without_filter(&mut self) -> bool {
         let is_not_cursor_leftmost = self.character_index != 0;
         if is_not_cursor_leftmost {
             let current_index = self.character_index;
@@ -641,9 +668,11 @@ impl App {
             let after_char_to_delete = self.input.chars().skip(current_index);
 
             self.input = before_char_to_delete.chain(after_char_to_delete).collect();
-            self.filter_files(self.input.clone(), store);
             self.move_cursor_left();
+            return true;
         }
+
+        false
     }
 
     pub fn clamp_cursor(&mut self, new_cursor_pos: usize) -> usize {
