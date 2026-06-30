@@ -5,6 +5,7 @@ use std::time::Instant;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use log::debug;
+use rayon::prelude::*;
 
 use crate::directory_store::DirectoryStore;
 use crate::errors::{AppError, AppResult};
@@ -125,6 +126,139 @@ pub struct SearchResult {
     pub score: i64,
     pub is_directory: bool,
     pub original_index: usize,
+}
+
+fn search_result_order(a: &SearchResult, b: &SearchResult) -> std::cmp::Ordering {
+    b.score
+        .cmp(&a.score)
+        .then_with(|| {
+            a.display_name
+                .to_lowercase()
+                .cmp(&b.display_name.to_lowercase())
+        })
+        .then_with(|| a.file_path.cmp(&b.file_path))
+        .then_with(|| a.original_index.cmp(&b.original_index))
+}
+
+fn truncate_top_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
+    if max_results == 0 {
+        search_results.clear();
+        return;
+    }
+
+    search_results.sort_unstable_by(search_result_order);
+    search_results.truncate(max_results);
+}
+
+fn push_bounded_search_result(
+    search_results: &mut Vec<SearchResult>,
+    result: SearchResult,
+    max_results: usize,
+) {
+    if max_results == 0 {
+        return;
+    }
+
+    search_results.push(result);
+
+    let trim_threshold = max_results
+        .saturating_mul(2)
+        .max(max_results.saturating_add(1));
+
+    if search_results.len() > trim_threshold {
+        truncate_top_search_results(search_results, max_results);
+    }
+}
+
+fn path_label_components(file_path: &str) -> Vec<String> {
+    let components: Vec<String> = Path::new(file_path)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Prefix(prefix) => {
+                Some(prefix.as_os_str().to_string_lossy().to_string())
+            }
+            std::path::Component::Normal(component) => {
+                Some(component.to_string_lossy().to_string())
+            }
+            _ => None,
+        })
+        .collect();
+
+    if components.is_empty() {
+        vec![file_path.to_string()]
+    } else {
+        components
+    }
+}
+
+fn suffix_label(components: &[String], depth: usize) -> String {
+    let start = components.len().saturating_sub(depth.max(1));
+    components[start..].join("/")
+}
+
+fn apply_short_unique_display_names(search_results: &mut [SearchResult]) {
+    if search_results.is_empty() {
+        return;
+    }
+
+    let components: Vec<Vec<String>> = search_results
+        .iter()
+        .map(|result| path_label_components(&result.file_path))
+        .collect();
+    let mut depths = vec![1; search_results.len()];
+
+    loop {
+        let labels: Vec<String> = components
+            .iter()
+            .zip(depths.iter())
+            .map(|(components, depth)| suffix_label(components, *depth))
+            .collect();
+        let mut expanded = false;
+
+        for i in 0..labels.len() {
+            let has_duplicate = labels
+                .iter()
+                .enumerate()
+                .any(|(j, label)| i != j && label == &labels[i]);
+
+            if has_duplicate && depths[i] < components[i].len() {
+                depths[i] += 1;
+                expanded = true;
+            }
+        }
+
+        if !expanded {
+            for (result, label) in search_results.iter_mut().zip(labels) {
+                result.display_name = label;
+            }
+            break;
+        }
+    }
+}
+
+fn global_search_result(
+    matcher: &SkimMatcherV2,
+    index: usize,
+    file_path: &str,
+    query: &str,
+) -> Option<SearchResult> {
+    let path = Path::new(file_path);
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(file_path);
+
+    let filename_score = matcher.fuzzy_match(file_name, query);
+    let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 3);
+    let score = filename_score.or(path_score)?;
+
+    Some(SearchResult {
+        file_path: file_path.to_string(),
+        display_name: file_name.to_string(),
+        score,
+        is_directory: path.is_dir(),
+        original_index: index,
+    })
 }
 
 #[derive(Debug)]
@@ -455,37 +589,33 @@ impl App {
 
     /// Perform global search across directory cache
     pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
-        let matcher = SkimMatcherV2::default();
-        let mut search_results: Vec<SearchResult> = Vec::new();
-
-        // Search through the directory cache
-        for (index, file_path) in store.directories.iter().enumerate() {
-            let path = Path::new(file_path);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(file_path);
-
-            // Try fuzzy matching
-            let filename_score = matcher.fuzzy_match(file_name, query);
-            let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 3); // Even lower priority for global path matches
-
-            if let Some(score) = filename_score.or(path_score) {
-                let is_directory = path.is_dir();
-
-                search_results.push(SearchResult {
-                    file_path: file_path.clone(),
-                    display_name: file_name.to_string(),
-                    score,
-                    is_directory,
-                    original_index: index,
-                });
-            }
+        if self.max_search_results == 0 {
+            self.search_results.clear();
+            self.filtered_indexes.clear();
+            return;
         }
 
-        // Sort by score (descending)
-        search_results.sort_by(|a, b| b.score.cmp(&a.score));
-        search_results.truncate(self.max_search_results);
+        let max_results = self.max_search_results;
+        let mut search_results = store
+            .directories
+            .par_iter()
+            .enumerate()
+            .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
+                global_search_result(matcher, index, file_path, query)
+            })
+            .filter_map(|result| result)
+            .fold(Vec::new, |mut search_results, result| {
+                push_bounded_search_result(&mut search_results, result, max_results);
+                search_results
+            })
+            .reduce(Vec::new, |mut left, mut right| {
+                left.append(&mut right);
+                truncate_top_search_results(&mut left, max_results);
+                left
+            });
+
+        truncate_top_search_results(&mut search_results, max_results);
+        apply_short_unique_display_names(&mut search_results);
 
         // For global search, we don't use filtered_indexes since we're showing different files
         self.search_results = search_results;
