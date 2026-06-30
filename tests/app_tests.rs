@@ -286,6 +286,94 @@ mod filtering_tests {
 
         assert_eq!(app.search_results.len(), 2);
     }
+
+    #[test]
+    fn root_search_tie_breaks_by_name_before_truncating() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/project".to_string();
+        app.max_search_results = 2;
+
+        let mut store = DirectoryStore::new();
+        store.insert("/project/z");
+        store.insert("/project/a");
+        store.insert("/project/m");
+
+        app.enter_search(SearchScope::Root);
+        app.enter_char('p', store);
+
+        let result_names: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.display_name.as_str())
+            .collect();
+
+        assert_eq!(result_names, vec!["a", "m"]);
+    }
+
+    #[test]
+    fn root_search_disambiguates_duplicate_names_with_relative_paths() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/workspace".to_string();
+
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/src/test");
+        store.insert("/workspace/tests/test");
+
+        app.enter_search(SearchScope::Root);
+        app.enter_char('t', store);
+
+        let result_names: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.display_name.as_str())
+            .collect();
+        let result_paths: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.file_path.as_str())
+            .collect();
+
+        assert_eq!(result_names, vec!["src/test", "tests/test"]);
+        assert_eq!(
+            result_paths,
+            vec!["/workspace/src/test", "/workspace/tests/test"]
+        );
+    }
+
+    #[test]
+    fn root_search_uses_short_unique_suffixes_for_external_matches() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/workspace".to_string();
+
+        let mut store = DirectoryStore::new();
+        store.insert("/Users/aamaro/Desktop/work/blueraster/projects/san-mateo");
+        store.insert("/Users/aamaro/Desktop/anthony/personal-projects/rust/oxc/tasks/san-mateo");
+
+        app.enter_search(SearchScope::Root);
+        app.filter_files("san-mateo".to_string(), store);
+
+        let mut result_names: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.display_name.as_str())
+            .collect();
+        let mut result_paths: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|result| result.file_path.as_str())
+            .collect();
+        result_names.sort_unstable();
+        result_paths.sort_unstable();
+
+        assert_eq!(result_names, vec!["projects/san-mateo", "tasks/san-mateo"]);
+        assert_eq!(
+            result_paths,
+            vec![
+                "/Users/aamaro/Desktop/anthony/personal-projects/rust/oxc/tasks/san-mateo",
+                "/Users/aamaro/Desktop/work/blueraster/projects/san-mateo",
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
