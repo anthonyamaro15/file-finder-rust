@@ -485,6 +485,7 @@ impl App {
 
         // Sort by score (descending)
         search_results.sort_by(|a, b| b.score.cmp(&a.score));
+        search_results.truncate(self.max_search_results);
 
         // For global search, we don't use filtered_indexes since we're showing different files
         self.search_results = search_results;

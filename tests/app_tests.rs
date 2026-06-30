@@ -270,6 +270,22 @@ mod filtering_tests {
         assert_eq!(app.search_results.len(), 1);
         assert_eq!(app.search_results[0].file_path, "/aa/apple");
     }
+
+    #[test]
+    fn root_search_respects_max_search_results() {
+        let mut app = App::new(Vec::new());
+        app.max_search_results = 2;
+
+        let mut store = DirectoryStore::new();
+        store.insert("/project/apple");
+        store.insert("/project/application");
+        store.insert("/project/apricot");
+
+        app.enter_search(SearchScope::Root);
+        app.enter_char('a', store);
+
+        assert_eq!(app.search_results.len(), 2);
+    }
 }
 
 #[cfg(test)]

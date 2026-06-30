@@ -499,6 +499,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut app = App::new(file_strings.clone());
     app.current_directory = startup_paths.file_list_path.clone();
+    app.max_search_results = settings.finder.max_results;
 
     // Initialize config and theme after app creation
     if let Err(e) = app.initialize_config_and_theme() {
