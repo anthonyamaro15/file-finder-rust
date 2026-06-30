@@ -55,14 +55,16 @@ mod watcher;
 
 // Internal imports
 use crate::{
-    app::{App, InputMode, PanePosition, ViewMode},
+    app::{App, InputMode, PanePosition, SearchScope, ViewMode},
     cli::{compute_effective_config, CliArgs},
+    config::Action,
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
     event::{
         file_actions::{
             containing_directory, containing_directory_or_current, create_target_directory,
             refresh_file_list, rename_target,
         },
+        keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
         search::handle_search_key,
         sort::apply_sort,
@@ -527,6 +529,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set print_path mode from CLI
     app.print_path = effective_config.print_path;
+
+    let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
 
     // Debug: write marker file when print_path is enabled
     if app.print_path {
@@ -1512,276 +1516,356 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if available {
                 if let Event::Key(key) = crossterm_event::read()? {
                     match app.input_mode {
-                        InputMode::Normal => match key.code {
-                            KeyCode::Char('i') => {
-                                app.input_mode = InputMode::Editing;
-                                file_reader_content.file_type = FileType::NotAvailable;
-                                image_renderer.clear();
+                        InputMode::Normal => {
+                            if let Some(action) = keymap_runtime.resolve_normal(key) {
+                                match action {
+                                    Action::SearchCurrent => {
+                                        app.enter_search(SearchScope::CurrentDirectory);
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                        image_renderer.clear();
+                                    }
+                                    Action::SearchRoot => {
+                                        app.enter_search(SearchScope::Root);
+                                        file_reader_content.file_type = FileType::NotAvailable;
+                                        image_renderer.clear();
+                                    }
+                                }
+                                continue;
                             }
-                            KeyCode::Char('q') => {
-                                break;
-                            }
-                            KeyCode::Down | KeyCode::Char('j') => {
-                                // In DualPane mode with right pane active, navigate right pane
-                                if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                                    app.right_pane.navigate_down();
-                                } else {
-                                    let list_len = app.get_list_length();
 
-                                    if let Some(i) = next_index_wrapping(state.selected(), list_len)
-                                    {
-                                        state.select(Some(i));
-                                        app.curr_index = Some(i);
+                            match key.code {
+                                KeyCode::Char('q') => {
+                                    break;
+                                }
+                                KeyCode::Down | KeyCode::Char('j') => {
+                                    // In DualPane mode with right pane active, navigate right pane
+                                    if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+                                        app.right_pane.navigate_down();
+                                    } else {
+                                        let list_len = app.get_list_length();
 
-                                        // Request debounced preview update
-                                        if let Some(path) = app.get_selected_path(Some(i)) {
-                                            app.request_preview(path);
+                                        if let Some(i) =
+                                            next_index_wrapping(state.selected(), list_len)
+                                        {
+                                            state.select(Some(i));
+                                            app.curr_index = Some(i);
+
+                                            // Request debounced preview update
+                                            if let Some(path) = app.get_selected_path(Some(i)) {
+                                                app.request_preview(path);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => {
-                                // In DualPane mode with right pane active, navigate right pane
-                                if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                                    app.right_pane.navigate_up();
-                                } else {
-                                    let list_len = app.get_list_length();
+                                KeyCode::Up | KeyCode::Char('k') => {
+                                    // In DualPane mode with right pane active, navigate right pane
+                                    if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+                                        app.right_pane.navigate_up();
+                                    } else {
+                                        let list_len = app.get_list_length();
 
-                                    if let Some(i) =
-                                        previous_index_wrapping(state.selected(), list_len)
-                                    {
-                                        state.select(Some(i));
-                                        app.curr_index = Some(i);
+                                        if let Some(i) =
+                                            previous_index_wrapping(state.selected(), list_len)
+                                        {
+                                            state.select(Some(i));
+                                            app.curr_index = Some(i);
 
-                                        // Request debounced preview update
-                                        if let Some(path) = app.get_selected_path(Some(i)) {
-                                            app.request_preview(path);
+                                            // Request debounced preview update
+                                            if let Some(path) = app.get_selected_path(Some(i)) {
+                                                app.request_preview(path);
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            KeyCode::Char('h') => {
-                                // In DualPane mode with right pane active, navigate right pane to parent
-                                if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                                    let current_dir = app.right_pane.current_directory.clone();
-                                    if let Some(parent) = parent_directory(Path::new(&current_dir))
-                                    {
-                                        if let Some(parent_str) = parent.to_str() {
-                                            app.right_pane.navigate_to_directory(parent_str);
+                                KeyCode::Char('h') => {
+                                    // In DualPane mode with right pane active, navigate right pane to parent
+                                    if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+                                        let current_dir = app.right_pane.current_directory.clone();
+                                        if let Some(parent) =
+                                            parent_directory(Path::new(&current_dir))
+                                        {
+                                            if let Some(parent_str) = parent.to_str() {
+                                                app.right_pane.navigate_to_directory(parent_str);
+                                            }
                                         }
-                                    }
-                                } else if app.files.len() > 0 {
-                                    let selected = &app.files[state.selected().unwrap()];
-                                    let selected_path = Path::new(selected);
+                                    } else if app.files.len() > 0 {
+                                        let selected = &app.files[state.selected().unwrap()];
+                                        let selected_path = Path::new(selected);
 
-                                    // TODO: refactor this to be more idiomatic
-                                    if selected_path.components().count() > 4 {
-                                        let new_path = parent_directory(selected_path)
-                                            .and_then(|path| parent_directory(&path))
-                                            .map(|path| path.to_string_lossy().to_string());
+                                        // TODO: refactor this to be more idiomatic
+                                        if selected_path.components().count() > 4 {
+                                            let new_path = parent_directory(selected_path)
+                                                .and_then(|path| parent_directory(&path))
+                                                .map(|path| path.to_string_lossy().to_string());
 
-                                        if let Some(new_path) = new_path {
-                                            let files_strings = get_inner_files_info(
-                                                new_path.clone(),
-                                                app.show_hidden_files,
-                                                app.sort_by.clone(),
-                                                &app.sort_type,
-                                            )
-                                            .unwrap();
+                                            if let Some(new_path) = new_path {
+                                                let files_strings = get_inner_files_info(
+                                                    new_path.clone(),
+                                                    app.show_hidden_files,
+                                                    app.sort_by.clone(),
+                                                    &app.sort_type,
+                                                )
+                                                .unwrap();
 
-                                            if let Some(f_s) = files_strings {
-                                                app.read_only_files = f_s.clone();
-                                                app.files = f_s;
-                                                app.update_file_references();
-                                                state.select(Some(0));
+                                                if let Some(f_s) = files_strings {
+                                                    app.read_only_files = f_s.clone();
+                                                    app.files = f_s;
+                                                    app.update_file_references();
+                                                    state.select(Some(0));
 
-                                                // Start watching the new directory
-                                                if let Err(e) =
-                                                    app.start_watching_directory(&new_path)
-                                                {
-                                                    debug!(
+                                                    // Start watching the new directory
+                                                    if let Err(e) =
+                                                        app.start_watching_directory(&new_path)
+                                                    {
+                                                        debug!(
                                                     "Failed to start watching directory '{}': {}",
                                                     new_path, e
                                                 );
-                                                } else {
-                                                    debug!(
-                                                        "Started watching directory: {}",
-                                                        new_path
+                                                    } else {
+                                                        debug!(
+                                                            "Started watching directory: {}",
+                                                            new_path
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let files_strings = get_inner_files_info(
+                                            app.prev_dir.clone(),
+                                            app.show_hidden_files,
+                                            app.sort_by.clone(),
+                                            &app.sort_type,
+                                        )
+                                        .unwrap();
+
+                                        if let Some(f_s) = files_strings {
+                                            app.read_only_files = f_s.clone();
+                                            app.files = f_s;
+                                            app.update_file_references();
+                                            state.select(Some(0));
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('l') => {
+                                    // In DualPane mode with right pane active, enter directory in right pane
+                                    if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+                                        if let Some(selected) = app.right_pane.get_selected_path() {
+                                            if !is_file(selected.clone()) {
+                                                app.right_pane.navigate_to_directory(&selected);
+                                            }
+                                        }
+                                    } else {
+                                        // Use helper method to get selected path based on current mode
+                                        let selected_path = app.get_selected_path(state.selected());
+
+                                        if let Some(selected) = selected_path {
+                                            app.prev_dir = get_curr_path(selected.to_string());
+                                            if !is_file(selected.to_string()) {
+                                                match get_inner_files_info(
+                                                    selected.to_string(),
+                                                    app.show_hidden_files,
+                                                    app.sort_by.clone(),
+                                                    &app.sort_type,
+                                                ) {
+                                                    Ok(files_strings) => {
+                                                        if let Some(files_strs) = files_strings {
+                                                            // Exit search mode when navigating into a directory
+                                                            app.clear_search();
+                                                            app.input_mode = InputMode::Normal;
+
+                                                            app.read_only_files =
+                                                                files_strs.clone();
+                                                            app.files = files_strs;
+                                                            app.update_file_references();
+                                                            state.select(Some(0));
+
+                                                            // Start watching the new directory
+                                                            if let Err(e) = app
+                                                                .start_watching_directory(&selected)
+                                                            {
+                                                                debug!("Failed to start watching directory '{}': {}", selected, e);
+                                                            } else {
+                                                                debug!(
+                                                                "Started watching directory: {}",
+                                                                selected
+                                                            );
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        println!("Error: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                KeyCode::Char('o') => {
+                                    if let Some(index) = state.selected() {
+                                        Command::new("open")
+                                            .arg(&app.files[index])
+                                            .spawn()
+                                            .expect("failed to open file");
+
+                                        break;
+                                    }
+                                }
+                                KeyCode::Char('d') => {
+                                    // Populate delete target info for confirmation popup
+                                    // For directories, we DON'T calculate stats upfront to avoid blocking
+                                    if let Some(index) = state.selected() {
+                                        if index < app.files.len() {
+                                            let selected_path = &app.files[index];
+                                            let path = Path::new(selected_path);
+
+                                            // Get filename
+                                            app.delete_target_name = path
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or(selected_path)
+                                                .to_string();
+
+                                            app.delete_target_is_dir = path.is_dir();
+
+                                            if app.delete_target_is_dir {
+                                                // For directories, don't calculate stats (will show "Counting..." in popup)
+                                                // Stats will be calculated during async delete
+                                                app.delete_target_file_count = None;
+                                                app.delete_target_total_size = None;
+                                            } else {
+                                                // For files, get the file size (fast operation)
+                                                app.delete_target_file_count = None;
+                                                app.delete_target_total_size =
+                                                    path.metadata().ok().map(|m| m.len());
+                                            }
+                                        }
+                                    }
+                                    app.render_popup = true;
+                                    app.input_mode = InputMode::WatchDelete;
+                                }
+                                KeyCode::Char('a') => {
+                                    app.input_mode = InputMode::WatchCreate;
+                                }
+                                KeyCode::Char('p') => {
+                                    // Cycle through view modes: Normal -> FullList -> DualPane -> Normal
+                                    let new_mode = app.view_mode.next();
+
+                                    // Initialize right pane when entering DualPane mode
+                                    if new_mode == ViewMode::DualPane {
+                                        app.init_right_pane();
+                                    }
+
+                                    // Reset active pane to left when leaving DualPane mode
+                                    if app.view_mode == ViewMode::DualPane
+                                        && new_mode != ViewMode::DualPane
+                                    {
+                                        app.active_pane = PanePosition::Left;
+                                    }
+
+                                    app.view_mode = new_mode;
+                                }
+                                KeyCode::Tab => {
+                                    // Switch active pane in dual-pane mode
+                                    if app.view_mode.is_dual_pane() {
+                                        app.toggle_active_pane();
+                                    }
+                                }
+                                KeyCode::Char('C') => {
+                                    // Shift+C: Copy selected file to other pane (DualPane mode only)
+                                    if app.view_mode.is_dual_pane() {
+                                        // Get source and destination based on active pane
+                                        let (src_path, dest_dir) = if app.is_right_pane_active() {
+                                            // Right pane active: copy from right to left
+                                            let src = app.right_pane.get_selected_path();
+                                            let dest = app.current_directory.clone();
+                                            (src, dest)
+                                        } else {
+                                            // Left pane active: copy from left to right
+                                            let src = state
+                                                .selected()
+                                                .and_then(|i| app.files.get(i).cloned());
+                                            let dest = app.right_pane.current_directory.clone();
+                                            (src, dest)
+                                        };
+
+                                        if let Some(src_path) = src_path {
+                                            let src = std::path::Path::new(&src_path);
+                                            let src_name = src
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("");
+                                            let dest =
+                                                std::path::Path::new(&dest_dir).join(src_name);
+
+                                            match operations::copy_dir_file_helper(src, &dest) {
+                                                Ok(()) => {
+                                                    // Refresh the destination pane
+                                                    if app.is_right_pane_active() {
+                                                        // Refresh left pane
+                                                        if let Ok(Some(new_files)) =
+                                                            get_inner_files_info(
+                                                                app.current_directory.clone(),
+                                                                app.show_hidden_files,
+                                                                app.sort_by.clone(),
+                                                                &app.sort_type,
+                                                            )
+                                                        {
+                                                            app.files = new_files;
+                                                            app.update_file_references();
+                                                        }
+                                                    } else {
+                                                        app.right_pane.refresh_files();
+                                                    }
+                                                    status_bar.show_error(
+                                                        format!(
+                                                            "Copied '{}' to other pane",
+                                                            src_name
+                                                        ),
+                                                        Some(2),
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    status_bar.show_error(
+                                                        format!("Copy failed: {}", e),
+                                                        Some(3),
                                                     );
                                                 }
                                             }
                                         }
                                     }
-                                } else {
-                                    let files_strings = get_inner_files_info(
-                                        app.prev_dir.clone(),
-                                        app.show_hidden_files,
-                                        app.sort_by.clone(),
-                                        &app.sort_type,
-                                    )
-                                    .unwrap();
-
-                                    if let Some(f_s) = files_strings {
-                                        app.read_only_files = f_s.clone();
-                                        app.files = f_s;
-                                        app.update_file_references();
-                                        state.select(Some(0));
-                                    }
                                 }
-                            }
-                            KeyCode::Char('l') => {
-                                // In DualPane mode with right pane active, enter directory in right pane
-                                if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                                    if let Some(selected) = app.right_pane.get_selected_path() {
-                                        if !is_file(selected.clone()) {
-                                            app.right_pane.navigate_to_directory(&selected);
-                                        }
-                                    }
-                                } else {
-                                    // Use helper method to get selected path based on current mode
-                                    let selected_path = app.get_selected_path(state.selected());
-
-                                    if let Some(selected) = selected_path {
-                                        app.prev_dir = get_curr_path(selected.to_string());
-                                        if !is_file(selected.to_string()) {
-                                            match get_inner_files_info(
-                                                selected.to_string(),
-                                                app.show_hidden_files,
-                                                app.sort_by.clone(),
-                                                &app.sort_type,
-                                            ) {
-                                                Ok(files_strings) => {
-                                                    if let Some(files_strs) = files_strings {
-                                                        // Exit search mode when navigating into a directory
-                                                        app.clear_search();
-                                                        app.input_mode = InputMode::Normal;
-
-                                                        app.read_only_files = files_strs.clone();
-                                                        app.files = files_strs;
-                                                        app.update_file_references();
-                                                        state.select(Some(0));
-
-                                                        // Start watching the new directory
-                                                        if let Err(e) =
-                                                            app.start_watching_directory(&selected)
-                                                        {
-                                                            debug!("Failed to start watching directory '{}': {}", selected, e);
-                                                        } else {
-                                                            debug!(
-                                                                "Started watching directory: {}",
-                                                                selected
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    println!("Error: {}", e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            KeyCode::Char('o') => {
-                                if let Some(index) = state.selected() {
-                                    Command::new("open")
-                                        .arg(&app.files[index])
-                                        .spawn()
-                                        .expect("failed to open file");
-
-                                    break;
-                                }
-                            }
-                            KeyCode::Char('d') => {
-                                // Populate delete target info for confirmation popup
-                                // For directories, we DON'T calculate stats upfront to avoid blocking
-                                if let Some(index) = state.selected() {
-                                    if index < app.files.len() {
-                                        let selected_path = &app.files[index];
-                                        let path = Path::new(selected_path);
-
-                                        // Get filename
-                                        app.delete_target_name = path
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or(selected_path)
-                                            .to_string();
-
-                                        app.delete_target_is_dir = path.is_dir();
-
-                                        if app.delete_target_is_dir {
-                                            // For directories, don't calculate stats (will show "Counting..." in popup)
-                                            // Stats will be calculated during async delete
-                                            app.delete_target_file_count = None;
-                                            app.delete_target_total_size = None;
+                                KeyCode::Char('M') => {
+                                    // Shift+M: Move selected file to other pane (DualPane mode only)
+                                    if app.view_mode.is_dual_pane() {
+                                        // Get source and destination based on active pane
+                                        let is_right_active = app.is_right_pane_active();
+                                        let (src_path, dest_dir) = if is_right_active {
+                                            // Right pane active: move from right to left
+                                            let src = app.right_pane.get_selected_path();
+                                            let dest = app.current_directory.clone();
+                                            (src, dest)
                                         } else {
-                                            // For files, get the file size (fast operation)
-                                            app.delete_target_file_count = None;
-                                            app.delete_target_total_size =
-                                                path.metadata().ok().map(|m| m.len());
-                                        }
-                                    }
-                                }
-                                app.render_popup = true;
-                                app.input_mode = InputMode::WatchDelete;
-                            }
-                            KeyCode::Char('a') => {
-                                app.input_mode = InputMode::WatchCreate;
-                            }
-                            KeyCode::Char('p') => {
-                                // Cycle through view modes: Normal -> FullList -> DualPane -> Normal
-                                let new_mode = app.view_mode.next();
+                                            // Left pane active: move from left to right
+                                            let src = state
+                                                .selected()
+                                                .and_then(|i| app.files.get(i).cloned());
+                                            let dest = app.right_pane.current_directory.clone();
+                                            (src, dest)
+                                        };
 
-                                // Initialize right pane when entering DualPane mode
-                                if new_mode == ViewMode::DualPane {
-                                    app.init_right_pane();
-                                }
+                                        if let Some(src_path) = src_path {
+                                            let src_name = std::path::Path::new(&src_path)
+                                                .file_name()
+                                                .and_then(|n| n.to_str())
+                                                .unwrap_or("")
+                                                .to_string();
 
-                                // Reset active pane to left when leaving DualPane mode
-                                if app.view_mode == ViewMode::DualPane
-                                    && new_mode != ViewMode::DualPane
-                                {
-                                    app.active_pane = PanePosition::Left;
-                                }
-
-                                app.view_mode = new_mode;
-                            }
-                            KeyCode::Tab => {
-                                // Switch active pane in dual-pane mode
-                                if app.view_mode.is_dual_pane() {
-                                    app.toggle_active_pane();
-                                }
-                            }
-                            KeyCode::Char('C') => {
-                                // Shift+C: Copy selected file to other pane (DualPane mode only)
-                                if app.view_mode.is_dual_pane() {
-                                    // Get source and destination based on active pane
-                                    let (src_path, dest_dir) = if app.is_right_pane_active() {
-                                        // Right pane active: copy from right to left
-                                        let src = app.right_pane.get_selected_path();
-                                        let dest = app.current_directory.clone();
-                                        (src, dest)
-                                    } else {
-                                        // Left pane active: copy from left to right
-                                        let src = state
-                                            .selected()
-                                            .and_then(|i| app.files.get(i).cloned());
-                                        let dest = app.right_pane.current_directory.clone();
-                                        (src, dest)
-                                    };
-
-                                    if let Some(src_path) = src_path {
-                                        let src = std::path::Path::new(&src_path);
-                                        let src_name =
-                                            src.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                                        let dest = std::path::Path::new(&dest_dir).join(src_name);
-
-                                        match operations::copy_dir_file_helper(src, &dest) {
-                                            Ok(()) => {
-                                                // Refresh the destination pane
-                                                if app.is_right_pane_active() {
-                                                    // Refresh left pane
+                                            match operations::move_file_or_dir(&src_path, &dest_dir)
+                                            {
+                                                Ok(()) => {
+                                                    // Refresh both panes
                                                     if let Ok(Some(new_files)) =
                                                         get_inner_files_info(
                                                             app.current_directory.clone(),
@@ -1793,240 +1877,203 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         app.files = new_files;
                                                         app.update_file_references();
                                                     }
-                                                } else {
                                                     app.right_pane.refresh_files();
-                                                }
-                                                status_bar.show_error(
-                                                    format!("Copied '{}' to other pane", src_name),
-                                                    Some(2),
-                                                );
-                                            }
-                                            Err(e) => {
-                                                status_bar.show_error(
-                                                    format!("Copy failed: {}", e),
-                                                    Some(3),
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            KeyCode::Char('M') => {
-                                // Shift+M: Move selected file to other pane (DualPane mode only)
-                                if app.view_mode.is_dual_pane() {
-                                    // Get source and destination based on active pane
-                                    let is_right_active = app.is_right_pane_active();
-                                    let (src_path, dest_dir) = if is_right_active {
-                                        // Right pane active: move from right to left
-                                        let src = app.right_pane.get_selected_path();
-                                        let dest = app.current_directory.clone();
-                                        (src, dest)
-                                    } else {
-                                        // Left pane active: move from left to right
-                                        let src = state
-                                            .selected()
-                                            .and_then(|i| app.files.get(i).cloned());
-                                        let dest = app.right_pane.current_directory.clone();
-                                        (src, dest)
-                                    };
 
-                                    if let Some(src_path) = src_path {
-                                        let src_name = std::path::Path::new(&src_path)
-                                            .file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("")
-                                            .to_string();
-
-                                        match operations::move_file_or_dir(&src_path, &dest_dir) {
-                                            Ok(()) => {
-                                                // Refresh both panes
-                                                if let Ok(Some(new_files)) = get_inner_files_info(
-                                                    app.current_directory.clone(),
-                                                    app.show_hidden_files,
-                                                    app.sort_by.clone(),
-                                                    &app.sort_type,
-                                                ) {
-                                                    app.files = new_files;
-                                                    app.update_file_references();
-                                                }
-                                                app.right_pane.refresh_files();
-
-                                                // Adjust selection in the source pane
-                                                if is_right_active {
-                                                    // Selection adjustment handled by right_pane.refresh_files()
-                                                } else {
-                                                    if let Some(index) = state.selected() {
-                                                        if app.files.is_empty() {
-                                                            state.select(None);
-                                                        } else if index >= app.files.len() {
-                                                            state.select(Some(app.files.len() - 1));
+                                                    // Adjust selection in the source pane
+                                                    if is_right_active {
+                                                        // Selection adjustment handled by right_pane.refresh_files()
+                                                    } else {
+                                                        if let Some(index) = state.selected() {
+                                                            if app.files.is_empty() {
+                                                                state.select(None);
+                                                            } else if index >= app.files.len() {
+                                                                state.select(Some(
+                                                                    app.files.len() - 1,
+                                                                ));
+                                                            }
                                                         }
                                                     }
-                                                }
 
-                                                status_bar.show_error(
-                                                    format!("Moved '{}' to other pane", src_name),
-                                                    Some(2),
-                                                );
-                                                status_bar.invalidate_cache();
+                                                    status_bar.show_error(
+                                                        format!(
+                                                            "Moved '{}' to other pane",
+                                                            src_name
+                                                        ),
+                                                        Some(2),
+                                                    );
+                                                    status_bar.invalidate_cache();
+                                                }
+                                                Err(e) => {
+                                                    status_bar.show_error(
+                                                        format!("Move failed: {}", e),
+                                                        Some(3),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('y') => {
+                                    let curr_file_path =
+                                        file_reader_content.curr_selected_path.clone();
+                                    let file_type = file_reader_content
+                                        .get_file_extension(curr_file_path.clone());
+                                    match file_type {
+                                        FileType::ZIP => {
+                                            let t = file_reader_content.extract_zip_content();
+                                            app.input = t;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                KeyCode::Char('r') => {
+                                    let selected_index = state.selected();
+                                    if let Some(index) = selected_index {
+                                        let selected = &app.files[index];
+                                        let selected_path = Path::new(selected);
+                                        if let Some((parent, placeholder_name)) =
+                                            rename_target(selected_path)
+                                        {
+                                            app.current_path_to_edit =
+                                                parent.to_string_lossy().to_string();
+                                            app.current_name_to_edit = placeholder_name.clone();
+                                            app.create_edit_file_name = placeholder_name.clone();
+                                            app.char_index = placeholder_name.len();
+                                        }
+                                    }
+                                    app.input_mode = InputMode::WatchRename;
+                                }
+                                KeyCode::Char('.') => {
+                                    let is_hidden = !app.show_hidden_files;
+                                    app.show_hidden_files = is_hidden;
+                                    let selected_index = state.selected();
+                                    if let Some(indx) = selected_index {
+                                        let selected = &app.files[indx];
+
+                                        let new_path = containing_directory(Path::new(selected))
+                                            .to_string_lossy()
+                                            .to_string();
+                                        match get_inner_files_info(
+                                            new_path,
+                                            is_hidden,
+                                            app.sort_by.clone(),
+                                            &app.sort_type,
+                                        ) {
+                                            Ok(files) => {
+                                                if let Some(file_strs) = files {
+                                                    app.read_only_files = file_strs.clone();
+                                                    app.files = file_strs;
+                                                    app.update_file_references();
+                                                }
                                             }
                                             Err(e) => {
-                                                status_bar.show_error(
-                                                    format!("Move failed: {}", e),
-                                                    Some(3),
+                                                println!("error  {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                                KeyCode::Char('c') => {
+                                    // Copy selected file/directory in current location using async operation
+                                    if let Some(index) = state.selected() {
+                                        if index < app.files.len() {
+                                            let selected_path = &app.files[index];
+                                            let src_path = Path::new(selected_path);
+
+                                            // Get current directory (parent of selected item)
+                                            let current_dir =
+                                                containing_directory_or_current(src_path);
+
+                                            // Generate copy name
+                                            let new_path_with_new_name =
+                                                generate_copy_file_dir_name(
+                                                    selected_path.clone(),
+                                                    current_dir.to_string_lossy().to_string(),
                                                 );
+
+                                            let new_src = Path::new(&new_path_with_new_name);
+
+                                            // Start async copy operation
+                                            let rx = copy_dir_file_with_progress(src_path, new_src);
+                                            copy_receiver = Some(rx);
+
+                                            // Initialize copy progress state
+                                            app.copy_in_progress = true;
+                                            app.copy_progress_message =
+                                                String::from("Starting copy...");
+                                            app.copy_files_processed = 0;
+                                            app.copy_total_files = 0;
+                                        }
+                                    }
+                                }
+
+                                KeyCode::Char('s') => {
+                                    app.input_mode = InputMode::WatchSort;
+                                }
+
+                                KeyCode::Char('?') => {
+                                    app.input_mode = InputMode::WatchKeyBinding;
+                                }
+
+                                KeyCode::Enter => {
+                                    // Use helper method to get selected path based on current mode
+                                    let selected_path = app.get_selected_path(state.selected());
+
+                                    if let Some(selected) = selected_path {
+                                        app.input = selected.clone();
+
+                                        // Check if print_path mode - write to temp file for shell integration
+                                        if app.print_path {
+                                            // Write to temp file before restoring terminal
+                                            let temp_path =
+                                                std::path::PathBuf::from("/tmp/ff_result");
+                                            let _ = std::fs::write(&temp_path, &selected);
+
+                                            // Restore terminal
+                                            disable_raw_mode()?;
+                                            execute!(
+                                                terminal.backend_mut(),
+                                                LeaveAlternateScreen,
+                                                DisableMouseCapture
+                                            )?;
+                                            terminal.show_cursor()?;
+                                            return Ok(());
+                                        }
+
+                                        // Check if IDE is configured - if so, open file, otherwise copy to clipboard
+                                        if app.get_selected_ide().is_some() {
+                                            let _ = handle_file_selection(
+                                                &selected,
+                                                &mut terminal,
+                                                &app,
+                                            );
+                                            break;
+                                        } else {
+                                            // Copy path to clipboard instead of opening
+                                            use copypasta::{ClipboardContext, ClipboardProvider};
+                                            if let Ok(mut ctx) = ClipboardContext::new() {
+                                                if let Ok(_) = ctx.set_contents(selected.clone()) {
+                                                    debug!(
+                                                        "Copied path to clipboard: {}",
+                                                        selected
+                                                    );
+                                                    // Optionally show a brief message to user
+                                                    // For now just break to exit
+                                                    break;
+                                                }
                                             }
+                                            // Fallback to normal file selection if clipboard fails
+                                            let _ = handle_file_selection(
+                                                &selected,
+                                                &mut terminal,
+                                                &app,
+                                            );
+                                            break;
                                         }
                                     }
                                 }
+                                _ => {}
                             }
-                            KeyCode::Char('y') => {
-                                let curr_file_path = file_reader_content.curr_selected_path.clone();
-                                let file_type =
-                                    file_reader_content.get_file_extension(curr_file_path.clone());
-                                match file_type {
-                                    FileType::ZIP => {
-                                        let t = file_reader_content.extract_zip_content();
-                                        app.input = t;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            KeyCode::Char('r') => {
-                                let selected_index = state.selected();
-                                if let Some(index) = selected_index {
-                                    let selected = &app.files[index];
-                                    let selected_path = Path::new(selected);
-                                    if let Some((parent, placeholder_name)) =
-                                        rename_target(selected_path)
-                                    {
-                                        app.current_path_to_edit =
-                                            parent.to_string_lossy().to_string();
-                                        app.current_name_to_edit = placeholder_name.clone();
-                                        app.create_edit_file_name = placeholder_name.clone();
-                                        app.char_index = placeholder_name.len();
-                                    }
-                                }
-                                app.input_mode = InputMode::WatchRename;
-                            }
-                            KeyCode::Char('.') => {
-                                let is_hidden = !app.show_hidden_files;
-                                app.show_hidden_files = is_hidden;
-                                let selected_index = state.selected();
-                                if let Some(indx) = selected_index {
-                                    let selected = &app.files[indx];
-
-                                    let new_path = containing_directory(Path::new(selected))
-                                        .to_string_lossy()
-                                        .to_string();
-                                    match get_inner_files_info(
-                                        new_path,
-                                        is_hidden,
-                                        app.sort_by.clone(),
-                                        &app.sort_type,
-                                    ) {
-                                        Ok(files) => {
-                                            if let Some(file_strs) = files {
-                                                app.read_only_files = file_strs.clone();
-                                                app.files = file_strs;
-                                                app.update_file_references();
-                                            }
-                                        }
-                                        Err(e) => {
-                                            println!("error  {}", e);
-                                        }
-                                    }
-                                }
-                            }
-                            KeyCode::Char('c') => {
-                                // Copy selected file/directory in current location using async operation
-                                if let Some(index) = state.selected() {
-                                    if index < app.files.len() {
-                                        let selected_path = &app.files[index];
-                                        let src_path = Path::new(selected_path);
-
-                                        // Get current directory (parent of selected item)
-                                        let current_dir = containing_directory_or_current(src_path);
-
-                                        // Generate copy name
-                                        let new_path_with_new_name = generate_copy_file_dir_name(
-                                            selected_path.clone(),
-                                            current_dir.to_string_lossy().to_string(),
-                                        );
-
-                                        let new_src = Path::new(&new_path_with_new_name);
-
-                                        // Start async copy operation
-                                        let rx = copy_dir_file_with_progress(src_path, new_src);
-                                        copy_receiver = Some(rx);
-
-                                        // Initialize copy progress state
-                                        app.copy_in_progress = true;
-                                        app.copy_progress_message =
-                                            String::from("Starting copy...");
-                                        app.copy_files_processed = 0;
-                                        app.copy_total_files = 0;
-                                    }
-                                }
-                            }
-
-                            KeyCode::Char('s') => {
-                                app.input_mode = InputMode::WatchSort;
-                            }
-
-                            KeyCode::Char('?') => {
-                                app.input_mode = InputMode::WatchKeyBinding;
-                            }
-
-                            KeyCode::Enter => {
-                                // Use helper method to get selected path based on current mode
-                                let selected_path = app.get_selected_path(state.selected());
-
-                                if let Some(selected) = selected_path {
-                                    app.input = selected.clone();
-
-                                    // Check if print_path mode - write to temp file for shell integration
-                                    if app.print_path {
-                                        // Write to temp file before restoring terminal
-                                        let temp_path = std::path::PathBuf::from("/tmp/ff_result");
-                                        let _ = std::fs::write(&temp_path, &selected);
-
-                                        // Restore terminal
-                                        disable_raw_mode()?;
-                                        execute!(
-                                            terminal.backend_mut(),
-                                            LeaveAlternateScreen,
-                                            DisableMouseCapture
-                                        )?;
-                                        terminal.show_cursor()?;
-                                        return Ok(());
-                                    }
-
-                                    // Check if IDE is configured - if so, open file, otherwise copy to clipboard
-                                    if app.get_selected_ide().is_some() {
-                                        let _ =
-                                            handle_file_selection(&selected, &mut terminal, &app);
-                                        break;
-                                    } else {
-                                        // Copy path to clipboard instead of opening
-                                        use copypasta::{ClipboardContext, ClipboardProvider};
-                                        if let Ok(mut ctx) = ClipboardContext::new() {
-                                            if let Ok(_) = ctx.set_contents(selected.clone()) {
-                                                debug!("Copied path to clipboard: {}", selected);
-                                                // Optionally show a brief message to user
-                                                // For now just break to exit
-                                                break;
-                                            }
-                                        }
-                                        // Fallback to normal file selection if clipboard fails
-                                        let _ =
-                                            handle_file_selection(&selected, &mut terminal, &app);
-                                        break;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        },
+                        }
 
                         InputMode::WatchRename if key.kind == KeyEventKind::Press => match key.code
                         {

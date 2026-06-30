@@ -83,10 +83,7 @@ mod tests {
 
     #[test]
     fn parses_search_current_action() {
-        assert_eq!(
-            Action::parse("search.current"),
-            Some(Action::SearchCurrent)
-        );
+        assert_eq!(Action::parse("search.current"), Some(Action::SearchCurrent));
     }
 
     #[test]
