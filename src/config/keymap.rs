@@ -61,6 +61,14 @@ impl Default for KeymapSettings {
     }
 }
 
+impl KeymapSettings {
+    pub fn merge_missing_defaults(&mut self) {
+        for (key, action) in default_normal_keymap() {
+            self.normal.entry(key).or_insert(action);
+        }
+    }
+}
+
 fn default_keymap_profile() -> String {
     "vim".to_string()
 }
