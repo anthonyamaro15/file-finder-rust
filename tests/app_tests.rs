@@ -1,6 +1,6 @@
 mod common;
 
-use file_finder::app::{App, InputMode, IDE};
+use file_finder::app::{App, InputMode, SearchScope, IDE};
 use file_finder::directory_store::DirectoryStore;
 
 #[cfg(test)]
@@ -237,6 +237,54 @@ mod filtering_tests {
         // Should only match the exact case
         assert_eq!(app.filtered_indexes.len(), 1);
         assert_eq!(app.filtered_indexes[0], 0);
+    }
+
+    #[test]
+    fn slash_query_in_current_scope_stays_local_search() {
+        let mut app = App::new(vec![
+            "/tmp/example/apple.txt".to_string(),
+            "/tmp/example/zebra.txt".to_string(),
+        ]);
+        let store = DirectoryStore::new();
+
+        app.enter_search(SearchScope::CurrentDirectory);
+        app.enter_char('/', store.clone());
+        app.enter_char('a', store);
+
+        assert_eq!(app.search_scope, SearchScope::CurrentDirectory);
+        assert!(!app.global_search_mode);
+    }
+
+    #[test]
+    fn root_scope_uses_global_search_without_query_prefix() {
+        let mut app = App::new(Vec::new());
+        let mut store = DirectoryStore::new();
+        store.insert("/aa/apple");
+        store.insert("/zz/zebra");
+
+        app.enter_search(SearchScope::Root);
+        app.enter_char('p', store);
+
+        assert_eq!(app.search_scope, SearchScope::Root);
+        assert!(app.global_search_mode);
+        assert_eq!(app.search_results.len(), 1);
+        assert_eq!(app.search_results[0].file_path, "/aa/apple");
+    }
+
+    #[test]
+    fn root_search_respects_max_search_results() {
+        let mut app = App::new(Vec::new());
+        app.max_search_results = 2;
+
+        let mut store = DirectoryStore::new();
+        store.insert("/project/apple");
+        store.insert("/project/application");
+        store.insert("/project/apricot");
+
+        app.enter_search(SearchScope::Root);
+        app.enter_char('a', store);
+
+        assert_eq!(app.search_results.len(), 2);
     }
 }
 
