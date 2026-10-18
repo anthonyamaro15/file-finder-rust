@@ -1384,7 +1384,7 @@ impl FileContent<'_> {
     }
 
     pub fn extract_zip_content(&mut self) -> String {
-        let fname = std::path::Path::new(&self.curr_selected_path);
+        let fname = Path::new(&self.curr_selected_path);
         let file = match fs::File::open(fname) {
             Ok(f) => f,
             Err(e) => return format!("Error opening ZIP: {}", e),
@@ -1394,64 +1394,102 @@ impl FileContent<'_> {
             Ok(a) => a,
             Err(e) => return format!("Error reading ZIP archive: {}", e),
         };
+        let Some(stem) = fname.file_stem() else {
+            return "Error: ZIP path has no file stem".to_string();
+        };
+        let target_dir = fname.with_file_name(stem);
+        // Atomically reserve a new directory; files and dangling links also block extraction.
+        if let Err(e) = fs::create_dir(&target_dir) {
+            return format!(
+                "Error creating extraction directory '{}': {}",
+                target_dir.display(),
+                e
+            );
+        }
 
+        let mut extracted = 0;
+        let mut failed = 0;
+        let mut first_error = None;
         for i in 0..archive.len() {
-            let mut file = match archive.by_index(i) {
-                Ok(f) => f,
-                Err(_) => continue, // Skip problematic entries
-            };
-
-            let outpath = match file.enclosed_name() {
-                Some(f_path) => f_path.to_owned(),
-                None => continue,
-            };
-
-            {
-                let comment = file.comment();
-                if !comment.is_empty() {
-                    println!("File {i} comment: {comment}");
-                }
-            }
-
-            if file.is_dir() {
-                if let Err(e) = fs::create_dir_all(&outpath) {
-                    eprintln!("Warning: Could not create directory {:?}: {}", outpath, e);
-                    continue;
-                }
-            } else {
-                if let Some(p) = outpath.parent() {
-                    if !p.exists() {
-                        if let Err(e) = fs::create_dir_all(p) {
-                            eprintln!("Warning: Could not create parent directory {:?}: {}", p, e);
-                            continue;
-                        }
-                    }
-                }
-
-                let mut outfile = match fs::File::create(&outpath) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        eprintln!("Warning: Could not create file {:?}: {}", outpath, e);
-                        continue;
-                    }
+            let result = (|| -> io::Result<bool> {
+                let mut file = archive.by_index(i)?;
+                let enclosed_name = match file.enclosed_name() {
+                    Some(path) => path.to_owned(),
+                    None => return Ok(false),
                 };
-
-                if let Err(e) = io::copy(&mut file, &mut outfile) {
-                    eprintln!("Warning: Could not write to file {:?}: {}", outpath, e);
+                let outpath = target_dir.join(&enclosed_name);
+                if file
+                    .unix_mode()
+                    .is_some_and(|mode| mode & 0o170000 == 0o120000)
+                {
+                    return Err(io::Error::other(format!(
+                        "Refusing ZIP symlink '{}'",
+                        file.name()
+                    )));
                 }
-            }
 
-            {
+                // Check each directory component without following links, including directories
+                // already created for earlier entries. Never merge into an existing symlink.
+                let directory = if file.is_dir() {
+                    enclosed_name.as_path()
+                } else {
+                    enclosed_name.parent().unwrap_or(Path::new(""))
+                };
+                let mut parent = target_dir.clone();
+                for component in directory.components() {
+                    parent.push(component);
+                    match fs::create_dir(&parent) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                            if !fs::symlink_metadata(&parent)?.is_dir() {
+                                return Err(io::Error::other(format!(
+                                    "Not a directory: {}",
+                                    parent.display()
+                                )));
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                if !file.is_dir() {
+                    // Exclusive creation also refuses duplicate entries and dangling symlinks.
+                    let mut outfile = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&outpath)?;
+                    io::copy(&mut file, &mut outfile)?;
+                }
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     if let Some(mode) = file.unix_mode() {
-                        let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode));
+                        // Drop setuid/setgid/sticky bits, like unzip does by default.
+                        fs::set_permissions(&outpath, fs::Permissions::from_mode(mode & 0o777))?;
                     }
+                }
+                Ok(true)
+            })();
+            match result {
+                Ok(true) => extracted += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    failed += 1;
+                    first_error.get_or_insert_with(|| format!("entry {}: {}", i, e));
                 }
             }
         }
-        self.curr_selected_path.clone()
+        let message = format!(
+            "Extracted {} entries to {}",
+            extracted,
+            target_dir.display()
+        );
+        match first_error {
+            Some(error) => format!(
+                "Error: {}; {} failed (first error: {})",
+                message, failed, error
+            ),
+            None => message,
+        }
     }
 
     /// Maximum PDF file size for preview (50MB)
@@ -1645,5 +1683,153 @@ impl FileContent<'_> {
         }
 
         output
+    }
+}
+
+#[cfg(test)]
+mod extraction_tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    fn write_zip(path: &Path, entries: &[(&str, &str)]) {
+        let mut archive = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        for (name, contents) in entries {
+            archive
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(contents.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+    }
+
+    fn extract(path: &Path) -> String {
+        let mut content = FileContent::new(SyntaxSet::new(), ThemeSet::new());
+        content.curr_selected_path = path.to_str().unwrap().to_string();
+        content.extract_zip_content()
+    }
+
+    #[test]
+    fn zip_extracts_beside_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        let entries = [
+            ("a.txt", "alpha"),
+            ("sub/b.txt", "beta"),
+            (".zshrc", "safe"),
+        ];
+        write_zip(&archive, &entries);
+        let target = tmp.path().join("archive");
+        let message = extract(&archive);
+        assert!(message.contains("Extracted 3 entries"), "{message}");
+        assert!(message.contains(target.to_str().unwrap()), "{message}");
+        for (name, contents) in entries {
+            assert_eq!(fs::read_to_string(target.join(name)).unwrap(), contents);
+            assert!(!tmp.path().join(name).exists());
+        }
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn zip_rejects_existing_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        write_zip(&archive, &[]);
+        let target = tmp.path().join("archive");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep.txt"), "keep").unwrap();
+        let message = extract(&archive);
+        assert!(message.starts_with("Error"), "{message}");
+        assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn zip_skips_parent_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        write_zip(&archive, &[("../evil.txt", "evil"), ("good.txt", "good")]);
+        let message = extract(&archive);
+        assert!(message.contains("Extracted 1 entries"), "{message}");
+        assert!(!tmp.path().join("evil.txt").exists());
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("archive/good.txt")).unwrap(),
+            "good"
+        );
+    }
+
+    #[test]
+    fn zip_reports_entry_failures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        write_zip(
+            &archive,
+            &[("sub", "original"), ("sub/child.txt", "blocked")],
+        );
+        let message = extract(&archive);
+        assert!(message.contains("1 entries"), "{message}");
+        assert!(message.contains("1 failed"), "{message}");
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("archive/sub")).unwrap(),
+            "original"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_rejects_symlink_target_and_entries() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "keep").unwrap();
+        let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        writer
+            .add_symlink("link", "../outside", SimpleFileOptions::default())
+            .unwrap();
+        writer.finish().unwrap();
+        let target = tmp.path().join("archive");
+        for link_target in [&outside, &tmp.path().join("missing")] {
+            symlink(link_target, &target).unwrap();
+            assert!(extract(&archive).starts_with("Error"));
+            assert_eq!(fs::read_link(&target).unwrap(), *link_target);
+            fs::remove_file(&target).unwrap();
+        }
+        let message = extract(&archive);
+        assert!(message.contains("1 failed"), "{message}");
+        assert!(fs::symlink_metadata(target.join("link")).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_strips_setuid_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        let mut bytes = Vec::new();
+        let mut writer = zip::ZipWriter::new(io::Cursor::new(&mut bytes));
+        writer
+            .start_file("tool", SimpleFileOptions::default().unix_permissions(0o755))
+            .unwrap();
+        writer.write_all(b"#!/bin/sh\n").unwrap();
+        writer.finish().unwrap();
+        // unix_permissions() masks to 0o777, so set setuid in the central directory's
+        // external attributes (offset 38; the mode is the high 16 bits).
+        let attrs = bytes.windows(4).position(|w| w == b"PK\x01\x02").unwrap() + 38;
+        let mode = u32::from_le_bytes(bytes[attrs..attrs + 4].try_into().unwrap()) | 0o4000 << 16;
+        bytes[attrs..attrs + 4].copy_from_slice(&mode.to_le_bytes());
+        fs::write(&archive, bytes).unwrap();
+        let message = extract(&archive);
+        assert!(message.contains("Extracted 1 entries"), "{message}");
+        let mode = fs::metadata(tmp.path().join("archive/tool"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7777, 0o755);
     }
 }

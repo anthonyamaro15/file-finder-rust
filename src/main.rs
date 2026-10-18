@@ -1377,36 +1377,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     DeleteMessage::Completed { success, message } => {
                         if success {
                             debug!("Delete completed: {}", message);
-
-                            // Refresh file list in the target directory
-                            if let Some(ref dir) = delete_target_dir {
-                                if let Ok(file_path_list) = get_file_path_data(
-                                    dir.clone(),
-                                    app.show_hidden_files,
-                                    app.sort_by.clone(),
-                                    &app.sort_type,
-                                ) {
-                                    app.files = file_path_list.clone();
-                                    app.read_only_files = file_path_list;
-                                    app.update_file_references();
-                                    status_bar.invalidate_cache();
-
-                                    // Calculate selection based on preserved index
-                                    let new_len = app.files.len();
-                                    let selected_indx = app.preserved_selection_index.unwrap_or(0);
-                                    let next_selection_index = if new_len == 0 {
-                                        None
-                                    } else if selected_indx >= new_len {
-                                        Some(new_len - 1)
-                                    } else {
-                                        Some(selected_indx)
-                                    };
-                                    state.select(next_selection_index);
-                                }
-                            }
                         } else {
                             warn!("Delete failed: {}", message);
                             status_bar.show_error(message.clone(), None);
+                        }
+
+                        // Refresh file list in the target directory
+                        if let Some(ref dir) = delete_target_dir {
+                            if let Ok(file_path_list) = get_file_path_data(
+                                dir.clone(),
+                                app.show_hidden_files,
+                                app.sort_by.clone(),
+                                &app.sort_type,
+                            ) {
+                                app.files = file_path_list.clone();
+                                app.read_only_files = file_path_list;
+                                app.update_file_references();
+                                status_bar.invalidate_cache();
+
+                                // Calculate selection based on preserved index
+                                let new_len = app.files.len();
+                                let selected_indx = app.preserved_selection_index.unwrap_or(0);
+                                let next_selection_index = if new_len == 0 {
+                                    None
+                                } else if selected_indx >= new_len {
+                                    Some(new_len - 1)
+                                } else {
+                                    Some(selected_indx)
+                                };
+                                state.select(next_selection_index);
+                            }
                         }
 
                         // Reset delete state
