@@ -574,6 +574,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     debug!("{:?}", widgets_ui.files_list);
 
+    let ui_thread_id = std::thread::current().id();
+    let original_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        if std::thread::current().id() == ui_thread_id {
+            let _ = disable_raw_mode();
+            let _ = execute!(
+                io::stdout(),
+                LeaveAlternateScreen,
+                DisableMouseCapture,
+                crossterm::cursor::Show
+            );
+        }
+        original_panic_hook(panic_info);
+    }));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -602,18 +616,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main loop
     loop {
-        // Check if we need to restore a preserved selection
-        if let Some(preserved_index) = app.preserved_selection_index.take() {
-            // Ensure the index is valid for the current file list
-            let valid_index = if app.files.is_empty() {
-                0
-            } else {
-                preserved_index.min(app.files.len() - 1)
-            };
-            state.select(Some(valid_index));
-            app.curr_index = Some(valid_index);
-        }
-
         // Update status bar with current app state
         status_bar.update(&app);
 
@@ -1441,9 +1443,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.sort_by.clone(),
                 &app.sort_type,
             ) {
-                app.files = file_path_list.clone();
-                app.read_only_files = file_path_list;
-                app.update_file_references();
+                app.refresh_files_from_watcher(file_path_list, &mut state);
 
                 // Log the file system events for debugging
                 for event_msg in fs_events {
@@ -1510,6 +1510,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 debug!("Cache loading finished, app is now in normal mode");
             }
         }
+
+        // Apply preserved selection and clamp after all refreshes, before handling a key.
+        let selected_index = app.preserved_selection_index.take().or(state.selected());
+        let valid_index = app
+            .get_list_length()
+            .checked_sub(1)
+            .map(|last_index| selected_index.unwrap_or(0).min(last_index));
+        state.select(valid_index);
+        app.curr_index = valid_index;
 
         // Handle input with timeout for dynamic progress updates
         let timeout = std::time::Duration::from_millis(100); // 100ms timeout
@@ -1728,7 +1737,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .unwrap_or(selected_path)
                                                 .to_string();
 
-                                            app.delete_target_is_dir = path.is_dir();
+                                            app.delete_target_is_dir = path
+                                                .symlink_metadata()
+                                                .map(|metadata| metadata.is_dir())
+                                                .unwrap_or(false);
 
                                             if app.delete_target_is_dir {
                                                 // For directories, don't calculate stats (will show "Counting..." in popup)
@@ -1739,7 +1751,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 // For files, get the file size (fast operation)
                                                 app.delete_target_file_count = None;
                                                 app.delete_target_total_size =
-                                                    path.metadata().ok().map(|m| m.len());
+                                                    path.symlink_metadata().ok().map(|m| m.len());
                                             }
                                         }
                                     }
@@ -2219,7 +2231,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     let path = Path::new(selected);
 
-                                    if path.is_dir() {
+                                    if path
+                                        .symlink_metadata()
+                                        .map(|metadata| metadata.is_dir())
+                                        .unwrap_or(false)
+                                    {
                                         // For directories, use async delete with progress
                                         app.delete_in_progress = true;
                                         app.delete_progress_message =
