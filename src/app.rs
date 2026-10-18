@@ -773,13 +773,39 @@ impl App {
     }
 
     /// Refresh directory files after a watcher event, preserving the visible selection.
+    /// An active local search is re-run on the new files so the visible list,
+    /// `search_results` and `filtered_indexes` stay consistent.
     pub fn refresh_files_from_watcher(&mut self, files: Vec<String>, state: &mut ListState) {
         let selected_path = self.get_selected_path(state.selected());
+        let local_query = (!self.global_search_mode
+            && !self.input.is_empty()
+            && (self.input_mode == InputMode::Editing || !self.search_results.is_empty()))
+        .then(|| self.input.clone());
+        if local_query.is_none() && !self.global_search_mode {
+            // Local results without a query can't be re-run; show the refreshed listing.
+            self.search_results.clear();
+        }
+
         self.curr_index = state.selected();
         self.files = files.clone();
         self.read_only_files = files;
-        self.update_file_references_with_selection_preservation(selected_path);
-        if self.search_results.is_empty() {
+        self.update_file_references_with_selection_preservation(selected_path.clone());
+
+        if let Some(query) = local_query {
+            self.perform_local_search(&query);
+            // update_file_references clears the input outside of Editing mode.
+            self.input = query;
+            let new_index = self.search_results.len().checked_sub(1).map(|last_index| {
+                selected_path
+                    .and_then(|path| self.search_results.iter().position(|r| r.file_path == path))
+                    .or(self.curr_index)
+                    .unwrap_or(0)
+                    .min(last_index)
+            });
+            self.curr_index = new_index;
+            self.preserved_selection_index = None;
+            state.select(new_index);
+        } else if self.search_results.is_empty() {
             state.select(self.curr_index);
         }
     }
@@ -1230,41 +1256,112 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn local_search_app(files: &[&str], query: &str) -> App {
+        let mut app = App::new(files.iter().map(|file| file.to_string()).collect());
+        app.enter_search(SearchScope::CurrentDirectory);
+        app.input = query.to_string();
+        app.perform_local_search(query);
+        app
+    }
+
+    fn select_path(app: &App, state: &mut ListState, path: &str) {
+        let index = app.search_results.iter().position(|r| r.file_path == path);
+        state.select(index);
+    }
+
+    fn assert_local_search_consistent(app: &App) {
+        let shown: Vec<&str> = app
+            .filtered_indexes
+            .iter()
+            .map(|&index| app.files[index].as_str())
+            .collect();
+        let results: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|r| r.file_path.as_str())
+            .collect();
+        assert_eq!(shown, results);
+    }
+
     #[test]
     fn watcher_refresh_preserves_local_search_selection() {
-        let mut app = App::new(vec!["a_foo.rs".into(), "b.rs".into(), "c_foo.rs".into()]);
-        app.search_results = vec![
-            SearchResult {
-                file_path: "c_foo.rs".into(),
-                display_name: "c_foo.rs".into(),
-                score: 100,
-                is_directory: false,
-                original_index: 2,
-            },
-            SearchResult {
-                file_path: "a_foo.rs".into(),
-                display_name: "a_foo.rs".into(),
-                score: 90,
-                is_directory: false,
-                original_index: 0,
-            },
-        ];
+        let mut app = local_search_app(&["a_foo.rs", "b.rs", "c_foo.rs"], "foo");
         let mut state = ListState::default();
-        state.select(Some(0));
+        select_path(&app, &mut state, "c_foo.rs");
         app.preserved_selection_index = Some(2);
 
-        app.refresh_files_from_watcher(vec!["a_foo.rs".into(), "c_foo.rs".into()], &mut state);
+        app.refresh_files_from_watcher(
+            vec![
+                "a_foo.rs".into(),
+                "b.rs".into(),
+                "c_foo.rs".into(),
+                "d.rs".into(),
+            ],
+            &mut state,
+        );
 
-        assert_eq!(state.selected(), Some(0));
-        assert_eq!(app.curr_index, Some(0));
+        assert_eq!(app.input, "foo");
         assert_eq!(app.preserved_selection_index, None);
+        assert_eq!(app.curr_index, state.selected());
         assert_eq!(
             app.get_selected_path(state.selected()).as_deref(),
             Some("c_foo.rs")
         );
-        assert_eq!(app.files, vec!["a_foo.rs", "c_foo.rs"]);
+        assert_eq!(app.files, vec!["a_foo.rs", "b.rs", "c_foo.rs", "d.rs"]);
         assert_eq!(app.read_only_files, app.files);
-        assert_eq!(app.filtered_indexes, vec![0, 1]);
+        assert_eq!(app.search_results.len(), 2);
+        assert_local_search_consistent(&app);
+    }
+
+    #[test]
+    fn watcher_refresh_adds_new_local_search_match() {
+        let mut app = local_search_app(&["a_foo.rs", "b.rs"], "foo");
+        let mut state = ListState::default();
+        select_path(&app, &mut state, "a_foo.rs");
+
+        app.refresh_files_from_watcher(
+            vec!["0_foo.rs".into(), "a_foo.rs".into(), "b.rs".into()],
+            &mut state,
+        );
+
+        let mut results: Vec<&str> = app
+            .search_results
+            .iter()
+            .map(|r| r.file_path.as_str())
+            .collect();
+        results.sort();
+        assert_eq!(results, ["0_foo.rs", "a_foo.rs"]);
+        assert_local_search_consistent(&app);
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("a_foo.rs")
+        );
+    }
+
+    #[test]
+    fn watcher_refresh_clamps_when_selected_local_match_disappears() {
+        let mut app = local_search_app(&["a_foo.rs", "b.rs", "c_foo.rs"], "foo");
+        // After Esc the search stays applied in Normal mode.
+        app.input_mode = InputMode::Normal;
+        let mut state = ListState::default();
+        select_path(&app, &mut state, "c_foo.rs");
+
+        app.refresh_files_from_watcher(vec!["a_foo.rs".into(), "b.rs".into()], &mut state);
+
+        assert_eq!(app.input, "foo");
+        assert_eq!(state.selected(), Some(0));
+        assert_eq!(app.curr_index, Some(0));
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("a_foo.rs")
+        );
+        assert_local_search_consistent(&app);
+
+        app.refresh_files_from_watcher(vec!["b.rs".into()], &mut state);
+
+        assert!(app.search_results.is_empty());
+        assert_eq!(state.selected(), None);
+        assert_eq!(app.curr_index, None);
     }
 
     #[test]

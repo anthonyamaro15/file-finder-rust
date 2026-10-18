@@ -224,6 +224,9 @@ mod utility_tests {
         let new_path = "/home/user/backup".to_string();
 
         let result = generate_copy_file_dir_name(curr_path, new_path);
-        assert_eq!(result, "/home/user/backup/copy_document.txt");
+        assert_eq!(
+            result,
+            std::path::Path::new("/home/user/backup/copy_document.txt")
+        );
     }
 }

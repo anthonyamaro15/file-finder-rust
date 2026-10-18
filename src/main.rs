@@ -6,7 +6,7 @@
 use std::{
     io::{self, Stdout},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::mpsc,
 };
 
@@ -147,7 +147,7 @@ impl ImageRenderer {
     /// Create a new ImageRenderer with terminal protocol detection
     pub fn new() -> ImageRenderer {
         let mut picker = Picker::new(DEFAULT_FONT_SIZE);
-        picker.guess_protocol();
+        with_stdin_state_restored(|| picker.guess_protocol());
 
         ImageRenderer {
             picker,
@@ -254,6 +254,63 @@ impl ImageRenderer {
     pub fn get_error(&self) -> Option<&str> {
         self.error_message.as_deref()
     }
+}
+
+/// Run `f`, then restore stdin's fd flags and termios to what they were before.
+/// ratatui-image's graphics query sets O_NONBLOCK and clears ICANON/ECHO on stdin,
+/// and returns early without restoring them when the terminal doesn't reply
+/// (e.g. detached tmux), which breaks crossterm reads with WouldBlock.
+#[cfg(unix)]
+fn with_stdin_state_restored<T>(f: impl FnOnce() -> T) -> T {
+    // SAFETY: isatty only inspects fd 0.
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 0 {
+        return f();
+    }
+    // SAFETY: fd 0 is open; termios is a valid out-pointer for tcgetattr.
+    let (flags, termios) = unsafe {
+        let mut termios: libc::termios = std::mem::zeroed();
+        let flags = libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL);
+        let saved = libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0;
+        (flags, saved.then_some(termios))
+    };
+
+    let result = f();
+
+    // SAFETY: restores the flags and termios read from fd 0 above.
+    unsafe {
+        if flags != -1 {
+            libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags);
+        }
+        if let Some(termios) = &termios {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
+        }
+    }
+    result
+}
+
+#[cfg(not(unix))]
+fn with_stdin_state_restored<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+
+/// Program that opens a file with the system default application.
+fn system_opener() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    }
+}
+
+/// Write the selected path to the shell integration's result file.
+/// The file must already exist (the shell function creates it with mktemp).
+fn write_result_file(result_file: &Path, selected: &str) -> io::Result<()> {
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(result_file)?
+        .write_all(selected.as_bytes())
 }
 
 /// Update the preview panel for a given file/directory path.
@@ -435,8 +492,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ps = SyntaxSet::load_defaults_newlines();
     let ts = ThemeSet::load_defaults();
 
-    init();
-
     // Handle subcommands first
     if let Some(command) = &cli_args.command {
         match command {
@@ -446,6 +501,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    init();
 
     // Check for --reset-config flag (from CLI args)
     if cli_args.reset_config {
@@ -532,11 +589,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.print_path = effective_config.print_path;
 
     let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
-
-    // Debug: write marker file when print_path is enabled
-    if app.print_path {
-        let _ = std::fs::write("/tmp/ff_print_path_enabled", "1");
-    }
 
     let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         match load_directory_from_file(&settings.cache_directory.to_owned()) {
@@ -1713,13 +1765,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
 
                                 KeyCode::Char('o') => {
-                                    if let Some(index) = state.selected() {
-                                        Command::new("open")
-                                            .arg(&app.files[index])
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
+                                        // Spawn without waiting; null stdio keeps opener output off the TUI.
+                                        match Command::new(system_opener())
+                                            .arg(&selected)
+                                            .stdin(Stdio::null())
+                                            .stdout(Stdio::null())
+                                            .stderr(Stdio::null())
                                             .spawn()
-                                            .expect("failed to open file");
-
-                                        break;
+                                        {
+                                            Ok(_) => break,
+                                            Err(e) => status_bar.show_error(
+                                                format!(
+                                                    "Failed to open with {}: {}",
+                                                    system_opener(),
+                                                    e
+                                                ),
+                                                Some(3),
+                                            ),
+                                        }
                                     }
                                 }
                                 KeyCode::Char('d') => {
@@ -1997,16 +2062,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 containing_directory_or_current(src_path);
 
                                             // Generate copy name
-                                            let new_path_with_new_name =
-                                                generate_copy_file_dir_name(
-                                                    selected_path.clone(),
-                                                    current_dir.to_string_lossy().to_string(),
-                                                );
-
-                                            let new_src = Path::new(&new_path_with_new_name);
+                                            let new_src =
+                                                generate_copy_file_dir_name(src_path, &current_dir);
 
                                             // Start async copy operation
-                                            let rx = copy_dir_file_with_progress(src_path, new_src);
+                                            let rx =
+                                                copy_dir_file_with_progress(src_path, &new_src);
                                             copy_receiver = Some(rx);
 
                                             // Initialize copy progress state
@@ -2034,12 +2095,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(selected) = selected_path {
                                         app.input = selected.clone();
 
-                                        // Check if print_path mode - write to temp file for shell integration
+                                        // Check if print_path mode - hand the path to the shell integration
                                         if app.print_path {
-                                            // Write to temp file before restoring terminal
-                                            let temp_path =
-                                                std::path::PathBuf::from("/tmp/ff_result");
-                                            let _ = std::fs::write(&temp_path, &selected);
+                                            // Write to $FF_RESULT_FILE (set by `ff init`) before restoring terminal
+                                            let wrote_result_file = std::env::var_os(
+                                                "FF_RESULT_FILE",
+                                            )
+                                            .is_some_and(|result_file| {
+                                                write_result_file(
+                                                    Path::new(&result_file),
+                                                    &selected,
+                                                )
+                                                .is_ok()
+                                            });
 
                                             // Restore terminal
                                             disable_raw_mode()?;
@@ -2049,6 +2117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 DisableMouseCapture
                                             )?;
                                             terminal.show_cursor()?;
+
+                                            // No result file (old shell function or direct use): print to stdout
+                                            if !wrote_result_file {
+                                                println!("{}", selected);
+                                            }
                                             return Ok(());
                                         }
 
@@ -2349,6 +2422,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn system_opener_matches_platform() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(system_opener(), "open");
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(system_opener(), "xdg-open");
+    }
+
+    #[test]
+    fn write_result_file_truncates_existing_file() {
+        let result_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(result_file.path(), "/a/much/longer/previous/path").unwrap();
+
+        write_result_file(result_file.path(), "/tmp/selected").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(result_file.path()).unwrap(),
+            "/tmp/selected"
+        );
+    }
+
+    #[test]
+    fn write_result_file_does_not_create_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("ff_result");
+
+        assert!(write_result_file(&missing, "/tmp/selected").is_err());
+        assert!(!missing.exists());
+    }
 
     #[test]
     fn startup_paths_use_effective_start_path_for_display_watch_and_cache() {

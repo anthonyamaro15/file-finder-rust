@@ -1,8 +1,11 @@
 //! File utilities for path processing, sorting, and metadata.
 
+use std::cmp::Reverse;
+use std::ffi::OsString;
 use std::fs::{self, Metadata};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
@@ -38,25 +41,8 @@ pub fn sort_entries_by_type(
                     .to_ascii_lowercase()
                     .cmp(&b.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by(|a, b| {
-                a.metadata()
-                    .ok()
-                    .map(|meta| meta.len())
-                    .unwrap_or(0)
-                    .cmp(&b.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-            }),
-            SortBy::DateAdded => entries.sort_by(|a, b| {
-                a.metadata()
-                    .ok()
-                    .and_then(|meta| meta.created().ok())
-                    .unwrap_or(std::time::SystemTime::now())
-                    .cmp(
-                        &b.metadata()
-                            .ok()
-                            .and_then(|meta| meta.created().ok())
-                            .unwrap_or(std::time::SystemTime::now()),
-                    )
-            }),
+            SortBy::Size => entries.sort_by_cached_key(|path| size_key(path)),
+            SortBy::DateAdded => entries.sort_by_cached_key(|path| date_added_key(path)),
             SortBy::Default => {}
         },
         SortType::DESC => match sort_by {
@@ -66,30 +52,27 @@ pub fn sort_entries_by_type(
                     .to_ascii_lowercase()
                     .cmp(&a.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by(|a, b| {
-                b.metadata()
-                    .ok()
-                    .map(|meta| meta.len())
-                    .unwrap_or(0)
-                    .cmp(&a.metadata().ok().map(|meta| meta.len()).unwrap_or(0))
-            }),
-            SortBy::DateAdded => entries.sort_by(|a, b| {
-                b.metadata()
-                    .ok()
-                    .and_then(|meta| meta.created().ok())
-                    .unwrap_or(std::time::SystemTime::now())
-                    .cmp(
-                        &a.metadata()
-                            .ok()
-                            .and_then(|meta| meta.created().ok())
-                            .unwrap_or(std::time::SystemTime::now()),
-                    )
-            }),
+            SortBy::Size => entries.sort_by_cached_key(|path| Reverse(size_key(path))),
+            SortBy::DateAdded => entries.sort_by_cached_key(|path| Reverse(date_added_key(path))),
             SortBy::Default => {}
         },
     }
 
     entries
+}
+
+/// Size sort key; unreadable entries sort as empty.
+fn size_key(path: &Path) -> u64 {
+    path.metadata().map(|meta| meta.len()).unwrap_or(0)
+}
+
+/// Date sort key: creation time, then modification time, then a fixed epoch so
+/// the key never changes between lookups.
+fn date_added_key(path: &Path) -> SystemTime {
+    path.metadata()
+        .ok()
+        .and_then(|meta| meta.created().or_else(|_| meta.modified()).ok())
+        .unwrap_or(UNIX_EPOCH)
 }
 
 /// Convert PathBuf entries to strings with filtering and sorting.
@@ -246,23 +229,33 @@ pub fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) ->
     metadata_info
 }
 
-/// Generate a unique copy name by prefixing "copy_" until unique.
-pub fn generate_copy_file_dir_name(curr_path: String, new_path: String) -> String {
-    let get_info = Path::new(&curr_path);
-    let file_name = get_info.file_name().unwrap().to_str().unwrap().to_string();
+/// Generate a unique copy path in `new_path` by prefixing the file name with
+/// "copy_" (then "copy_2_", "copy_3_", ...) until no entry with that name exists.
+pub fn generate_copy_file_dir_name(
+    curr_path: impl AsRef<Path>,
+    new_path: impl AsRef<Path>,
+) -> PathBuf {
+    let file_name = curr_path.as_ref().file_name().unwrap_or_default();
+    let candidate = |prefix: String| {
+        let mut name = OsString::from(prefix);
+        name.push(file_name);
+        new_path.as_ref().join(name)
+    };
+    // symlink_metadata also treats dangling symlinks as taken.
+    let is_free = |path: &Path| fs::symlink_metadata(path).is_err();
 
     // First try without a number suffix
-    let candidate = format!("{}/copy_{}", new_path, file_name);
-    if !Path::new(&candidate).exists() {
-        return candidate;
+    let first = candidate("copy_".to_string());
+    if is_free(&first) {
+        return first;
     }
 
     // Generate a unique name using numbered format: copy_2_file.txt, copy_3_file.txt, etc.
     let mut n = 2usize;
     loop {
-        let candidate = format!("{}/copy_{}_{}", new_path, n, file_name);
-        if !Path::new(&candidate).exists() {
-            return candidate;
+        let numbered = candidate(format!("copy_{}_", n));
+        if is_free(&numbered) {
+            return numbered;
         }
         n += 1;
     }
@@ -347,5 +340,95 @@ mod tests {
     fn test_generate_metadata_str_info_error() {
         let result = generate_metadata_str_info(Err(anyhow::anyhow!("test error")));
         assert_eq!(result, "Error reading metadata");
+    }
+
+    #[test]
+    fn date_sort_is_deterministic_with_missing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut entries = vec![dir.path().join("missing")];
+        for name in ["b.txt", "a.txt", "c.txt"] {
+            fs::write(dir.path().join(name), name).unwrap();
+            entries.push(dir.path().join(name));
+        }
+
+        for (sort_type, missing_index) in [(SortType::ASC, 0), (SortType::DESC, 3)] {
+            let first = sort_entries_by_type(SortBy::DateAdded, sort_type.clone(), entries.clone());
+            let second = sort_entries_by_type(SortBy::DateAdded, sort_type, first.clone());
+            assert_eq!(first, second);
+            // The missing entry falls back to UNIX_EPOCH, the oldest possible date.
+            assert_eq!(first[missing_index], dir.path().join("missing"));
+        }
+    }
+
+    #[test]
+    fn size_sort_orders_by_length() {
+        let dir = tempfile::tempdir().unwrap();
+        let entries: Vec<PathBuf> = [("big", 3), ("small", 1), ("mid", 2)]
+            .into_iter()
+            .map(|(name, len)| {
+                let path = dir.path().join(name);
+                fs::write(&path, "x".repeat(len)).unwrap();
+                path
+            })
+            .collect();
+        let names = |sorted: Vec<PathBuf>| -> Vec<String> {
+            sorted
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+                .collect()
+        };
+
+        let asc = sort_entries_by_type(SortBy::Size, SortType::ASC, entries.clone());
+        assert_eq!(names(asc), ["small", "mid", "big"]);
+        let desc = sort_entries_by_type(SortBy::Size, SortType::DESC, entries);
+        assert_eq!(names(desc), ["big", "mid", "small"]);
+    }
+
+    #[test]
+    fn copy_name_adds_numbered_suffix_when_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("file.txt");
+        for name in ["file.txt", "copy_file.txt", "copy_2_file.txt"] {
+            fs::write(dir.path().join(name), "").unwrap();
+        }
+
+        assert_eq!(
+            generate_copy_file_dir_name(&src, dir.path()),
+            dir.path().join("copy_3_file.txt")
+        );
+    }
+
+    #[test]
+    fn copy_name_without_file_name_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            generate_copy_file_dir_name(Path::new("/"), dir.path()),
+            dir.path().join("copy_")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_name_keeps_non_utf8_file_name() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join(OsStr::from_bytes(b"bad\xff.txt"));
+
+        let first = generate_copy_file_dir_name(&src, dir.path());
+        assert_eq!(
+            first,
+            dir.path().join(OsStr::from_bytes(b"copy_bad\xff.txt"))
+        );
+
+        // Some filesystems (e.g. APFS) reject non-UTF-8 names; check collisions where allowed.
+        if fs::write(&first, "").is_ok() {
+            let second = generate_copy_file_dir_name(&src, dir.path());
+            assert_eq!(
+                second,
+                dir.path().join(OsStr::from_bytes(b"copy_2_bad\xff.txt"))
+            );
+        }
     }
 }
