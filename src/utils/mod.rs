@@ -6,7 +6,9 @@ pub mod format;
 use simplelog::*;
 use std::fs::File;
 
-/// Initialize logging. By default, logs to console at warn level.
+/// Initialize logging. Never logs to the terminal, since the TUI owns stdout.
+/// By default, warn-level logs go to `~/.config/ff/ff.log`, truncated on each start;
+/// if that file can't be created, no logger is installed.
 /// Set FF_LOG_TO_FILE=1 to enable debug logging to debug.log.
 pub fn init() {
     // Do not create a debug.log file by default.
@@ -28,10 +30,17 @@ pub fn init() {
                 let _ = SimpleLogger::init(LevelFilter::Warn, Config::default());
             }
         }
-    } else {
-        // Default: console logger at warn level (no file creation)
-        let _ = SimpleLogger::init(LevelFilter::Warn, Config::default());
+    } else if let Some(log_file) = default_log_file() {
+        // Default: warn level to ~/.config/ff/ff.log
+        let _ = WriteLogger::init(LevelFilter::Warn, Config::default(), log_file);
     }
+}
+
+/// Create (truncating) `<config dir>/ff.log`, creating the config dir if needed.
+fn default_log_file() -> Option<File> {
+    let config_dir = crate::config::get_config_dir().ok()?;
+    std::fs::create_dir_all(&config_dir).ok()?;
+    File::create(config_dir.join("ff.log")).ok()
 }
 
 // Re-export items used by main.rs

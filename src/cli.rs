@@ -79,26 +79,30 @@ impl Shell {
             Shell::Zsh | Shell::Bash => {
                 r#"# ff shell integration
 ff() {
-    # Remove any stale result file
-    rm -f /tmp/ff_result
+    local tmp result
+    tmp=$(mktemp "${TMPDIR:-/tmp}/ff_result.XXXXXX") || return
 
-    # Run ff with print-path mode (writes selected path to /tmp/ff_result)
-    command ff --print-path "$@"
+    # Run ff with print-path mode (writes selected path to $FF_RESULT_FILE)
+    FF_RESULT_FILE="$tmp" command ff --print-path "$@"
+    result=$(cat "$tmp")
+    rm -f "$tmp"
 
-    # Check if a path was selected
-    if [[ -f /tmp/ff_result ]]; then
-        local result
-        result=$(cat /tmp/ff_result)
-        rm -f /tmp/ff_result
-
-        if [[ -n "$result" ]]; then
-            if [[ -d "$result" ]]; then
-                cd "$result"
+    if [[ -n "$result" ]]; then
+        if [[ -d "$result" ]]; then
+            cd "$result"
+        else
+            # It's a file - copy to clipboard if a clipboard tool is available
+            if command -v pbcopy >/dev/null 2>&1; then
+                printf '%s' "$result" | pbcopy
+            elif command -v wl-copy >/dev/null 2>&1; then
+                printf '%s' "$result" | wl-copy
+            elif command -v xclip >/dev/null 2>&1; then
+                printf '%s' "$result" | xclip -selection clipboard
             else
-                # It's a file - copy to clipboard (macOS)
-                echo "$result" | pbcopy
-                echo "Path copied: $result"
+                echo "$result"
+                return
             fi
+            echo "Path copied: $result"
         fi
     fi
 }"#
@@ -274,4 +278,20 @@ pub fn compute_effective_config(
         layout_style,
         print_path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_script_uses_private_result_file() {
+        for shell in [Shell::Zsh, Shell::Bash] {
+            let script = shell.generate_script();
+            assert!(script.contains("mktemp"));
+            assert!(script.contains(r#"FF_RESULT_FILE="$tmp" command ff --print-path"#));
+            assert!(script.contains(r#"rm -f "$tmp""#));
+            assert!(!script.contains("/tmp/ff_result"));
+        }
+    }
 }
