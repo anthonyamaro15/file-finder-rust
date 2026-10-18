@@ -33,11 +33,11 @@ pub enum DeleteMessage {
 pub fn delete_file(file_path: &str) -> FileOperationResult<()> {
     let path = Path::new(file_path);
 
-    // Validate file exists
-    validation::validate_path_exists(path)?;
-
-    // Validate permissions
-    validation::validate_permissions(path, "delete")?;
+    // A link can be deleted even if its target is missing or read-only.
+    if !path.is_symlink() {
+        validation::validate_path_exists(path)?;
+        validation::validate_permissions(path, "delete")?;
+    }
 
     // Attempt to delete the file
     fs::remove_file(path).map_err(|e| match e.kind() {
@@ -54,6 +54,10 @@ pub fn delete_file(file_path: &str) -> FileOperationResult<()> {
 /// Delete a directory and all its contents at the specified path.
 pub fn delete_dir(dir_path: &str) -> FileOperationResult<()> {
     let path = Path::new(dir_path);
+
+    if path.is_symlink() {
+        return delete_file(dir_path);
+    }
 
     // Validate directory exists
     validation::validate_path_exists(path)?;
@@ -78,10 +82,7 @@ pub fn delete_dir(dir_path: &str) -> FileOperationResult<()> {
 pub fn handle_delete_based_on_type(file_path: &str) -> FileOperationResult<()> {
     let path = Path::new(file_path);
 
-    // Validate file exists
-    validation::validate_path_exists(path)?;
-
-    let metadata = fs::metadata(path).map_err(|e| match e.kind() {
+    let metadata = fs::symlink_metadata(path).map_err(|e| match e.kind() {
         io::ErrorKind::PermissionDenied => {
             FileOperationError::permission_denied(path, "Cannot read file information")
         }
@@ -105,17 +106,27 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
     thread::spawn(move || {
         let src = Path::new(&path);
 
-        // Check if path exists
-        if !src.exists() {
-            let _ = tx.send(DeleteMessage::Completed {
-                success: true,
-                message: "File already deleted".to_string(),
-            });
-            return;
-        }
+        let metadata = match fs::symlink_metadata(src) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let _ = tx.send(DeleteMessage::Completed {
+                    success: true,
+                    message: "File already deleted".to_string(),
+                });
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(DeleteMessage::Error(format!(
+                    "Failed to read '{}': {}",
+                    src.display(),
+                    e
+                )));
+                return;
+            }
+        };
 
-        if src.is_file() {
-            // Single file delete - quick operation
+        if metadata.file_type().is_symlink() || metadata.is_file() {
+            // Single file or symlink delete - quick operation
             let file_name = src
                 .file_name()
                 .unwrap_or_default()
@@ -142,39 +153,40 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
                     )));
                 }
             }
-        } else if src.is_dir() {
+        } else if metadata.is_dir() {
             // Directory delete - collect files first, then delete in reverse order
             // (files first, then directories from deepest to shallowest)
 
             // Count files first
-            let mut file_count = 0;
             let _ = tx.send(DeleteMessage::Counting { files_counted: 0 });
 
-            let entries: Vec<_> = WalkDir::new(src)
+            let mut entries: Vec<_> = WalkDir::new(src)
+                .follow_links(false)
+                .follow_root_links(false)
                 .into_iter()
                 .filter_map(|e| e.ok())
                 .collect();
 
-            file_count = entries.len();
+            let file_count = entries.len();
             let _ = tx.send(DeleteMessage::Counting {
                 files_counted: file_count,
             });
 
             // Sort by depth (deepest first) so we delete children before parents
-            let mut paths: Vec<_> = entries.iter().map(|e| e.path().to_path_buf()).collect();
-            paths.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+            entries.sort_by_key(|entry| std::cmp::Reverse(entry.depth()));
 
             let mut deleted = 0;
             const UPDATE_INTERVAL: usize = 100;
 
-            for entry_path in &paths {
+            for entry in &entries {
+                let entry_path = entry.path();
                 let file_name = entry_path
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
 
-                let result = if entry_path.is_dir() {
+                let result = if entry.file_type().is_dir() {
                     fs::remove_dir(entry_path)
                 } else {
                     fs::remove_file(entry_path)
@@ -307,11 +319,7 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
                     fs::copy(src, &dest).map_err(|e| FileOperationError::from(e))?;
                 }
                 // Then delete source
-                if src.is_dir() {
-                    fs::remove_dir_all(src).map_err(|e| FileOperationError::from(e))?;
-                } else {
-                    fs::remove_file(src).map_err(|e| FileOperationError::from(e))?;
-                }
+                handle_delete_based_on_type(src_path)?;
                 Ok(())
             } else {
                 Err(match e.kind() {
@@ -378,4 +386,96 @@ pub fn handle_rename(app: &App) -> FileOperationResult<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    fn wait_for_delete(path: &Path) {
+        let receiver = delete_with_progress(path.to_str().unwrap());
+        loop {
+            match receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            {
+                DeleteMessage::Completed { success, message } => {
+                    assert!(success, "{}", message);
+                    break;
+                }
+                DeleteMessage::Error(message) => panic!("{}", message),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn delete_with_progress_removes_only_symlinks() {
+        let target = tempdir().unwrap();
+        let links = tempdir().unwrap();
+        let file = target.path().join("keep.txt");
+        fs::write(&file, "keep").unwrap();
+
+        for (name, destination) in [
+            ("directory", target.path().to_path_buf()),
+            ("file", file.clone()),
+            ("dangling", target.path().join("missing")),
+        ] {
+            let link = links.path().join(name);
+            symlink(destination, &link).unwrap();
+            wait_for_delete(&link);
+            assert!(fs::symlink_metadata(&link).is_err());
+            assert!(target.path().is_dir());
+            assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        }
+    }
+
+    #[test]
+    fn delete_directory_preserves_nested_symlink_targets() {
+        let outside = tempdir().unwrap();
+        let parent = tempdir().unwrap();
+        let file = outside.path().join("keep.txt");
+        fs::write(&file, "keep").unwrap();
+
+        for name in ["async", "sync"] {
+            let directory = parent.path().join(name);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("delete.txt"), "delete").unwrap();
+            symlink(outside.path(), directory.join("link")).unwrap();
+            symlink(outside.path().join("missing"), directory.join("dangling")).unwrap();
+            if name == "async" {
+                wait_for_delete(&directory);
+            } else {
+                handle_delete_based_on_type(directory.to_str().unwrap()).unwrap();
+            }
+            assert!(!directory.exists());
+            assert!(outside.path().is_dir());
+            assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        }
+    }
+
+    #[test]
+    fn synchronous_delete_helpers_remove_only_symlinks() {
+        let target = tempdir().unwrap();
+        let links = tempdir().unwrap();
+        let file = target.path().join("keep.txt");
+        fs::write(&file, "keep").unwrap();
+
+        for delete in [handle_delete_based_on_type, delete_file, delete_dir] {
+            for (name, destination) in [
+                ("directory", target.path().to_path_buf()),
+                ("file", file.clone()),
+                ("dangling", target.path().join("missing")),
+            ] {
+                let link = links.path().join(name);
+                symlink(destination, &link).unwrap();
+                delete(link.to_str().unwrap()).unwrap();
+                assert!(fs::symlink_metadata(&link).is_err());
+                assert!(target.path().is_dir());
+                assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+            }
+        }
+    }
 }

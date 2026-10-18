@@ -6,6 +6,7 @@ use std::time::Instant;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use log::debug;
+use ratatui::widgets::ListState;
 use rayon::prelude::*;
 
 use crate::directory_store::DirectoryStore;
@@ -771,6 +772,18 @@ impl App {
         }
     }
 
+    /// Refresh directory files after a watcher event, preserving the visible selection.
+    pub fn refresh_files_from_watcher(&mut self, files: Vec<String>, state: &mut ListState) {
+        let selected_path = self.get_selected_path(state.selected());
+        self.curr_index = state.selected();
+        self.files = files.clone();
+        self.read_only_files = files;
+        self.update_file_references_with_selection_preservation(selected_path);
+        if self.search_results.is_empty() {
+            state.select(self.curr_index);
+        }
+    }
+
     /// Update filtered indexes and labels when file list changes
     pub fn update_file_references(&mut self) {
         self.update_file_references_with_selection_preservation(None);
@@ -812,8 +825,17 @@ impl App {
             }
         }
 
-        // Store the new selection index for the main loop to use
-        self.preserved_selection_index = new_selection_index;
+        // Search selection indexes refer to search_results, not files.
+        self.preserved_selection_index = None;
+        if self.search_results.is_empty() {
+            self.preserved_selection_index = new_selection_index;
+            self.curr_index = self.files.len().checked_sub(1).map(|last_index| {
+                new_selection_index
+                    .or(self.curr_index)
+                    .unwrap_or(0)
+                    .min(last_index)
+            });
+        }
 
         // Clear any search input when navigating
         if !self.input.is_empty() && self.input_mode != InputMode::Editing {
@@ -1207,6 +1229,133 @@ impl App {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn watcher_refresh_preserves_local_search_selection() {
+        let mut app = App::new(vec!["a_foo.rs".into(), "b.rs".into(), "c_foo.rs".into()]);
+        app.search_results = vec![
+            SearchResult {
+                file_path: "c_foo.rs".into(),
+                display_name: "c_foo.rs".into(),
+                score: 100,
+                is_directory: false,
+                original_index: 2,
+            },
+            SearchResult {
+                file_path: "a_foo.rs".into(),
+                display_name: "a_foo.rs".into(),
+                score: 90,
+                is_directory: false,
+                original_index: 0,
+            },
+        ];
+        let mut state = ListState::default();
+        state.select(Some(0));
+        app.preserved_selection_index = Some(2);
+
+        app.refresh_files_from_watcher(vec!["a_foo.rs".into(), "c_foo.rs".into()], &mut state);
+
+        assert_eq!(state.selected(), Some(0));
+        assert_eq!(app.curr_index, Some(0));
+        assert_eq!(app.preserved_selection_index, None);
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("c_foo.rs")
+        );
+        assert_eq!(app.files, vec!["a_foo.rs", "c_foo.rs"]);
+        assert_eq!(app.read_only_files, app.files);
+        assert_eq!(app.filtered_indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn watcher_refresh_preserves_root_search_selection_with_fewer_directory_files() {
+        let mut app = App::new(vec!["cwd/a".into()]);
+        app.search_scope = SearchScope::Root;
+        app.global_search_mode = true;
+        app.search_results = (0..50)
+            .map(|index| SearchResult {
+                file_path: format!("elsewhere/result_{index}"),
+                display_name: format!("result_{index}"),
+                score: 100,
+                is_directory: false,
+                original_index: index,
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(30));
+
+        for files in [vec!["cwd/b".into()], Vec::new()] {
+            app.refresh_files_from_watcher(files, &mut state);
+
+            assert_eq!(state.selected(), Some(30));
+            assert_eq!(app.curr_index, Some(30));
+            assert_eq!(app.preserved_selection_index, None);
+            assert_eq!(app.get_list_length(), 50);
+        }
+    }
+
+    #[test]
+    fn watcher_refresh_preserves_or_clamps_directory_selection() {
+        for (files, expected) in [
+            (vec!["c".into(), "a".into()], Some(0)),
+            (vec!["a".into(), "b".into()], Some(1)),
+            (Vec::new(), None),
+        ] {
+            let mut app = App::new(vec!["a".into(), "b".into(), "c".into()]);
+            let mut state = ListState::default();
+            state.select(Some(2));
+
+            app.refresh_files_from_watcher(files, &mut state);
+
+            assert_eq!(state.selected(), expected);
+            assert_eq!(app.curr_index, expected);
+        }
+    }
+
+    #[test]
+    fn refresh_selection_clamps_when_selected_file_is_removed() {
+        let mut app = App::new(vec!["a".into(), "b".into(), "c".into()]);
+        app.curr_index = Some(2);
+        let selected_path = app.get_selected_path(app.curr_index);
+        app.files = vec!["a".into(), "b".into()];
+        app.update_file_references_with_selection_preservation(selected_path);
+
+        assert_eq!(app.curr_index, Some(1));
+    }
+
+    #[test]
+    fn refresh_selection_preserves_path_after_reordering() {
+        let mut app = App::new(vec!["a".into(), "b".into(), "c".into()]);
+        app.curr_index = Some(2);
+        let selected_path = app.get_selected_path(app.curr_index);
+        app.files = vec!["c".into(), "a".into()];
+        app.update_file_references_with_selection_preservation(selected_path);
+
+        assert_eq!(app.curr_index, Some(0));
+        assert_eq!(app.preserved_selection_index, Some(0));
+        assert_eq!(app.get_selected_path(app.curr_index).as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn refresh_selection_clears_when_list_is_empty() {
+        let mut app = App::new(vec!["a".into()]);
+        let selected_path = app.get_selected_path(app.curr_index);
+        app.files.clear();
+        app.update_file_references_with_selection_preservation(selected_path);
+
+        assert_eq!(app.curr_index, None);
+        assert_eq!(app.preserved_selection_index, None);
+    }
+
+    #[test]
+    fn update_file_references_clamps_selection_without_path() {
+        let mut app = App::new(vec!["a".into(), "b".into()]);
+        app.curr_index = Some(1);
+        app.files = vec!["a".into()];
+        app.update_file_references();
+
+        assert_eq!(app.curr_index, Some(0));
+    }
 
     #[test]
     fn current_directory_path_falls_back_to_dot_without_state() {
