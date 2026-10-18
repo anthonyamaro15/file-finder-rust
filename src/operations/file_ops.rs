@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 
 use crate::app::App;
 use crate::errors::{validation, FileOperationError, FileOperationResult};
+use crate::operations::copy::copy_dir_file_helper;
 
 /// Progress message for delete operations.
 #[derive(Debug, Clone)]
@@ -160,14 +161,23 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
             // Count files first
             let _ = tx.send(DeleteMessage::Counting { files_counted: 0 });
 
+            let mut failed = 0;
+            let mut first_error = None;
             let mut entries: Vec<_> = WalkDir::new(src)
                 .follow_links(false)
                 .follow_root_links(false)
                 .into_iter()
-                .filter_map(|e| e.ok())
+                .filter_map(|entry| match entry {
+                    Ok(entry) => Some(entry),
+                    Err(e) => {
+                        failed += 1;
+                        first_error.get_or_insert_with(|| e.to_string());
+                        None
+                    }
+                })
                 .collect();
 
-            let file_count = entries.len();
+            let file_count = entries.len() + failed;
             let _ = tx.send(DeleteMessage::Counting {
                 files_counted: file_count,
             });
@@ -178,7 +188,7 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
             let mut deleted = 0;
             const UPDATE_INTERVAL: usize = 100;
 
-            for entry in &entries {
+            for (index, entry) in entries.iter().enumerate() {
                 let entry_path = entry.path();
                 let file_name = entry_path
                     .file_name()
@@ -192,13 +202,17 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
                     fs::remove_file(entry_path)
                 };
 
-                if let Err(e) = result {
-                    warn!("Failed to delete '{}': {}", entry_path.display(), e);
-                    // Continue deleting other files
+                match result {
+                    Ok(()) => deleted += 1,
+                    Err(e) => {
+                        warn!("Failed to delete '{}': {}", entry_path.display(), e);
+                        failed += 1;
+                        first_error
+                            .get_or_insert_with(|| format!("{}: {}", entry_path.display(), e));
+                    }
                 }
 
-                deleted += 1;
-                if deleted % UPDATE_INTERVAL == 0 || deleted == file_count {
+                if (index + 1) % UPDATE_INTERVAL == 0 || index + 1 == entries.len() {
                     let _ = tx.send(DeleteMessage::Progress {
                         files_deleted: deleted,
                         total_files: file_count,
@@ -208,8 +222,14 @@ pub fn delete_with_progress(file_path: &str) -> mpsc::Receiver<DeleteMessage> {
             }
 
             let _ = tx.send(DeleteMessage::Completed {
-                success: true,
-                message: format!("Deleted {} items", deleted),
+                success: failed == 0,
+                message: match first_error {
+                    Some(error) => format!(
+                        "Deleted {} of {} items; {} failed (first error: {})",
+                        deleted, file_count, failed, error
+                    ),
+                    None => format!("Deleted {} items", deleted),
+                },
             });
         }
     });
@@ -299,11 +319,13 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
 
     let dest = Path::new(dest_dir).join(src_name);
 
-    // Validate source exists
-    validation::validate_path_exists(src)?;
-
-    // Validate destination doesn't exist
-    validation::validate_path_not_exists(&dest)?;
+    // Validate the links themselves, including dangling sources and destinations.
+    fs::symlink_metadata(src).map_err(FileOperationError::from)?;
+    match fs::symlink_metadata(&dest) {
+        Ok(_) => return Err(FileOperationError::already_exists(&dest)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(FileOperationError::from(e)),
+    }
 
     // Try fs::rename first (fast path for same filesystem)
     match fs::rename(src, &dest) {
@@ -312,15 +334,7 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
             // If cross-device link error, fall back to copy+delete
             if e.raw_os_error() == Some(18) {
                 // EXDEV (cross-device link) on Unix
-                // Copy first
-                if src.is_dir() {
-                    copy_dir_recursive(src, &dest)?;
-                } else {
-                    fs::copy(src, &dest).map_err(|e| FileOperationError::from(e))?;
-                }
-                // Then delete source
-                handle_delete_based_on_type(src_path)?;
-                Ok(())
+                copy_then_delete(src, &dest)
             } else {
                 Err(match e.kind() {
                     io::ErrorKind::PermissionDenied => FileOperationError::permission_denied(
@@ -336,23 +350,17 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
     }
 }
 
-/// Helper function to copy a directory recursively.
-fn copy_dir_recursive(src: &Path, dest: &Path) -> FileOperationResult<()> {
-    fs::create_dir_all(dest).map_err(|e| FileOperationError::from(e))?;
-
-    for entry in fs::read_dir(src).map_err(|e| FileOperationError::from(e))? {
-        let entry = entry.map_err(|e| FileOperationError::from(e))?;
-        let entry_path = entry.path();
-        let dest_path = dest.join(entry.file_name());
-
-        if entry_path.is_dir() {
-            copy_dir_recursive(&entry_path, &dest_path)?;
-        } else {
-            fs::copy(&entry_path, &dest_path).map_err(|e| FileOperationError::from(e))?;
-        }
-    }
-
-    Ok(())
+/// Cross-device fallback: remove the source only after a successful copy.
+fn copy_then_delete(src: &Path, dest: &Path) -> FileOperationResult<()> {
+    copy_dir_file_helper(src, dest).map_err(|e| FileOperationError::Io {
+        message: e.to_string(),
+    })?;
+    handle_delete_based_on_type(
+        src.to_str()
+            .ok_or_else(|| FileOperationError::InvalidPath {
+                path: src.display().to_string(),
+            })?,
+    )
 }
 
 /// Rename a file or directory using app state for paths.
@@ -477,5 +485,125 @@ mod tests {
                 assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
             }
         }
+    }
+
+    #[test]
+    fn delete_with_progress_reports_failed_removals() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root bypasses directory write permissions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let locked = src.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("keep"), "keep").unwrap();
+        fs::write(src.join("removable"), "remove").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+        let receiver = delete_with_progress(src.to_str().unwrap());
+        let completion = loop {
+            match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+                Ok(DeleteMessage::Completed { success, message }) => break Ok((success, message)),
+                Ok(DeleteMessage::Error(message)) => break Err(message),
+                Ok(_) => {}
+                Err(error) => break Err(error.to_string()),
+            }
+        };
+        // Restore permissions before assertions, including on failure.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let (success, message) = completion.unwrap();
+        assert!(!success, "{message}");
+        assert!(
+            message.contains("Deleted 1 of 4 items; 3 failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains(locked.join("keep").to_str().unwrap()),
+            "{message}"
+        );
+        assert_eq!(fs::read_to_string(locked.join("keep")).unwrap(), "keep");
+        assert!(!src.join("removable").exists());
+    }
+
+    #[test]
+    fn copy_then_delete_preserves_root_symlink() {
+        let tmp = tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "keep").unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        symlink("outside", &src).unwrap();
+        copy_then_delete(&src, &dest).unwrap();
+        assert!(fs::symlink_metadata(&dest)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read_link(&dest).unwrap(), Path::new("outside"));
+        assert!(fs::symlink_metadata(&src).is_err());
+        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn copy_then_delete_preserves_directory_links_and_loop() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        let outside = tmp.path().join("outside");
+        fs::create_dir(&src).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("keep"), "keep").unwrap();
+        fs::write(src.join("real.txt"), "data").unwrap();
+        symlink("../outside", src.join("link")).unwrap();
+        symlink(".", src.join("loop")).unwrap();
+        copy_then_delete(&src, &dest).unwrap();
+        for (name, target) in [("link", "../outside"), ("loop", ".")] {
+            assert!(fs::symlink_metadata(dest.join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(fs::read_link(dest.join(name)).unwrap(), Path::new(target));
+        }
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(dest.join("real.txt")).unwrap(), "data");
+        assert_eq!(fs::read_to_string(outside.join("keep")).unwrap(), "keep");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn copy_then_delete_keeps_source_on_copy_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root can read the locked file
+        }
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("keep"), "keep").unwrap();
+        fs::write(src.join("locked"), "locked").unwrap();
+        fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(copy_then_delete(&src, &dest).is_err());
+        assert_eq!(fs::read_to_string(src.join("keep")).unwrap(), "keep");
+        assert!(src.join("locked").exists());
+        assert!(fs::symlink_metadata(&dest).is_err());
+    }
+
+    #[test]
+    fn move_preserves_dangling_root_and_rejects_existing_link() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest_dir = tmp.path().join("destination");
+        fs::create_dir(&dest_dir).unwrap();
+        symlink("missing", &src).unwrap();
+        move_file_or_dir(src.to_str().unwrap(), dest_dir.to_str().unwrap()).unwrap();
+        let dest = dest_dir.join("source");
+        assert_eq!(fs::read_link(&dest).unwrap(), Path::new("missing"));
+        assert!(fs::symlink_metadata(&src).is_err());
+        fs::write(&src, "keep").unwrap();
+        assert!(move_file_or_dir(src.to_str().unwrap(), dest_dir.to_str().unwrap()).is_err());
+        assert_eq!(fs::read_link(&dest).unwrap(), Path::new("missing"));
+        assert_eq!(fs::read_to_string(&src).unwrap(), "keep");
     }
 }
