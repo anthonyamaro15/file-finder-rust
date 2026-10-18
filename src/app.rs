@@ -764,7 +764,8 @@ impl App {
         if let Some(selection) = &self.selected_id {
             match selection {
                 IDE::NVIM => Some("nvim".to_string()),
-                IDE::VSCODE => Some("vscode".to_string()),
+                // VS Code's CLI binary is `code`
+                IDE::VSCODE => Some("code".to_string()),
                 IDE::ZED => Some("zed".to_string()),
             }
         } else {

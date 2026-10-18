@@ -160,6 +160,8 @@ pub struct EffectiveConfig {
     pub layout_style: LayoutStyle,
     /// Print selected path to stdout instead of copying to clipboard
     pub print_path: bool,
+    /// Shown once in the UI when the settings start path was unusable
+    pub start_notice: Option<String>,
 }
 
 impl CliArgs {
@@ -228,6 +230,58 @@ mod path_utils {
     }
 }
 
+/// Pick the start directory. A CLI path that isn't a directory is an error;
+/// a settings path that isn't one falls back to `fallback`, with a notice for the UI.
+fn resolve_start_path(
+    cli_path: Option<PathBuf>,
+    settings_path: PathBuf,
+    fallback: Option<PathBuf>,
+) -> io::Result<(PathBuf, Option<String>)> {
+    if let Some(path) = cli_path {
+        return match path.metadata() {
+            Ok(metadata) if metadata.is_dir() => Ok((path, None)),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("start path '{}' is not a directory", path.display()),
+            )),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+                e.kind(),
+                format!("start path '{}' does not exist", path.display()),
+            )),
+            Err(e) => Err(io::Error::new(
+                e.kind(),
+                format!("start path '{}': {}", path.display(), e),
+            )),
+        };
+    }
+
+    if settings_path.is_dir() {
+        return Ok((settings_path, None));
+    }
+    let reason = if settings_path.exists() {
+        "is not a directory"
+    } else {
+        "not found"
+    };
+    let fallback = fallback.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "start path '{}' {} and no fallback directory is available",
+                settings_path.display(),
+                reason
+            ),
+        )
+    })?;
+    let notice = format!(
+        "Start path '{}' {} — opened {}",
+        settings_path.display(),
+        reason,
+        fallback.display()
+    );
+    Ok((fallback, Some(notice)))
+}
+
 /// Compute effective configuration by applying precedence rules
 /// Precedence: CLI > ENV (future) > settings.toml > built-in defaults
 pub fn compute_effective_config(
@@ -235,13 +289,26 @@ pub fn compute_effective_config(
     settings: &Settings,
 ) -> io::Result<EffectiveConfig> {
     // Determine effective start path
-    let start_path = if let Some(cli_path) = cli_args.get_effective_start_path() {
-        debug!("Using CLI-provided start path: {}", cli_path.display());
-        path_utils::normalize_path(&cli_path)?
-    } else {
-        debug!("Using settings start path: {}", settings.start_path);
-        path_utils::normalize_path(&PathBuf::from(&settings.start_path))?
+    let cli_path = match cli_args.get_effective_start_path() {
+        Some(cli_path) => {
+            debug!("Using CLI-provided start path: {}", cli_path.display());
+            Some(path_utils::normalize_path(&cli_path)?)
+        }
+        None => {
+            debug!("Using settings start path: {}", settings.start_path);
+            None
+        }
     };
+    let settings_path = path_utils::normalize_path(&PathBuf::from(&settings.start_path))
+        .unwrap_or_else(|_| PathBuf::from(&settings.start_path));
+    let fallback = env::current_dir()
+        .ok()
+        .filter(|dir| dir.is_dir())
+        .or_else(dirs::home_dir);
+    let (start_path, start_notice) = resolve_start_path(cli_path, settings_path, fallback)?;
+    if let Some(notice) = &start_notice {
+        warn!("{}", notice);
+    }
 
     // Determine effective theme (CLI > settings > default)
     let theme = cli_args
@@ -277,6 +344,7 @@ pub fn compute_effective_config(
         editor,
         layout_style,
         print_path,
+        start_notice,
     })
 }
 
@@ -293,5 +361,80 @@ mod tests {
             assert!(script.contains(r#"rm -f "$tmp""#));
             assert!(!script.contains("/tmp/ff_result"));
         }
+    }
+
+    #[test]
+    fn cli_start_path_missing_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+
+        let err = resolve_start_path(Some(missing.clone()), dir.path().into(), None).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("start path '{}' does not exist", missing.display())
+        );
+    }
+
+    #[test]
+    fn cli_start_path_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "").unwrap();
+
+        let err = resolve_start_path(Some(file.clone()), dir.path().into(), None).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("start path '{}' is not a directory", file.display())
+        );
+    }
+
+    #[test]
+    fn cli_start_path_valid_is_used() {
+        let cli_dir = tempfile::tempdir().unwrap();
+        let settings_dir = tempfile::tempdir().unwrap();
+
+        let (path, notice) = resolve_start_path(
+            Some(cli_dir.path().into()),
+            settings_dir.path().into(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(path, cli_dir.path());
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn settings_start_path_missing_falls_back_with_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("Desktop");
+        let cwd = tempfile::tempdir().unwrap();
+
+        let (path, notice) =
+            resolve_start_path(None, missing.clone(), Some(cwd.path().into())).unwrap();
+
+        assert_eq!(path, cwd.path());
+        assert_eq!(
+            notice.unwrap(),
+            format!(
+                "Start path '{}' not found — opened {}",
+                missing.display(),
+                cwd.path().display()
+            )
+        );
+    }
+
+    #[test]
+    fn settings_start_path_valid_is_used_without_notice() {
+        let settings_dir = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+
+        let (path, notice) =
+            resolve_start_path(None, settings_dir.path().into(), Some(cwd.path().into())).unwrap();
+
+        assert_eq!(path, settings_dir.path());
+        assert_eq!(notice, None);
     }
 }

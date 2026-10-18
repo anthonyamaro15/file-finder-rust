@@ -4,7 +4,7 @@
 
 // Standard library imports
 use std::{
-    io::{self, Stdout},
+    io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::mpsc,
@@ -440,44 +440,39 @@ fn update_preview_for_path(
     }
 }
 
-fn handle_file_selection(
-    file: &str,
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    app: &App,
-) -> anyhow::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+/// Open `file` with `editor` and wait for it to exit.
+fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
+    if !Path::new(file).exists() {
+        return Err(format!("'{}' no longer exists", file));
+    }
+    let status = Command::new(editor)
+        .arg(file)
+        .status()
+        .map_err(|e| format!("failed to launch '{}': {}", editor, e))?;
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    terminal.clear()?;
-
-    let ide = app.get_selected_ide();
-    if ide.is_some() {
-        let selected_ide = ide.unwrap();
-
-        if Path::new(file).exists() {
-            let output = Command::new(selected_ide.to_owned())
-                .arg(file.to_owned())
-                .status()
-                .expect("Failed to open file");
-
-            if output.success() {
-                println!("Successfully opened file with {}", selected_ide);
-            } else {
-                println!("Failed to open file with {}", selected_ide);
-            }
-        }
+    if status.success() {
+        println!("Successfully opened file with {}", editor);
     } else {
-        let mut ctx = ClipboardContext::new().unwrap();
-        ctx.set_contents(file.to_owned()).unwrap();
+        println!("Failed to open file with {}", editor);
+    }
+    Ok(())
+}
+
+/// Open the selection in the configured editor, or copy its path to the clipboard.
+/// Call after the terminal is restored; prints the path if the clipboard is unavailable.
+fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), String> {
+    if let Some(ide) = ide {
+        return launch_editor(&ide, file);
     }
 
+    match ClipboardContext::new().and_then(|mut ctx| ctx.set_contents(file.to_owned())) {
+        Ok(()) => debug!("Copied path to clipboard: {}", file),
+        Err(e) => {
+            warn!("Clipboard unavailable: {}", e);
+            eprintln!("ff: clipboard unavailable; path printed below");
+            println!("{}", file);
+        }
+    }
     Ok(())
 }
 
@@ -528,8 +523,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let effective_config = match compute_effective_config(&cli_args, &settings) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Failed to compute effective configuration: {}", e);
-            return Err(e.into());
+            eprintln!("ff: {}", e);
+            std::process::exit(1);
         }
     };
 
@@ -623,6 +618,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
+    if let Some(notice) = effective_config.start_notice {
+        status_bar.show_error(notice, None);
+    }
 
     debug!("{:?}", widgets_ui.files_list);
 
@@ -660,6 +658,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Delete progress receiver (for async delete operations)
     let mut delete_receiver: Option<mpsc::Receiver<DeleteMessage>> = None;
     let mut delete_target_dir: Option<String> = None; // Parent dir to refresh after delete
+
+    // File chosen with Enter, handled after the terminal is restored
+    let mut selected_file: Option<String> = None;
 
     // Request initial preview for the first file
     if let Some(path) = app.get_selected_path(Some(0)) {
@@ -2125,36 +2126,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             return Ok(());
                                         }
 
-                                        // Check if IDE is configured - if so, open file, otherwise copy to clipboard
-                                        if app.get_selected_ide().is_some() {
-                                            let _ = handle_file_selection(
-                                                &selected,
-                                                &mut terminal,
-                                                &app,
-                                            );
-                                            break;
-                                        } else {
-                                            // Copy path to clipboard instead of opening
-                                            use copypasta::{ClipboardContext, ClipboardProvider};
-                                            if let Ok(mut ctx) = ClipboardContext::new() {
-                                                if let Ok(_) = ctx.set_contents(selected.clone()) {
-                                                    debug!(
-                                                        "Copied path to clipboard: {}",
-                                                        selected
-                                                    );
-                                                    // Optionally show a brief message to user
-                                                    // For now just break to exit
-                                                    break;
-                                                }
-                                            }
-                                            // Fallback to normal file selection if clipboard fails
-                                            let _ = handle_file_selection(
-                                                &selected,
-                                                &mut terminal,
-                                                &app,
-                                            );
-                                            break;
-                                        }
+                                        // Open in the IDE or copy to the clipboard once the terminal is restored
+                                        selected_file = Some(selected);
+                                        break;
                                     }
                                 }
                                 _ => {}
@@ -2415,6 +2389,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     terminal.show_cursor()?;
     terminal.clear()?;
+
+    if let Some(file) = selected_file {
+        if let Err(message) = handle_file_selection(&file, app.get_selected_ide()) {
+            eprintln!("ff: {}", message);
+            std::process::exit(1);
+        }
+    }
     Ok(())
 }
 
@@ -2454,6 +2435,27 @@ mod tests {
     }
 
     #[test]
+    fn launch_editor_reports_missing_editor() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = file.path().to_str().unwrap();
+
+        let err = launch_editor("ff-definitely-not-installed-xyz", file).unwrap_err();
+
+        assert!(err.starts_with("failed to launch 'ff-definitely-not-installed-xyz': "));
+    }
+
+    #[test]
+    fn launch_editor_reports_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gone.txt");
+        let missing = missing.to_str().unwrap();
+
+        let err = launch_editor("ff-definitely-not-installed-xyz", missing).unwrap_err();
+
+        assert_eq!(err, format!("'{}' no longer exists", missing));
+    }
+
+    #[test]
     fn startup_paths_use_effective_start_path_for_display_watch_and_cache() {
         let effective_config = crate::cli::EffectiveConfig {
             start_path: PathBuf::from("/tmp/ff-cli-start"),
@@ -2461,6 +2463,7 @@ mod tests {
             editor: None,
             layout_style: crate::config::settings::LayoutStyle::Modern,
             print_path: false,
+            start_notice: None,
         };
 
         let paths = startup_paths(&effective_config);
