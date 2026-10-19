@@ -1383,10 +1383,10 @@ impl FileContent<'_> {
         0
     }
 
-    /// Extract the selected ZIP into a new sibling directory named after it.
+    /// Extract the ZIP at `path` into a new sibling directory named after it.
     /// Returns the success message, or an error message if anything failed.
-    pub fn extract_zip_content(&mut self) -> Result<String, String> {
-        let fname = Path::new(&self.curr_selected_path);
+    pub fn extract_zip_content(path: &str) -> Result<String, String> {
+        let fname = Path::new(path);
         let file = fs::File::open(fname).map_err(|e| format!("Error opening ZIP: {}", e))?;
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("Error reading ZIP archive: {}", e))?;
@@ -1700,9 +1700,7 @@ mod extraction_tests {
     }
 
     fn extract(path: &Path) -> Result<String, String> {
-        let mut content = FileContent::new(SyntaxSet::new(), ThemeSet::new());
-        content.curr_selected_path = path.to_str().unwrap().to_string();
-        content.extract_zip_content()
+        FileContent::extract_zip_content(path.to_str().unwrap())
     }
 
     #[test]

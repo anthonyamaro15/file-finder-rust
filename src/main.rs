@@ -1971,20 +1971,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('y') => {
-                                    let curr_file_path =
-                                        file_reader_content.curr_selected_path.clone();
-                                    let file_type = file_reader_content
-                                        .get_file_extension(curr_file_path.clone());
-                                    match file_type {
-                                        FileType::ZIP => {
-                                            match file_reader_content.extract_zip_content() {
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
+                                        let file_type = file_reader_content
+                                            .get_file_extension(selected.clone());
+                                        if let FileType::ZIP = file_type {
+                                            match FileContent::extract_zip_content(&selected) {
                                                 Ok(message) => status_bar.show_info(message, None),
                                                 Err(message) => {
                                                     status_bar.show_error(message, None)
                                                 }
                                             }
                                         }
-                                        _ => {}
                                     }
                                 }
                                 KeyCode::Char('r') => {
