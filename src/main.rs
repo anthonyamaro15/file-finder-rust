@@ -432,11 +432,10 @@ fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
         .status()
         .map_err(|e| format!("failed to launch '{}': {}", editor, e))?;
 
-    if status.success() {
-        println!("Successfully opened file with {}", editor);
-    } else {
-        println!("Failed to open file with {}", editor);
+    if !status.success() {
+        return Err(format!("'{}' failed with {}", editor, status));
     }
+    debug!("Opened {} with {}", file, editor);
     Ok(())
 }
 
@@ -2444,6 +2443,19 @@ mod tests {
         let err = launch_editor("ff-definitely-not-installed-xyz", missing).unwrap_err();
 
         assert_eq!(err, format!("'{}' no longer exists", missing));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_editor_reports_non_zero_exit() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = file.path().to_str().unwrap();
+
+        // `false` ignores its arguments and exits 1; `true` exits 0. Neither opens the file.
+        let err = launch_editor("false", file).unwrap_err();
+
+        assert_eq!(err, "'false' failed with exit status: 1");
+        assert_eq!(launch_editor("true", file), Ok(()));
     }
 
     #[test]
