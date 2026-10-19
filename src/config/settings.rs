@@ -1,7 +1,6 @@
 //! Active TOML-backed user settings for ff.
 //!
-//! New runtime configuration should be added here. `src/configuration.rs`
-//! is legacy JSON compatibility and should not receive new settings.
+//! New runtime configuration should be added here.
 
 use serde::{Deserialize, Serialize};
 use std::fs;

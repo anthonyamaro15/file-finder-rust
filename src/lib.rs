@@ -1,7 +1,6 @@
 pub mod app;
-pub mod benchmark;
+pub mod cli;
 pub mod config;
-pub mod configuration;
 pub mod directory_store;
 pub mod errors;
 pub mod event;
@@ -10,8 +9,8 @@ pub mod highlight;
 pub mod icons;
 pub mod operations;
 pub mod pane;
-pub mod perf_test;
 pub mod render;
+pub mod status_bar;
 pub mod theme;
 pub mod ui;
 pub mod utils;

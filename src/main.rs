@@ -33,28 +33,9 @@ use ratatui::{
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
-// Internal module declarations
-mod app;
-mod cli;
-mod config;
-mod configuration;
-mod directory_store;
-mod errors;
-mod event;
-mod file_reader_content;
-mod highlight;
-mod icons;
-mod operations;
-mod pane;
-mod render;
-mod status_bar;
-mod theme;
-mod ui;
-mod utils;
-mod watcher;
-
 // Internal imports
-use crate::{
+use file_finder::{app, cli, file_reader_content, operations};
+use file_finder::{
     app::{App, InputMode, PanePosition, SearchScope, ViewMode},
     cli::{compute_effective_config, CliArgs},
     config::Action,
@@ -107,7 +88,7 @@ struct StartupPaths {
     refresh_fallback_path: String,
 }
 
-fn startup_paths(effective_config: &crate::cli::EffectiveConfig) -> StartupPaths {
+fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> StartupPaths {
     let start_path = effective_config.start_path.to_string_lossy().to_string();
 
     StartupPaths {
@@ -502,7 +483,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check for --reset-config flag (from CLI args)
     if cli_args.reset_config {
         println!("Resetting configuration to defaults...");
-        if let Err(e) = crate::config::reset_configuration() {
+        if let Err(e) = file_finder::config::reset_configuration() {
             eprintln!("Failed to reset configuration: {}", e);
             return Err(e.into());
         }
@@ -511,7 +492,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load configuration using new TOML system
-    let settings = match crate::config::Settings::load() {
+    let settings = match file_finder::config::Settings::load() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Configuration error: {}", e);
@@ -572,9 +553,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set editor from effective configuration (CLI args have precedence)
     if let Some(editor) = effective_config.editor {
         let ide_selection = match editor {
-            crate::cli::Editor::Nvim => app::IDE::NVIM,
-            crate::cli::Editor::Vscode => app::IDE::VSCODE,
-            crate::cli::Editor::Zed => app::IDE::ZED,
+            file_finder::cli::Editor::Nvim => app::IDE::NVIM,
+            file_finder::cli::Editor::Vscode => app::IDE::VSCODE,
+            file_finder::cli::Editor::Zed => app::IDE::ZED,
         };
         app.selected_id = Some(ide_selection);
         debug!("Set editor from CLI: {:?}", editor);
@@ -611,7 +592,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.start_cache_loading(rx, start_time);
 
         // Return empty store for now - it will be populated when cache building completes
-        crate::directory_store::DirectoryStore {
+        file_finder::directory_store::DirectoryStore {
             directories: Vec::new(),
         }
     };
@@ -722,7 +703,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ref rx) = app.preview_receiver {
             match rx.try_recv() {
                 Ok(msg) => {
-                    use crate::app::PreviewMessage;
+                    use file_finder::app::PreviewMessage;
                     match msg {
                         PreviewMessage::Loaded {
                             path,
@@ -1020,10 +1001,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
                         // Render the status bar based on style setting
             match settings.status_bar_style {
-                crate::config::settings::StatusBarStyle::Classic => {
+                file_finder::config::settings::StatusBarStyle::Classic => {
                     status_bar.render(f, chunks[3], &app, &app.theme_colors);
                 }
-                crate::config::settings::StatusBarStyle::Minimal => {
+                file_finder::config::settings::StatusBarStyle::Minimal => {
                     status_bar.render_minimal(f, chunks[3], &app, &app.theme_colors);
                 }
             }
@@ -1524,7 +1505,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     store = cache_store.clone();
 
                     // Save the cache to file for future use
-                    match crate::directory_store::save_directory_to_file(
+                    match file_finder::directory_store::save_directory_to_file(
                         cache_store,
                         &settings.cache_directory,
                     ) {
@@ -2457,11 +2438,11 @@ mod tests {
 
     #[test]
     fn startup_paths_use_effective_start_path_for_display_watch_and_cache() {
-        let effective_config = crate::cli::EffectiveConfig {
+        let effective_config = file_finder::cli::EffectiveConfig {
             start_path: PathBuf::from("/tmp/ff-cli-start"),
             theme: None,
             editor: None,
-            layout_style: crate::config::settings::LayoutStyle::Modern,
+            layout_style: file_finder::config::settings::LayoutStyle::Modern,
             print_path: false,
             start_notice: None,
         };
