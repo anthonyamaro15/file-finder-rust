@@ -372,6 +372,8 @@ pub struct App {
     // Preview debounce tracking
     pub preview_pending_path: Option<String>,
     pub preview_pending_since: Option<Instant>,
+    /// Path of the most recent preview request, so selection changes can be detected.
+    pub preview_requested_path: Option<String>,
 
     // Async preview loading
     pub preview_receiver: Option<mpsc::Receiver<PreviewMessage>>,
@@ -494,6 +496,7 @@ impl App {
             // Initialize preview debounce tracking
             preview_pending_path: None,
             preview_pending_since: None,
+            preview_requested_path: None,
 
             // Initialize async preview loading
             preview_receiver: None,
@@ -1226,8 +1229,34 @@ impl App {
     /// Request a preview update with debouncing
     /// Instead of loading immediately, stores the path and timestamp
     pub fn request_preview(&mut self, path: String) {
+        self.preview_requested_path = Some(path.clone());
         self.preview_pending_path = Some(path);
         self.preview_pending_since = Some(Instant::now());
+    }
+
+    /// Request a preview when the selected path differs from the last request.
+    /// Returns true once when the selection becomes empty, after dropping the
+    /// app-side preview state, so the caller can clear the rest of the preview.
+    pub fn sync_preview_with_selection(&mut self, selected_index: Option<usize>) -> bool {
+        let path = self.get_selected_path(selected_index);
+        if path == self.preview_requested_path {
+            return false;
+        }
+        match path {
+            Some(path) => {
+                self.request_preview(path);
+                false
+            }
+            None => {
+                self.preview_requested_path = None;
+                self.clear_pending_preview();
+                self.preview_loading = false;
+                self.preview_loading_path = None;
+                self.preview_files.clear();
+                self.preview_file_content.clear();
+                true
+            }
+        }
     }
 
     /// Check if a pending preview is ready to load (debounce period elapsed)
@@ -1482,5 +1511,26 @@ mod tests {
         app.right_pane = crate::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
 
         assert_eq!(app.current_directory_path(), PathBuf::from("/tmp/ff-right"));
+    }
+
+    #[test]
+    fn sync_preview_follows_selection_changes_only() {
+        let mut app = App::new(vec!["a".into(), "b".into()]);
+
+        assert!(!app.sync_preview_with_selection(Some(0)));
+        assert_eq!(app.take_ready_preview(0).as_deref(), Some("a"));
+        assert!(!app.sync_preview_with_selection(Some(0)));
+        assert_eq!(app.take_ready_preview(0), None);
+
+        // A replaced list (e.g. entering a folder) changes the path at the same index.
+        app.files = vec!["dir/a.zip".into()];
+        assert!(!app.sync_preview_with_selection(Some(0)));
+        assert_eq!(app.take_ready_preview(0).as_deref(), Some("dir/a.zip"));
+
+        app.files.clear();
+        app.preview_files = vec!["stale".into()];
+        assert!(app.sync_preview_with_selection(None));
+        assert!(app.preview_files.is_empty());
+        assert!(!app.sync_preview_with_selection(None));
     }
 }
