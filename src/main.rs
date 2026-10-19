@@ -432,11 +432,10 @@ fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
         .status()
         .map_err(|e| format!("failed to launch '{}': {}", editor, e))?;
 
-    if status.success() {
-        println!("Successfully opened file with {}", editor);
-    } else {
-        println!("Failed to open file with {}", editor);
+    if !status.success() {
+        return Err(format!("'{}' failed with {}", editor, status));
     }
+    debug!("Opened {} with {}", file, editor);
     Ok(())
 }
 
@@ -606,7 +605,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
     if let Some(notice) = effective_config.start_notice {
-        status_bar.show_error(notice, None);
+        status_bar.show_warning(notice, None);
     }
 
     debug!("{:?}", widgets_ui.files_list);
@@ -1884,7 +1883,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     } else {
                                                         app.right_pane.refresh_files();
                                                     }
-                                                    status_bar.show_error(
+                                                    status_bar.show_info(
                                                         format!(
                                                             "Copied '{}' to other pane",
                                                             src_name
@@ -1960,7 +1959,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         }
                                                     }
 
-                                                    status_bar.show_error(
+                                                    status_bar.show_info(
                                                         format!(
                                                             "Moved '{}' to other pane",
                                                             src_name
@@ -1986,8 +1985,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .get_file_extension(curr_file_path.clone());
                                     match file_type {
                                         FileType::ZIP => {
-                                            let t = file_reader_content.extract_zip_content();
-                                            app.input = t;
+                                            match file_reader_content.extract_zip_content() {
+                                                Ok(message) => status_bar.show_info(message, None),
+                                                Err(message) => {
+                                                    status_bar.show_error(message, None)
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -2440,6 +2443,19 @@ mod tests {
         let err = launch_editor("ff-definitely-not-installed-xyz", missing).unwrap_err();
 
         assert_eq!(err, format!("'{}' no longer exists", missing));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_editor_reports_non_zero_exit() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = file.path().to_str().unwrap();
+
+        // `false` ignores its arguments and exits 1; `true` exits 0. Neither opens the file.
+        let err = launch_editor("false", file).unwrap_err();
+
+        assert_eq!(err, "'false' failed with exit status: 1");
+        assert_eq!(launch_editor("true", file), Ok(()));
     }
 
     #[test]

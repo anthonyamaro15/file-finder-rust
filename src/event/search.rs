@@ -24,6 +24,10 @@ pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStor
         {
             app.enter_search(SearchScope::Root);
         }
+        // Backspace on an empty root search returns to local search.
+        KeyCode::Backspace if app.search_scope == SearchScope::Root && app.input.is_empty() => {
+            app.enter_search(SearchScope::CurrentDirectory);
+        }
         KeyCode::Char(to_insert) => {
             if app.search_scope == SearchScope::Root {
                 app.insert_char_without_filter(to_insert);
@@ -118,5 +122,47 @@ mod tests {
         assert!(!app.global_search_mode);
         assert_eq!(app.input, "foo bar");
         assert_eq!(app.character_index, 7);
+    }
+
+    #[test]
+    fn backspace_on_empty_root_search_returns_to_local_search() {
+        let files = vec![
+            "/workspace/a.txt".to_string(),
+            "/workspace/b.txt".to_string(),
+        ];
+        let mut app = App::new(files);
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::CurrentDirectory);
+        handle_search_key(&mut app, KeyCode::Char('/'), &store);
+        assert_eq!(app.search_scope, SearchScope::Root);
+
+        handle_search_key(&mut app, KeyCode::Backspace, &store);
+
+        assert_eq!(app.input_mode, InputMode::Editing);
+        assert_eq!(app.search_scope, SearchScope::CurrentDirectory);
+        assert!(!app.global_search_mode);
+        assert_eq!(app.input, "");
+        assert!(app.search_results.is_empty());
+        assert_eq!(app.filtered_indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn backspace_with_text_in_root_search_deletes_char() {
+        let mut app = App::new(Vec::new());
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::Root);
+        for c in "sr".chars() {
+            handle_search_key(&mut app, KeyCode::Char(c), &store);
+        }
+        handle_search_key(&mut app, KeyCode::Backspace, &store);
+
+        assert_eq!(app.search_scope, SearchScope::Root);
+        assert!(app.global_search_mode);
+        assert_eq!(app.input, "s");
+        assert_eq!(app.search_results.len(), 1);
     }
 }

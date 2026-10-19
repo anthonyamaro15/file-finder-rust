@@ -11,6 +11,16 @@ use ratatui::{
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+const DEFAULT_NOTIFICATION_SECS: u64 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationKind {
+    Error,
+    Warning,
+    Info,
+}
 
 pub struct StatusBar {
     pub file_count: usize,
@@ -20,7 +30,9 @@ pub struct StatusBar {
     pub selected_item_info: String,
     pub system_info: String,
     pub error_message: Option<String>,
-    pub error_display_time: Option<std::time::Instant>,
+    pub error_display_time: Option<Instant>,
+    pub notification_kind: NotificationKind,
+    pub notification_duration: Duration,
     // Cache tracking - only recalculate when directory changes
     cached_directory: String,
     cache_valid: bool,
@@ -37,6 +49,8 @@ impl StatusBar {
             system_info: Self::get_system_info(),
             error_message: None,
             error_display_time: None,
+            notification_kind: NotificationKind::Error,
+            notification_duration: Duration::from_secs(DEFAULT_NOTIFICATION_SECS),
             cached_directory: String::new(),
             cache_valid: false,
         }
@@ -457,8 +471,30 @@ impl StatusBar {
 
     /// Show an error message for a specified duration (default: 3 seconds)
     pub fn show_error(&mut self, message: String, duration_secs: Option<u64>) {
+        self.show_notification(NotificationKind::Error, message, duration_secs);
+    }
+
+    /// Show a warning message for a specified duration (default: 3 seconds)
+    pub fn show_warning(&mut self, message: String, duration_secs: Option<u64>) {
+        self.show_notification(NotificationKind::Warning, message, duration_secs);
+    }
+
+    /// Show an informational/success message for a specified duration (default: 3 seconds)
+    pub fn show_info(&mut self, message: String, duration_secs: Option<u64>) {
+        self.show_notification(NotificationKind::Info, message, duration_secs);
+    }
+
+    fn show_notification(
+        &mut self,
+        kind: NotificationKind,
+        message: String,
+        duration_secs: Option<u64>,
+    ) {
         self.error_message = Some(message);
-        self.error_display_time = Some(std::time::Instant::now());
+        self.error_display_time = Some(Instant::now());
+        self.notification_kind = kind;
+        self.notification_duration =
+            Duration::from_secs(duration_secs.unwrap_or(DEFAULT_NOTIFICATION_SECS));
     }
 
     /// Clear the current error message
@@ -470,8 +506,7 @@ impl StatusBar {
     /// Update error display (auto-hide after timeout)
     fn update_error_display(&mut self) {
         if let (Some(_), Some(display_time)) = (&self.error_message, self.error_display_time) {
-            // Auto-hide error after 3 seconds
-            if display_time.elapsed() > std::time::Duration::from_secs(3) {
+            if display_time.elapsed() > self.notification_duration {
                 self.clear_error();
             }
         }
@@ -503,13 +538,17 @@ impl StatusBar {
             let clear_widget = ratatui::widgets::Clear;
             frame.render_widget(clear_widget, popup_area);
 
-            // Render error message
+            let (title, color) = match self.notification_kind {
+                NotificationKind::Error => ("❌ Error", Color::Red),
+                NotificationKind::Warning => ("⚠ Warning", Color::Yellow),
+                NotificationKind::Info => ("ℹ Info", Color::Green),
+            };
             let error_block = Paragraph::new(error_msg.clone())
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title("❌ Error")
-                        .style(Style::default().fg(Color::Red)),
+                        .title(title)
+                        .style(Style::default().fg(color)),
                 )
                 .style(Style::default().fg(Color::White).bg(Color::DarkGray))
                 .wrap(ratatui::widgets::Wrap { trim: true });
@@ -552,5 +591,46 @@ impl StatusBar {
             Span::raw(" | "),
             Span::styled(&self.system_info, Style::default().fg(theme.gray)),
         ])]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shown_for(status_bar: &mut StatusBar, elapsed: Duration) -> bool {
+        status_bar.error_display_time = Some(Instant::now() - elapsed);
+        status_bar.update_error_display();
+        status_bar.has_error()
+    }
+
+    #[test]
+    fn notification_honors_duration() {
+        let mut status_bar = StatusBar::new();
+
+        status_bar.show_info("copied".to_string(), Some(1));
+        assert_eq!(status_bar.notification_duration, Duration::from_secs(1));
+        assert!(shown_for(&mut status_bar, Duration::from_millis(500)));
+        assert!(!shown_for(&mut status_bar, Duration::from_millis(1100)));
+
+        status_bar.show_error("failed".to_string(), None);
+        assert_eq!(status_bar.notification_duration, Duration::from_secs(3));
+        assert!(shown_for(&mut status_bar, Duration::from_millis(2900)));
+        assert!(!shown_for(&mut status_bar, Duration::from_millis(3100)));
+    }
+
+    #[test]
+    fn notification_kind_follows_show_method() {
+        let mut status_bar = StatusBar::new();
+
+        status_bar.show_info("copied".to_string(), None);
+        assert_eq!(status_bar.notification_kind, NotificationKind::Info);
+
+        status_bar.show_warning("fallback".to_string(), None);
+        assert_eq!(status_bar.notification_kind, NotificationKind::Warning);
+
+        status_bar.show_error("failed".to_string(), None);
+        assert_eq!(status_bar.notification_kind, NotificationKind::Error);
+        assert_eq!(status_bar.error_message.as_deref(), Some("failed"));
     }
 }
