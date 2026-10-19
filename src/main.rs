@@ -1986,8 +1986,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .get_file_extension(curr_file_path.clone());
                                     match file_type {
                                         FileType::ZIP => {
-                                            let t = file_reader_content.extract_zip_content();
-                                            app.input = t;
+                                            match file_reader_content.extract_zip_content() {
+                                                Ok(message) => status_bar.show_info(message, None),
+                                                Err(message) => {
+                                                    status_bar.show_error(message, None)
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }

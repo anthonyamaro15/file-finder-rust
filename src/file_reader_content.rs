@@ -1383,29 +1383,25 @@ impl FileContent<'_> {
         0
     }
 
-    pub fn extract_zip_content(&mut self) -> String {
+    /// Extract the selected ZIP into a new sibling directory named after it.
+    /// Returns the success message, or an error message if anything failed.
+    pub fn extract_zip_content(&mut self) -> Result<String, String> {
         let fname = Path::new(&self.curr_selected_path);
-        let file = match fs::File::open(fname) {
-            Ok(f) => f,
-            Err(e) => return format!("Error opening ZIP: {}", e),
-        };
-
-        let mut archive = match zip::ZipArchive::new(file) {
-            Ok(a) => a,
-            Err(e) => return format!("Error reading ZIP archive: {}", e),
-        };
-        let Some(stem) = fname.file_stem() else {
-            return "Error: ZIP path has no file stem".to_string();
-        };
+        let file = fs::File::open(fname).map_err(|e| format!("Error opening ZIP: {}", e))?;
+        let mut archive =
+            zip::ZipArchive::new(file).map_err(|e| format!("Error reading ZIP archive: {}", e))?;
+        let stem = fname
+            .file_stem()
+            .ok_or_else(|| "ZIP path has no file stem".to_string())?;
         let target_dir = fname.with_file_name(stem);
         // Atomically reserve a new directory; files and dangling links also block extraction.
-        if let Err(e) = fs::create_dir(&target_dir) {
-            return format!(
+        fs::create_dir(&target_dir).map_err(|e| {
+            format!(
                 "Error creating extraction directory '{}': {}",
                 target_dir.display(),
                 e
-            );
-        }
+            )
+        })?;
 
         let mut extracted = 0;
         let mut failed = 0;
@@ -1484,11 +1480,11 @@ impl FileContent<'_> {
             target_dir.display()
         );
         match first_error {
-            Some(error) => format!(
-                "Error: {}; {} failed (first error: {})",
+            Some(error) => Err(format!(
+                "{}; {} failed (first error: {})",
                 message, failed, error
-            ),
-            None => message,
+            )),
+            None => Ok(message),
         }
     }
 
@@ -1703,7 +1699,7 @@ mod extraction_tests {
         archive.finish().unwrap();
     }
 
-    fn extract(path: &Path) -> String {
+    fn extract(path: &Path) -> Result<String, String> {
         let mut content = FileContent::new(SyntaxSet::new(), ThemeSet::new());
         content.curr_selected_path = path.to_str().unwrap().to_string();
         content.extract_zip_content()
@@ -1720,7 +1716,7 @@ mod extraction_tests {
         ];
         write_zip(&archive, &entries);
         let target = tmp.path().join("archive");
-        let message = extract(&archive);
+        let message = extract(&archive).unwrap();
         assert!(message.contains("Extracted 3 entries"), "{message}");
         assert!(message.contains(target.to_str().unwrap()), "{message}");
         for (name, contents) in entries {
@@ -1738,8 +1734,7 @@ mod extraction_tests {
         let target = tmp.path().join("archive");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("keep.txt"), "keep").unwrap();
-        let message = extract(&archive);
-        assert!(message.starts_with("Error"), "{message}");
+        assert!(extract(&archive).is_err());
         assert_eq!(fs::read_to_string(target.join("keep.txt")).unwrap(), "keep");
         assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
     }
@@ -1749,7 +1744,7 @@ mod extraction_tests {
         let tmp = tempfile::tempdir().unwrap();
         let archive = tmp.path().join("archive.zip");
         write_zip(&archive, &[("../evil.txt", "evil"), ("good.txt", "good")]);
-        let message = extract(&archive);
+        let message = extract(&archive).unwrap();
         assert!(message.contains("Extracted 1 entries"), "{message}");
         assert!(!tmp.path().join("evil.txt").exists());
         assert_eq!(
@@ -1766,7 +1761,7 @@ mod extraction_tests {
             &archive,
             &[("sub", "original"), ("sub/child.txt", "blocked")],
         );
-        let message = extract(&archive);
+        let message = extract(&archive).unwrap_err();
         assert!(message.contains("1 entries"), "{message}");
         assert!(message.contains("1 failed"), "{message}");
         assert_eq!(
@@ -1792,11 +1787,11 @@ mod extraction_tests {
         let target = tmp.path().join("archive");
         for link_target in [&outside, &tmp.path().join("missing")] {
             symlink(link_target, &target).unwrap();
-            assert!(extract(&archive).starts_with("Error"));
+            assert!(extract(&archive).is_err());
             assert_eq!(fs::read_link(&target).unwrap(), *link_target);
             fs::remove_file(&target).unwrap();
         }
-        let message = extract(&archive);
+        let message = extract(&archive).unwrap_err();
         assert!(message.contains("1 failed"), "{message}");
         assert!(fs::symlink_metadata(target.join("link")).is_err());
         assert_eq!(
@@ -1824,7 +1819,7 @@ mod extraction_tests {
         let mode = u32::from_le_bytes(bytes[attrs..attrs + 4].try_into().unwrap()) | 0o4000 << 16;
         bytes[attrs..attrs + 4].copy_from_slice(&mode.to_le_bytes());
         fs::write(&archive, bytes).unwrap();
-        let message = extract(&archive);
+        let message = extract(&archive).unwrap();
         assert!(message.contains("Extracted 1 entries"), "{message}");
         let mode = fs::metadata(tmp.path().join("archive/tool"))
             .unwrap()
