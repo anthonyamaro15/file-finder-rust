@@ -648,11 +648,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // File chosen with Enter, handled after the terminal is restored
     let mut selected_file: Option<String> = None;
 
-    // Request initial preview for the first file
-    if let Some(path) = app.get_selected_path(Some(0)) {
-        app.request_preview(path);
-    }
-
     // Main loop
     loop {
         // Update status bar with current app state
@@ -1558,6 +1553,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|last_index| selected_index.unwrap_or(0).min(last_index));
         state.select(valid_index);
         app.curr_index = valid_index;
+        // Keep the preview on the selected item, however the selection changed.
+        if app.sync_preview_with_selection(valid_index) {
+            file_reader_content.file_type = FileType::NotAvailable;
+            file_reader_content.hightlighted_content = None;
+            file_reader_content.curr_selected_path.clear();
+            image_renderer.clear();
+        }
 
         // Handle input with timeout for dynamic progress updates
         let timeout = std::time::Duration::from_millis(100); // 100ms timeout
@@ -1598,11 +1600,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         {
                                             state.select(Some(i));
                                             app.curr_index = Some(i);
-
-                                            // Request debounced preview update
-                                            if let Some(path) = app.get_selected_path(Some(i)) {
-                                                app.request_preview(path);
-                                            }
                                         }
                                     }
                                 }
@@ -1618,11 +1615,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         {
                                             state.select(Some(i));
                                             app.curr_index = Some(i);
-
-                                            // Request debounced preview update
-                                            if let Some(path) = app.get_selected_path(Some(i)) {
-                                                app.request_preview(path);
-                                            }
                                         }
                                     }
                                 }
@@ -1979,20 +1971,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('y') => {
-                                    let curr_file_path =
-                                        file_reader_content.curr_selected_path.clone();
-                                    let file_type = file_reader_content
-                                        .get_file_extension(curr_file_path.clone());
-                                    match file_type {
-                                        FileType::ZIP => {
-                                            match file_reader_content.extract_zip_content() {
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
+                                        let file_type = file_reader_content
+                                            .get_file_extension(selected.clone());
+                                        if let FileType::ZIP = file_type {
+                                            match FileContent::extract_zip_content(&selected) {
                                                 Ok(message) => status_bar.show_info(message, None),
                                                 Err(message) => {
                                                     status_bar.show_error(message, None)
                                                 }
                                             }
                                         }
-                                        _ => {}
                                     }
                                 }
                                 KeyCode::Char('r') => {
