@@ -18,6 +18,12 @@ fn refresh_root_search(app: &mut App, store: &DirectoryStore) {
 pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStore) {
     match key_code {
         KeyCode::Enter => app.submit_message(),
+        // Leading space or slash in a local search jumps to root search (pre-keymap behavior).
+        KeyCode::Char(' ' | '/')
+            if app.search_scope == SearchScope::CurrentDirectory && app.input.is_empty() =>
+        {
+            app.enter_search(SearchScope::Root);
+        }
         KeyCode::Char(to_insert) => {
             if app.search_scope == SearchScope::Root {
                 app.insert_char_without_filter(to_insert);
@@ -65,5 +71,52 @@ mod tests {
         assert_eq!(app.input, "s");
         assert_eq!(app.search_results.len(), 1);
         assert_eq!(app.search_results[0].file_path, "/workspace/project/src");
+    }
+
+    fn assert_prefix_switches_to_root_search(prefix: char) {
+        let mut app = App::new(Vec::new());
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::CurrentDirectory);
+        handle_search_key(&mut app, KeyCode::Char(prefix), &store);
+
+        assert_eq!(app.search_scope, SearchScope::Root);
+        assert!(app.global_search_mode);
+        assert_eq!(app.input, "");
+        assert_eq!(app.character_index, 0);
+
+        handle_search_key(&mut app, KeyCode::Char('s'), &store);
+
+        assert_eq!(app.input, "s");
+        assert_eq!(app.character_index, 1);
+        assert_eq!(app.search_results.len(), 1);
+        assert_eq!(app.search_results[0].file_path, "/workspace/project/src");
+    }
+
+    #[test]
+    fn leading_space_in_local_search_switches_to_root_search() {
+        assert_prefix_switches_to_root_search(' ');
+    }
+
+    #[test]
+    fn leading_slash_in_local_search_switches_to_root_search() {
+        assert_prefix_switches_to_root_search('/');
+    }
+
+    #[test]
+    fn space_after_text_in_local_search_stays_local() {
+        let mut app = App::new(Vec::new());
+        let store = DirectoryStore::new();
+
+        app.enter_search(SearchScope::CurrentDirectory);
+        for c in "foo bar".chars() {
+            handle_search_key(&mut app, KeyCode::Char(c), &store);
+        }
+
+        assert_eq!(app.search_scope, SearchScope::CurrentDirectory);
+        assert!(!app.global_search_mode);
+        assert_eq!(app.input, "foo bar");
+        assert_eq!(app.character_index, 7);
     }
 }

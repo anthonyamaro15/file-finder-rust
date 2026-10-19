@@ -197,6 +197,8 @@ For files, the path is copied to your clipboard.
 | `Esc`          | Exit search mode            |
 | `Space` + `/`  | Root search (entire cache)  |
 
+Starting a current-directory search with a space or `/` (e.g. `i` then ` foo`) also switches to root search.
+
 The `?` help popup reflects configured search keybindings.
 
 ### 📁 File Operations

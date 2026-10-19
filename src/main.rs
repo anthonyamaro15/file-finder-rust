@@ -56,9 +56,10 @@ use file_finder::{
         handle_delete_based_on_type, handle_rename, CopyMessage, DeleteMessage,
     },
     render::{
-        create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
-        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, input_popup_cursor_position, split_popup_area_vertical,
+        configured_action_key_labels, create_cache_loading_screen, create_create_input_popup,
+        create_delete_confirmation_popup, create_keybindings_popup, create_rename_input_popup,
+        create_sort_options_popup, draw_input_popup, draw_popup, input_popup_cursor_position,
+        split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
@@ -565,6 +566,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.print_path = effective_config.print_path;
 
     let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
+    let root_search_keys = configured_action_key_labels(&settings.keymap, Action::SearchRoot);
+    let find_hint = match root_search_keys.first() {
+        Some(root_key) => format!(" find (i)  global ({})", root_key),
+        None => " find (i)".to_string(),
+    };
 
     let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         match load_directory_from_file(&settings.cache_directory.to_owned()) {
@@ -901,7 +907,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else if !app.input.is_empty() {
                         " [Local Search]".bold()
                     } else {
-                        " find (i)".bold()
+                        find_hint.as_str().bold()
                     };
                     (
                         vec![
