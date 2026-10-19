@@ -606,7 +606,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
     if let Some(notice) = effective_config.start_notice {
-        status_bar.show_error(notice, None);
+        status_bar.show_warning(notice, None);
     }
 
     debug!("{:?}", widgets_ui.files_list);
@@ -1884,7 +1884,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     } else {
                                                         app.right_pane.refresh_files();
                                                     }
-                                                    status_bar.show_error(
+                                                    status_bar.show_info(
                                                         format!(
                                                             "Copied '{}' to other pane",
                                                             src_name
@@ -1960,7 +1960,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                         }
                                                     }
 
-                                                    status_bar.show_error(
+                                                    status_bar.show_info(
                                                         format!(
                                                             "Moved '{}' to other pane",
                                                             src_name
