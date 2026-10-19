@@ -263,7 +263,7 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
     ]
 }
 
-fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> Vec<String> {
+pub fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> Vec<String> {
     let mut key_labels: Vec<(bool, String)> = keymap
         .normal
         .iter()
