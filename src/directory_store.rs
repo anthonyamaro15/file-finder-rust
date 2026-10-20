@@ -1,5 +1,6 @@
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter};
 use std::sync::{
@@ -7,7 +8,6 @@ use std::sync::{
     mpsc, Arc, Mutex,
 };
 use std::thread;
-use walkdir::WalkDir;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct DirectoryStore {
@@ -36,38 +36,8 @@ impl DirectoryStore {
     }
 }
 
-/// Legacy implementation using walkdir for benchmarking comparison
-pub fn build_directory_from_store_walkdir(
-    root_dir: &str,
-    ignore_directories: Vec<String>,
-) -> DirectoryStore {
-    let mut store = DirectoryStore::new();
-
-    for entry in WalkDir::new(root_dir).min_depth(1) {
-        if let Ok(entry) = entry {
-            if entry.file_type().is_dir() {
-                let path = entry.path().to_string_lossy();
-                let mut should_ignore = false;
-
-                if !ignore_directories.is_empty() {
-                    for ignore in ignore_directories.iter() {
-                        if path.contains(ignore) {
-                            should_ignore = true;
-                            break;
-                        }
-                    }
-                }
-
-                if !should_ignore {
-                    // Skip paths that aren't valid UTF-8
-                    if let Some(path_str) = entry.path().to_str() {
-                        store.insert(path_str);
-                    }
-                }
-            }
-        }
-    }
-    store
+fn is_ignored(name: &OsStr, ignore_lower: &[String]) -> bool {
+    ignore_lower.contains(&name.to_string_lossy().to_lowercase())
 }
 
 /// New implementation using ignore::WalkBuilder (gitignore-aware, early pruning)
@@ -92,12 +62,8 @@ pub fn build_directory_from_store_ignore(
         .ignore(true)
         .max_depth(None);
 
-    // Early pruning based on configured ignore substrings
-    let ignore_lower_clone = ignore_lower.clone();
-    builder.filter_entry(move |e| {
-        let p = e.path().to_string_lossy().to_lowercase();
-        !ignore_lower_clone.iter().any(|ig| p.contains(ig))
-    });
+    // Prune exact folder names while always walking the root itself.
+    builder.filter_entry(move |e| e.depth() == 0 || !is_ignored(e.file_name(), &ignore_lower));
 
     for result in builder.build() {
         match result {
@@ -185,12 +151,7 @@ pub fn build_directory_from_store_async(
             .max_depth(None)
             .threads(num_cpus::get());
 
-        let ignore_lower_arc = Arc::new(ignore_lower);
-        let ignore_filter = ignore_lower_arc.clone();
-        builder.filter_entry(move |e| {
-            let p = e.path().to_string_lossy().to_lowercase();
-            !ignore_filter.iter().any(|ig| p.contains(ig))
-        });
+        builder.filter_entry(move |e| e.depth() == 0 || !is_ignored(e.file_name(), &ignore_lower));
 
         let walker = builder.build_parallel();
         let tx_progress = tx.clone();

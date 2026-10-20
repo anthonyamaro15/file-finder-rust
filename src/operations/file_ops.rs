@@ -352,6 +352,26 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
 
 /// Cross-device fallback: remove the source only after a successful copy.
 fn copy_then_delete(src: &Path, dest: &Path) -> FileOperationResult<()> {
+    // Copying skips special files, so reject them before creating a destination
+    // that would otherwise lead to deleting the uncopied source entries.
+    for entry in WalkDir::new(src)
+        .follow_links(false)
+        .follow_root_links(false)
+        .min_depth(1)
+    {
+        let entry = entry.map_err(|e| FileOperationError::Io {
+            message: e.to_string(),
+        })?;
+        let file_type = entry.file_type();
+        if !file_type.is_dir() && !file_type.is_file() && !file_type.is_symlink() {
+            return Err(FileOperationError::UnsupportedOperation {
+                operation: "Moving a folder containing special files (sockets, pipes, devices) to another drive"
+                    .to_string(),
+                path: entry.path().display().to_string(),
+            });
+        }
+    }
+
     copy_dir_file_helper(src, dest).map_err(|e| FileOperationError::Io {
         message: e.to_string(),
     })?;
@@ -524,6 +544,59 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(locked.join("keep")).unwrap(), "keep");
         assert!(!src.join("removable").exists());
+    }
+
+    #[test]
+    fn copy_then_delete_rejects_special_files_before_copying() {
+        use std::os::unix::fs::FileTypeExt;
+        use std::os::unix::net::UnixListener;
+
+        let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        let file = src.join("keep.txt");
+        fs::write(&file, "keep").unwrap();
+        let socket = src.join("nested/socket");
+        let _listener = UnixListener::bind(&socket).unwrap();
+
+        let error = copy_then_delete(&src, &dest).unwrap_err();
+
+        match error {
+            FileOperationError::UnsupportedOperation { path, .. } => {
+                assert_eq!(Path::new(&path), socket);
+            }
+            other => panic!("Expected an unsupported operation error, got {other}"),
+        }
+        assert!(src.is_dir());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep");
+        assert!(fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket());
+        assert!(fs::symlink_metadata(&dest).is_err());
+    }
+
+    #[test]
+    fn copy_then_delete_moves_regular_directory_contents() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("file.txt"), "top level").unwrap();
+        fs::write(src.join("nested/child.txt"), "nested content").unwrap();
+
+        copy_then_delete(&src, &dest).unwrap();
+
+        assert!(!src.exists());
+        assert_eq!(
+            fs::read_to_string(dest.join("file.txt")).unwrap(),
+            "top level"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.join("nested/child.txt")).unwrap(),
+            "nested content"
+        );
     }
 
     #[test]
