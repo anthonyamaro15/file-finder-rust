@@ -184,6 +184,75 @@ mod directory_store_file_operations_tests {
 #[cfg(test)]
 mod build_directory_store_tests {
     use super::*;
+    use file_finder::directory_store::{build_directory_from_store_async, CacheBuildProgress};
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn build_stores(root: &Path, ignored: &[&str]) -> [DirectoryStore; 2] {
+        let root = root.to_str().unwrap();
+        let ignored: Vec<String> = ignored.iter().map(|name| name.to_string()).collect();
+        let sync_store = build_directory_from_store(root, ignored.clone());
+        let receiver = build_directory_from_store_async(root.to_string(), ignored);
+        let async_store = loop {
+            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+                CacheBuildProgress::Completed { store } => break store,
+                CacheBuildProgress::Error(message) => panic!("{message}"),
+                CacheBuildProgress::Progress { .. } => {}
+            }
+        };
+        [sync_store, async_store]
+    }
+
+    #[test]
+    fn test_ignore_entries_match_only_folder_names() {
+        let temp_dir = tempdir().unwrap();
+        // An ancestor containing an ignored name must not affect this walk.
+        let root = temp_dir.path().join("target-ancestor/project");
+        for name in ["target", "Obj", "targets", "my-target-notes", "objects"] {
+            fs::create_dir_all(root.join(name).join("child")).unwrap();
+        }
+
+        for ignored in [["target", "obj"], ["TARGET", "OBJ"]] {
+            for store in build_stores(&root, &ignored) {
+                let mut directories: Vec<_> = store
+                    .directories
+                    .iter()
+                    .map(|path| Path::new(path).strip_prefix(&root).unwrap())
+                    .collect();
+                directories.sort();
+                assert_eq!(
+                    directories,
+                    [
+                        "my-target-notes",
+                        "my-target-notes/child",
+                        "objects",
+                        "objects/child",
+                        "targets",
+                        "targets/child",
+                    ]
+                    .map(Path::new)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ignore_entries_never_prune_walk_root() {
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path().join("src");
+        fs::create_dir_all(root.join("child/nested")).unwrap();
+        fs::create_dir_all(root.join("src/ignored")).unwrap();
+
+        for store in build_stores(&root, &["src"]) {
+            let mut directories: Vec<_> = store
+                .directories
+                .iter()
+                .map(|path| Path::new(path).strip_prefix(&root).unwrap())
+                .collect();
+            directories.sort();
+            assert_eq!(directories, ["child", "child/nested"].map(Path::new));
+        }
+    }
 
     #[test]
     fn test_build_directory_from_store_basic() {
