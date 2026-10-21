@@ -110,6 +110,94 @@ fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
     }
 }
 
+/// Drain copy updates, report terminal results, and return whether a copy succeeded.
+fn poll_copy_messages(
+    app: &mut App,
+    status_bar: &mut StatusBar,
+    receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+) -> bool {
+    let Some(rx) = receiver.as_ref() else {
+        return false;
+    };
+    // Coalesce progress updates, but never discard a terminal result.
+    let mut last_message = None;
+    loop {
+        match rx.try_recv() {
+            Ok(message) => {
+                let finished = !matches!(message, CopyMessage::Progress { .. });
+                last_message = Some(message);
+                if finished {
+                    break;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                last_message = Some(CopyMessage::Error(
+                    "Copy stopped unexpectedly before reporting a result".into(),
+                ));
+                break;
+            }
+        }
+    }
+
+    let success = match last_message {
+        None => return false,
+        Some(CopyMessage::Progress {
+            files_processed,
+            total_files,
+            bytes_copied,
+            total_bytes,
+            current_file,
+        }) => {
+            app.copy_files_processed = files_processed;
+            app.copy_total_files = total_files;
+            let percent = if total_bytes > 0 {
+                (bytes_copied as f64 / total_bytes as f64 * 100.0) as u8
+            } else {
+                0
+            };
+            app.copy_progress_message = format!(
+                "Copying: {} ({}% - {} / {})",
+                current_file,
+                percent,
+                format_file_size(bytes_copied),
+                format_file_size(total_bytes),
+            );
+            return false;
+        }
+        Some(CopyMessage::Completed {
+            success,
+            message,
+            skipped_special_files,
+        }) => {
+            if success {
+                debug!("Copy completed: {}", message);
+                if skipped_special_files > 0 {
+                    status_bar.show_warning(message, None);
+                } else {
+                    status_bar.show_info(message, None);
+                }
+            } else {
+                warn!("Copy failed: {}", message);
+                status_bar.show_error(message, None);
+            }
+            success
+        }
+        Some(CopyMessage::Error(message)) => {
+            warn!("Copy operation failed: {}", message);
+            status_bar.show_error(message, None);
+            false
+        }
+    };
+
+    app.copy_in_progress = false;
+    app.copy_progress_message.clear();
+    app.copy_files_processed = 0;
+    app.copy_total_files = 0;
+    *receiver = None;
+    success
+}
+
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
 /// with fallback to Unicode halfblocks for unsupported terminals.
 struct ImageRenderer {
@@ -1284,89 +1372,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Restore right pane list state after drawing (preserves scroll position)
         app.right_pane.list_state = right_pane_list_state;
 
-        // Handle copy progress messages
-        if let Some(ref rx) = copy_receiver {
-            // Drain all pending messages so we only render the most recent state.
-            // This avoids a huge backlog of progress updates that would otherwise
-            // make the UI appear to take minutes for large trees.
-            let mut last_msg: Option<CopyMessage> = None;
-            loop {
-                match rx.try_recv() {
-                    Ok(msg) => last_msg = Some(msg),
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        // Channel closed - process any final message we received, then clean up
-                        copy_receiver = None;
-                        break;
-                    }
-                }
-            }
-
-            if let Some(msg) = last_msg {
-                match msg {
-                    CopyMessage::Progress {
-                        files_processed,
-                        total_files,
-                        bytes_copied,
-                        total_bytes,
-                        current_file,
-                    } => {
-                        app.copy_files_processed = files_processed;
-                        app.copy_total_files = total_files;
-                        // Show byte-based progress
-                        let percent = if total_bytes > 0 {
-                            (bytes_copied as f64 / total_bytes as f64 * 100.0) as u8
-                        } else {
-                            0
-                        };
-                        let copied_str = format_file_size(bytes_copied);
-                        let total_str = format_file_size(total_bytes);
-                        app.copy_progress_message = format!(
-                            "Copying: {} ({}% - {} / {})",
-                            current_file, percent, copied_str, total_str
-                        );
-                    }
-                    CopyMessage::Completed { success, message } => {
-                        if success {
-                            debug!("Copy completed: {}", message);
-
-                            // Refresh file lists to show the copied item in the CURRENT directory
-                            let refresh_dir = current_refresh_directory(
-                                &app,
-                                &startup_paths.refresh_fallback_path,
-                            );
-
-                            if let Ok(file_path_list) = get_file_path_data(
-                                refresh_dir,
-                                app.show_hidden_files,
-                                app.sort_by.clone(),
-                                &app.sort_type,
-                            ) {
-                                app.refresh_files_after_operation(file_path_list, &mut state);
-                                status_bar.invalidate_cache();
-                            }
-                        } else {
-                            warn!("Copy failed: {}", message);
-                        }
-
-                        // Reset copy state
-                        app.copy_in_progress = false;
-                        app.copy_progress_message.clear();
-                        app.copy_files_processed = 0;
-                        app.copy_total_files = 0;
-                        copy_receiver = None;
-                    }
-                    CopyMessage::Error(error_msg) => {
-                        warn!("Copy operation failed: {}", error_msg);
-
-                        // Reset copy state
-                        app.copy_in_progress = false;
-                        app.copy_progress_message = format!("Copy failed: {}", error_msg);
-                        app.copy_files_processed = 0;
-                        app.copy_total_files = 0;
-                        copy_receiver = None;
-                    }
-                }
+        // A successful copy returns to the current directory's refreshed listing.
+        if poll_copy_messages(&mut app, &mut status_bar, &mut copy_receiver) {
+            let refresh_dir = current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
+            if let Ok(files) = get_file_path_data(
+                refresh_dir,
+                app.show_hidden_files,
+                app.sort_by.clone(),
+                &app.sort_type,
+            ) {
+                app.refresh_files_after_operation(files, &mut state);
+                status_bar.invalidate_cache();
             }
         }
 
@@ -2285,7 +2301,132 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use file_finder::status_bar::NotificationKind;
     use std::path::PathBuf;
+
+    fn running_copy_app() -> App {
+        let mut app = App::new(Vec::new());
+        app.copy_in_progress = true;
+        app.copy_progress_message = "Copying...".into();
+        app.copy_files_processed = 2;
+        app.copy_total_files = 10;
+        app
+    }
+
+    fn assert_copy_finished(app: &App, receiver: &Option<mpsc::Receiver<CopyMessage>>) {
+        assert!(!app.copy_in_progress);
+        assert!(app.copy_progress_message.is_empty());
+        assert_eq!(app.copy_files_processed, 0);
+        assert_eq!(app.copy_total_files, 0);
+        assert!(receiver.is_none());
+    }
+
+    fn copy_progress() -> CopyMessage {
+        CopyMessage::Progress {
+            files_processed: 3,
+            total_files: 10,
+            bytes_copied: 30,
+            total_bytes: 100,
+            current_file: "data.txt".into(),
+        }
+    }
+
+    #[test]
+    fn copy_completion_notifies_with_severity_from_skipped_count() {
+        for (skipped_special_files, kind) in
+            [(0, NotificationKind::Info), (2, NotificationKind::Warning)]
+        {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(copy_progress()).unwrap();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: "Copied 'data' to 'copy_data'".into(),
+                skipped_special_files,
+            })
+            .unwrap();
+            // Even a late progress update must not hide the final result.
+            tx.send(copy_progress()).unwrap();
+            drop(tx);
+            let mut receiver = Some(rx);
+
+            assert!(poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert!(status.has_error());
+            assert_eq!(status.notification_kind, kind);
+            assert!(status
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("copy_data"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_failures_notify_with_reason_and_clear_progress() {
+        for message in [
+            CopyMessage::Error("permission denied".into()),
+            CopyMessage::Completed {
+                success: false,
+                message: "permission denied".into(),
+                skipped_special_files: 0,
+            },
+        ] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(message).unwrap();
+            let mut receiver = Some(rx);
+
+            assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(status.notification_kind, NotificationKind::Error);
+            assert_eq!(status.error_message.as_deref(), Some("permission denied"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_disconnect_without_result_reports_error_even_after_progress() {
+        for send_progress in [false, true] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            if send_progress {
+                tx.send(copy_progress()).unwrap();
+            }
+            drop(tx);
+            let mut receiver = Some(rx);
+
+            assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(status.notification_kind, NotificationKind::Error);
+            assert!(status
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("Copy stopped unexpectedly"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_progress_and_empty_channel_keep_copy_running() {
+        let mut app = running_copy_app();
+        let mut status = StatusBar::new();
+        let (tx, rx) = mpsc::channel();
+        let mut receiver = Some(rx);
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert!(app.copy_in_progress);
+
+        tx.send(copy_progress()).unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert_eq!(app.copy_files_processed, 3);
+        assert_eq!(app.copy_total_files, 10);
+        assert!(app.copy_progress_message.contains("30%"));
+        assert!(app.copy_in_progress);
+        assert!(receiver.is_some());
+        assert!(!status.has_error());
+    }
 
     #[test]
     fn system_opener_matches_platform() {

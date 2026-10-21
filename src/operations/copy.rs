@@ -23,6 +23,7 @@ pub enum CopyMessage {
     Completed {
         success: bool,
         message: String,
+        skipped_special_files: usize,
     },
     Error(String),
 }
@@ -341,23 +342,29 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
         // Send completion message
         match result {
             Ok(skipped) => {
-                let mut message = format!("Successfully copied to {}", new_src.display());
-                match skipped.as_slice() {
-                    [] => {}
-                    [only] => {
-                        message += &format!(" (skipped 1 special file: {})", only.path().display())
-                    }
-                    [first, ..] => {
-                        message += &format!(
-                            " (skipped {} special files, first: {})",
-                            skipped.len(),
-                            first.path().display()
-                        )
+                let skipped_special_files = skipped.len();
+                let mut message = format!(
+                    "Copied '{}' to '{}'",
+                    src.file_name().unwrap_or(src.as_os_str()).to_string_lossy(),
+                    new_src
+                        .file_name()
+                        .unwrap_or(new_src.as_os_str())
+                        .to_string_lossy(),
+                );
+                if skipped_special_files > 0 {
+                    message += &format!(
+                        " (skipped {} special file{}: sockets/pipes/devices)",
+                        skipped_special_files,
+                        if skipped_special_files == 1 { "" } else { "s" },
+                    );
+                    for entry in skipped {
+                        warn!("Skipping special file: {}", entry.path().display());
                     }
                 }
                 let _ = tx.send(CopyMessage::Completed {
                     success: true,
                     message,
+                    skipped_special_files,
                 });
             }
             Err(e) => {
@@ -489,14 +496,18 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<String, String> {
+    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<(String, usize), String> {
         // Wait up to 5 seconds for completion
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(CopyMessage::Completed { success, message }) => {
+                Ok(CopyMessage::Completed {
+                    success,
+                    message,
+                    skipped_special_files,
+                }) => {
                     if success {
-                        return Ok(message);
+                        return Ok((message, skipped_special_files));
                     }
                     return Err(format!("Copy failed: {}", message));
                 }
@@ -526,7 +537,12 @@ mod tests {
         let dst_file = tmp.path().join("out.txt");
 
         let rx = copy_dir_file_with_progress(&src_file, &dst_file);
-        drain_until_complete(rx).expect("copy should complete");
+        let (message, skipped) = drain_until_complete(rx).expect("copy should complete");
+        assert_eq!(skipped, 0);
+        assert!(
+            message.contains("a.txt") && message.contains("out.txt"),
+            "{message}"
+        );
 
         let out = std::fs::read(&dst_file).unwrap();
         assert_eq!(out, b"hello");
@@ -615,7 +631,9 @@ mod tests {
                             final_progress = Some((bytes_copied, total_bytes));
                         }
                     }
-                    CopyMessage::Completed { success, message } => {
+                    CopyMessage::Completed {
+                        success, message, ..
+                    } => {
                         assert!(success, "{message}");
                         break;
                     }
@@ -717,12 +735,10 @@ mod tests {
         let sync_dst = tmp.path().join("sync");
         copy_dir_file_helper(&src, &sync_dst).unwrap();
         let async_dst = tmp.path().join("async");
-        let message = drain_until_complete(copy_dir_file_with_progress(&src, &async_dst)).unwrap();
-        assert!(
-            message.contains("skipped 1 special file: ")
-                && message.contains("fsmonitor--daemon.ipc"),
-            "{message}"
-        );
+        let (message, skipped) =
+            drain_until_complete(copy_dir_file_with_progress(&src, &async_dst)).unwrap();
+        assert_eq!(skipped, 1);
+        assert!(message.contains("skipped 1 special file:"), "{message}");
 
         for dst in [&sync_dst, &async_dst] {
             assert_eq!(
