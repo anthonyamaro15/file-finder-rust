@@ -42,8 +42,8 @@ use file_finder::{
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
     event::{
         file_actions::{
-            containing_directory, containing_directory_or_current, create_target_directory,
-            refresh_file_list, rename_target,
+            containing_directory_or_current, create_target_directory, refresh_file_list,
+            rename_target,
         },
         keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
@@ -1971,30 +1971,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('.') => {
-                                    let is_hidden = !app.show_hidden_files;
-                                    app.show_hidden_files = is_hidden;
-                                    if let Some(selected) = app.get_selected_path(state.selected())
-                                    {
-                                        let new_path = containing_directory(Path::new(&selected))
-                                            .to_string_lossy()
-                                            .to_string();
-                                        match get_inner_files_info(
-                                            new_path,
-                                            is_hidden,
-                                            app.sort_by.clone(),
-                                            &app.sort_type,
-                                        ) {
-                                            Ok(files) => {
-                                                if let Some(file_strs) = files {
-                                                    app.read_only_files = file_strs.clone();
-                                                    app.files = file_strs;
-                                                    app.update_file_references();
-                                                }
-                                            }
-                                            Err(e) => {
-                                                println!("error  {}", e);
-                                            }
+                                    app.show_hidden_files = !app.show_hidden_files;
+                                    // Refresh the browsed directory (even when it's empty or a
+                                    // global result is highlighted), keeping any search filter.
+                                    let refresh_dir = current_refresh_directory(
+                                        &app,
+                                        &startup_paths.refresh_fallback_path,
+                                    );
+                                    match get_file_path_data(
+                                        refresh_dir,
+                                        app.show_hidden_files,
+                                        app.sort_by.clone(),
+                                        &app.sort_type,
+                                    ) {
+                                        Ok(files) => {
+                                            app.refresh_files_from_watcher(files, &mut state);
+                                            status_bar.invalidate_cache();
                                         }
+                                        Err(e) => status_bar.show_error(
+                                            format!("Could not refresh the listing: {e}"),
+                                            None,
+                                        ),
                                     }
                                 }
                                 KeyCode::Char('c') => {
