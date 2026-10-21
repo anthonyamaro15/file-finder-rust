@@ -23,6 +23,7 @@ pub enum CopyMessage {
     Completed {
         success: bool,
         message: String,
+        skipped_special_files: usize,
     },
     Error(String),
 }
@@ -69,12 +70,63 @@ fn split_special_files(entries: Vec<DirEntry>) -> (Vec<DirEntry>, Vec<DirEntry>)
     })
 }
 
+/// Apply directory modes only after contents are copied, with parents last.
+fn preserve_directory_permissions(
+    src: &Path,
+    dest: &Path,
+    entries: &[DirEntry],
+) -> anyhow::Result<()> {
+    let mut directories: Vec<_> = entries.iter().filter(|e| e.file_type().is_dir()).collect();
+    directories.sort_by_key(|entry| std::cmp::Reverse(entry.depth()));
+    for entry in directories {
+        let destination = dest.join(entry.path().strip_prefix(src)?);
+        let permissions = entry.metadata()?.permissions();
+        fs::set_permissions(&destination, permissions).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to set permissions on directory '{}': {}",
+                destination.display(),
+                error
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Best-effort access restoration for cleanup, without following any symlinks.
+fn make_directories_writable(root: &Path) {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        let mut permissions = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o700);
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(&path, permissions);
+        // Read children after restoring access, including directories with mode 000.
+        if let Ok(children) = fs::read_dir(&path) {
+            pending.extend(children.flatten().map(|entry| entry.path()));
+        }
+    }
+}
+
 /// Remove a destination that did not exist before this failed copy.
 /// `remove_dir_all` doesn't follow symlinks, so links we created inside are
 /// removed without touching their targets.
 fn remove_partial_copy(dest: &Path, error: anyhow::Error) -> anyhow::Error {
     let removed = match fs::symlink_metadata(dest) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(dest),
+        Ok(metadata) if metadata.is_dir() => {
+            make_directories_writable(dest);
+            fs::remove_dir_all(dest)
+        }
         Ok(_) => fs::remove_file(dest),
         Err(e) if e.kind() == ErrorKind::NotFound => return error,
         Err(e) => Err(e),
@@ -191,6 +243,7 @@ fn copy_to_new_destination(
 
             Ok::<(), io::Error>(())
         })?;
+        preserve_directory_permissions(src, new_src, &entries)?;
     } else {
         return Err(anyhow::anyhow!(
             "Source is neither a file nor a directory: {}",
@@ -341,23 +394,29 @@ pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver
         // Send completion message
         match result {
             Ok(skipped) => {
-                let mut message = format!("Successfully copied to {}", new_src.display());
-                match skipped.as_slice() {
-                    [] => {}
-                    [only] => {
-                        message += &format!(" (skipped 1 special file: {})", only.path().display())
-                    }
-                    [first, ..] => {
-                        message += &format!(
-                            " (skipped {} special files, first: {})",
-                            skipped.len(),
-                            first.path().display()
-                        )
+                let skipped_special_files = skipped.len();
+                let mut message = format!(
+                    "Copied '{}' to '{}'",
+                    src.file_name().unwrap_or(src.as_os_str()).to_string_lossy(),
+                    new_src
+                        .file_name()
+                        .unwrap_or(new_src.as_os_str())
+                        .to_string_lossy(),
+                );
+                if skipped_special_files > 0 {
+                    message += &format!(
+                        " (skipped {} special file{}: sockets/pipes/devices)",
+                        skipped_special_files,
+                        if skipped_special_files == 1 { "" } else { "s" },
+                    );
+                    for entry in skipped {
+                        warn!("Skipping special file: {}", entry.path().display());
                     }
                 }
                 let _ = tx.send(CopyMessage::Completed {
                     success: true,
                     message,
+                    skipped_special_files,
                 });
             }
             Err(e) => {
@@ -481,6 +540,7 @@ fn copy_dir_with_progress(
             })
     })?;
 
+    preserve_directory_permissions(src, new_src, &dirs)?;
     Ok(special)
 }
 
@@ -489,14 +549,18 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<String, String> {
+    fn drain_until_complete(rx: mpsc::Receiver<CopyMessage>) -> Result<(String, usize), String> {
         // Wait up to 5 seconds for completion
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
-                Ok(CopyMessage::Completed { success, message }) => {
+                Ok(CopyMessage::Completed {
+                    success,
+                    message,
+                    skipped_special_files,
+                }) => {
                     if success {
-                        return Ok(message);
+                        return Ok((message, skipped_special_files));
                     }
                     return Err(format!("Copy failed: {}", message));
                 }
@@ -526,7 +590,12 @@ mod tests {
         let dst_file = tmp.path().join("out.txt");
 
         let rx = copy_dir_file_with_progress(&src_file, &dst_file);
-        drain_until_complete(rx).expect("copy should complete");
+        let (message, skipped) = drain_until_complete(rx).expect("copy should complete");
+        assert_eq!(skipped, 0);
+        assert!(
+            message.contains("a.txt") && message.contains("out.txt"),
+            "{message}"
+        );
 
         let out = std::fs::read(&dst_file).unwrap();
         assert_eq!(out, b"hello");
@@ -615,7 +684,9 @@ mod tests {
                             final_progress = Some((bytes_copied, total_bytes));
                         }
                     }
-                    CopyMessage::Completed { success, message } => {
+                    CopyMessage::Completed {
+                        success, message, ..
+                    } => {
                         assert!(success, "{message}");
                         break;
                     }
@@ -717,12 +788,10 @@ mod tests {
         let sync_dst = tmp.path().join("sync");
         copy_dir_file_helper(&src, &sync_dst).unwrap();
         let async_dst = tmp.path().join("async");
-        let message = drain_until_complete(copy_dir_file_with_progress(&src, &async_dst)).unwrap();
-        assert!(
-            message.contains("skipped 1 special file: ")
-                && message.contains("fsmonitor--daemon.ipc"),
-            "{message}"
-        );
+        let (message, skipped) =
+            drain_until_complete(copy_dir_file_with_progress(&src, &async_dst)).unwrap();
+        assert_eq!(skipped, 1);
+        assert!(message.contains("skipped 1 special file:"), "{message}");
 
         for dst in [&sync_dst, &async_dst] {
             assert_eq!(
@@ -766,5 +835,106 @@ mod tests {
             fs::read_to_string(locked.join("inner.txt")).unwrap(),
             "inner"
         );
+    }
+
+    #[cfg(unix)]
+    fn check_copy_preserves_directory_permissions(asynchronous: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dst = tmp.path().join("copy");
+        let directories = [
+            ("", 0o700),
+            ("private", 0o700),
+            ("read_only", 0o555),
+            ("read_only/nested", 0o755),
+        ];
+        for (relative, _) in directories {
+            fs::create_dir_all(src.join(relative)).unwrap();
+        }
+        fs::write(src.join("read_only/inner.txt"), "read-only contents").unwrap();
+        fs::write(src.join("read_only/nested/deep.txt"), "nested contents").unwrap();
+        for (relative, mode) in directories {
+            fs::set_permissions(src.join(relative), fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        let result = if asynchronous {
+            drain_until_complete(copy_dir_file_with_progress(&src, &dst)).map(|_| ())
+        } else {
+            copy_dir_file_helper(&src, &dst).map_err(|error| error.to_string())
+        };
+        let modes: Vec<_> = directories
+            .iter()
+            .map(|(relative, _)| {
+                let source =
+                    fs::metadata(src.join(relative)).map(|m| m.permissions().mode() & 0o7777);
+                let copied =
+                    fs::metadata(dst.join(relative)).map(|m| m.permissions().mode() & 0o7777);
+                (source, copied)
+            })
+            .collect();
+        let content = fs::read_to_string(dst.join("read_only/inner.txt"));
+        let nested_content = fs::read_to_string(dst.join("read_only/nested/deep.txt"));
+
+        // Restore before any assertions so both temp trees can always be removed.
+        for root in [&src, &dst] {
+            for (relative, _) in directories {
+                let _ = fs::set_permissions(root.join(relative), fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        result.expect("copy must finish before read-only modes are applied");
+        for ((source, copied), (relative, expected)) in modes.into_iter().zip(directories) {
+            let source = source.unwrap();
+            assert_eq!(source, expected, "source: {relative}");
+            assert_eq!(copied.unwrap(), source, "destination: {relative}");
+        }
+        assert_eq!(content.unwrap(), "read-only contents");
+        assert_eq!(nested_content.unwrap(), "nested contents");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_copy_preserves_directory_permissions() {
+        check_copy_preserves_directory_permissions(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn async_copy_preserves_directory_permissions() {
+        check_copy_preserves_directory_permissions(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_copy_cleanup_unlocks_directories_without_following_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let dst = tmp.path().join("copy");
+        let nested = dst.join("read_only/nested");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(nested.join("partial.txt"), "partial").unwrap();
+        fs::write(outside.join("keep.txt"), "keep").unwrap();
+        symlink(&outside, dst.join("outside_link")).unwrap();
+        for directory in [&nested, &dst.join("read_only"), &outside] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        // Cleanup must restore access before trying to read the directory's children.
+        fs::set_permissions(&dst, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = remove_partial_copy(&dst, anyhow::anyhow!("copy failed")).to_string();
+        let destination = fs::symlink_metadata(&dst).map_err(|e| e.kind());
+        let outside_mode = fs::metadata(&outside).map(|m| m.permissions().mode() & 0o777);
+        let outside_content = fs::read_to_string(outside.join("keep.txt"));
+        for directory in [&dst, &dst.join("read_only"), &nested, &outside] {
+            let _ = fs::set_permissions(directory, fs::Permissions::from_mode(0o755));
+        }
+
+        assert!(error.contains("partial copy removed"), "{error}");
+        assert_eq!(destination.unwrap_err(), ErrorKind::NotFound);
+        assert_eq!(outside_mode.unwrap(), 0o555);
+        assert_eq!(outside_content.unwrap(), "keep");
     }
 }

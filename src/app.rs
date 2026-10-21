@@ -360,6 +360,7 @@ pub struct App {
     pub preserved_selection_index: Option<usize>,
 
     // Delete confirmation info
+    pub delete_target_path: Option<String>,
     pub delete_target_name: String,
     pub delete_target_is_dir: bool,
     pub delete_target_file_count: Option<usize>,
@@ -484,6 +485,7 @@ impl App {
             preserved_selection_index: None,
 
             // Initialize delete confirmation info
+            delete_target_path: None,
             delete_target_name: String::new(),
             delete_target_is_dir: false,
             delete_target_file_count: None,
@@ -819,6 +821,17 @@ impl App {
         self.update_file_references_with_selection_preservation(None);
     }
 
+    /// Show the refreshed directory after a successful file operation.
+    pub fn refresh_files_after_operation(&mut self, files: Vec<String>, state: &mut ListState) {
+        self.curr_index = self.preserved_selection_index.take().or(state.selected());
+        self.clear_search();
+        self.files = files.clone();
+        self.read_only_files = files;
+        self.update_file_references();
+        state.select(self.curr_index);
+        self.preserved_selection_index = self.curr_index;
+    }
+
     /// Update file references with optional selection preservation
     pub fn update_file_references_with_selection_preservation(
         &mut self,
@@ -1151,6 +1164,34 @@ impl App {
         }
     }
 
+    /// Freeze the highlighted target for the delete confirmation popup.
+    pub fn prepare_delete(&mut self, selected_index: Option<usize>) {
+        let Some(selected) = self.get_selected_path(selected_index) else {
+            return;
+        };
+        let path = Path::new(&selected);
+        let metadata = path.symlink_metadata().ok();
+        self.delete_target_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(&selected)
+            .to_string();
+        self.delete_target_is_dir = metadata.as_ref().is_some_and(|m| m.is_dir());
+        // Directory stats are counted by the worker, never while opening the popup.
+        self.delete_target_file_count = None;
+        self.delete_target_total_size = metadata.filter(|m| !m.is_dir()).map(|m| m.len());
+        self.delete_target_path = Some(selected);
+        self.render_popup = true;
+        self.input_mode = InputMode::WatchDelete;
+    }
+
+    /// Close a delete popup and consume its target, whether confirmed or cancelled.
+    pub fn close_delete_popup(&mut self) -> Option<String> {
+        self.render_popup = false;
+        self.input_mode = InputMode::Normal;
+        self.delete_target_path.take()
+    }
+
     /// Get the active current directory as a string.
     pub fn get_current_dir(&self) -> String {
         self.current_directory_path().to_string_lossy().to_string()
@@ -1311,6 +1352,110 @@ mod tests {
             .map(|r| r.file_path.as_str())
             .collect();
         assert_eq!(shown, results);
+    }
+
+    #[test]
+    fn selected_path_resolves_visible_list_and_rejects_invalid_indexes() {
+        let mut app = App::new(vec![
+            "alpha.txt".into(),
+            "bravo.txt".into(),
+            "charlie.txt".into(),
+        ]);
+        assert_eq!(app.get_selected_path(Some(0)).as_deref(), Some("alpha.txt"));
+        assert_eq!(app.get_selected_path(None), None);
+        assert_eq!(app.get_selected_path(Some(3)), None);
+
+        app.perform_local_search("charlie");
+        assert_eq!(
+            app.get_selected_path(Some(0)).as_deref(),
+            Some("charlie.txt")
+        );
+        assert_eq!(app.get_selected_path(None), None);
+        assert_eq!(app.get_selected_path(Some(1)), None);
+
+        app.global_search_mode = true;
+        app.search_results[0].file_path = "/elsewhere/charlie.txt".into();
+        app.files.clear();
+        assert_eq!(
+            app.get_selected_path(Some(0)).as_deref(),
+            Some("/elsewhere/charlie.txt")
+        );
+        assert_eq!(app.get_selected_path(Some(1)), None);
+        app.clear_search();
+        assert_eq!(app.get_selected_path(Some(0)), None);
+    }
+
+    #[test]
+    fn delete_confirmation_keeps_the_displayed_target_after_selection_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha = tmp.path().join("alpha.txt").to_string_lossy().to_string();
+        let charlie = tmp.path().join("charlie.txt").to_string_lossy().to_string();
+        std::fs::write(&alpha, "alpha").unwrap();
+        std::fs::write(&charlie, "charlie").unwrap();
+        let mut app = local_search_app(&[&alpha, &charlie], "charlie");
+
+        app.prepare_delete(Some(0));
+        assert_eq!(app.delete_target_name, "charlie.txt");
+        assert_eq!(app.delete_target_total_size, Some(7));
+        assert_eq!(app.delete_target_path.as_deref(), Some(charlie.as_str()));
+        assert!(app.render_popup);
+        assert_eq!(app.input_mode, InputMode::WatchDelete);
+
+        app.clear_search();
+        app.files = vec![alpha.clone()];
+        let target = app.close_delete_popup().unwrap();
+        assert_eq!(target, charlie);
+        crate::operations::handle_delete_based_on_type(&target).unwrap();
+        assert!(Path::new(&alpha).exists());
+        assert!(!Path::new(&charlie).exists());
+        assert_eq!(app.delete_target_path, None);
+        assert!(!app.render_popup);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.close_delete_popup(), None);
+    }
+
+    #[test]
+    fn delete_confirmation_ignores_missing_or_out_of_range_selection() {
+        for selected in [None, Some(1), Some(usize::MAX)] {
+            let mut app = App::new(vec!["alpha.txt".into()]);
+            app.prepare_delete(selected);
+            assert!(!app.render_popup);
+            assert_eq!(app.input_mode, InputMode::Normal);
+            assert_eq!(app.delete_target_path, None);
+        }
+    }
+
+    #[test]
+    fn operation_refresh_clears_search_and_clamps_preserved_selection() {
+        for (files, expected) in [
+            (
+                vec!["cwd/alpha.txt".into(), "cwd/bravo.txt".into()],
+                Some(1),
+            ),
+            (Vec::new(), None),
+        ] {
+            let mut app = local_search_app(&["elsewhere/charlie.txt"], "charlie");
+            app.global_search_mode = true;
+            app.current_directory = "cwd".into();
+            app.character_index = 7;
+            app.preserved_selection_index = Some(20);
+            let mut state = ListState::default();
+            state.select(Some(0));
+
+            app.refresh_files_after_operation(files.clone(), &mut state);
+
+            assert_eq!(app.current_directory, "cwd");
+            assert!(app.search_results.is_empty());
+            assert!(app.input.is_empty());
+            assert!(!app.global_search_mode);
+            assert_eq!(app.character_index, 0);
+            assert_eq!(app.files, files);
+            assert_eq!(app.read_only_files, app.files);
+            assert_eq!(app.filtered_indexes.len(), app.files.len());
+            assert_eq!(state.selected(), expected);
+            assert_eq!(app.curr_index, expected);
+            assert_eq!(app.preserved_selection_index, expected);
+        }
     }
 
     #[test]
