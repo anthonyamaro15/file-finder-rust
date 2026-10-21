@@ -643,7 +643,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Delete progress receiver (for async delete operations)
     let mut delete_receiver: Option<mpsc::Receiver<DeleteMessage>> = None;
-    let mut delete_target_dir: Option<String> = None; // Parent dir to refresh after delete
 
     // File chosen with Enter, handled after the terminal is restored
     let mut selected_file: Option<String> = None;
@@ -1343,9 +1342,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.sort_by.clone(),
                                 &app.sort_type,
                             ) {
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list;
-                                app.update_file_references();
+                                app.refresh_files_after_operation(file_path_list, &mut state);
                                 status_bar.invalidate_cache();
                             }
                         } else {
@@ -1416,38 +1413,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             status_bar.show_error(message.clone(), None);
                         }
 
-                        // Refresh file list in the target directory
-                        if let Some(ref dir) = delete_target_dir {
-                            if let Ok(file_path_list) = get_file_path_data(
-                                dir.clone(),
-                                app.show_hidden_files,
-                                app.sort_by.clone(),
-                                &app.sort_type,
-                            ) {
-                                app.files = file_path_list.clone();
-                                app.read_only_files = file_path_list;
-                                app.update_file_references();
-                                status_bar.invalidate_cache();
-
-                                // Calculate selection based on preserved index
-                                let new_len = app.files.len();
-                                let selected_indx = app.preserved_selection_index.unwrap_or(0);
-                                let next_selection_index = if new_len == 0 {
-                                    None
-                                } else if selected_indx >= new_len {
-                                    Some(new_len - 1)
-                                } else {
-                                    Some(selected_indx)
-                                };
-                                state.select(next_selection_index);
+                        // Refresh the directory being browsed, even for a global search target.
+                        let refresh_dir =
+                            current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
+                        if let Ok(files) = get_file_path_data(
+                            refresh_dir,
+                            app.show_hidden_files,
+                            app.sort_by.clone(),
+                            &app.sort_type,
+                        ) {
+                            if success {
+                                app.refresh_files_after_operation(files, &mut state);
+                            } else {
+                                app.refresh_files_from_watcher(files, &mut state);
                             }
+                            status_bar.invalidate_cache();
                         }
 
                         // Reset delete state
                         app.delete_in_progress = false;
                         app.delete_progress_message.clear();
                         app.preserved_selection_index = None;
-                        delete_target_dir = None;
                         delete_receiver = None;
                     }
                     DeleteMessage::Error(error_msg) => {
@@ -1458,7 +1444,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.delete_in_progress = false;
                         app.delete_progress_message = format!("Delete failed: {}", error_msg);
                         app.preserved_selection_index = None;
-                        delete_target_dir = None;
                         delete_receiver = None;
                     }
                 }
@@ -1629,9 +1614,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.right_pane.navigate_to_directory(parent_str);
                                             }
                                         }
-                                    } else if app.files.len() > 0 {
-                                        let selected = &app.files[state.selected().unwrap()];
-                                        let selected_path = Path::new(selected);
+                                    } else if let Some(selected) =
+                                        app.get_selected_path(state.selected())
+                                    {
+                                        let selected_path = Path::new(&selected);
 
                                         // TODO: refactor this to be more idiomatic
                                         if selected_path.components().count() > 4 {
@@ -1649,6 +1635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .unwrap();
 
                                                 if let Some(f_s) = files_strings {
+                                                    app.clear_search();
                                                     app.read_only_files = f_s.clone();
                                                     app.files = f_s;
                                                     app.update_file_references();
@@ -1767,40 +1754,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('d') => {
-                                    // Populate delete target info for confirmation popup
-                                    // For directories, we DON'T calculate stats upfront to avoid blocking
-                                    if let Some(index) = state.selected() {
-                                        if index < app.files.len() {
-                                            let selected_path = &app.files[index];
-                                            let path = Path::new(selected_path);
-
-                                            // Get filename
-                                            app.delete_target_name = path
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or(selected_path)
-                                                .to_string();
-
-                                            app.delete_target_is_dir = path
-                                                .symlink_metadata()
-                                                .map(|metadata| metadata.is_dir())
-                                                .unwrap_or(false);
-
-                                            if app.delete_target_is_dir {
-                                                // For directories, don't calculate stats (will show "Counting..." in popup)
-                                                // Stats will be calculated during async delete
-                                                app.delete_target_file_count = None;
-                                                app.delete_target_total_size = None;
-                                            } else {
-                                                // For files, get the file size (fast operation)
-                                                app.delete_target_file_count = None;
-                                                app.delete_target_total_size =
-                                                    path.symlink_metadata().ok().map(|m| m.len());
-                                            }
-                                        }
-                                    }
-                                    app.render_popup = true;
-                                    app.input_mode = InputMode::WatchDelete;
+                                    app.prepare_delete(state.selected());
                                 }
                                 KeyCode::Char('a') => {
                                     app.input_mode = InputMode::WatchCreate;
@@ -1986,30 +1940,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('r') => {
-                                    let selected_index = state.selected();
-                                    if let Some(index) = selected_index {
-                                        let selected = &app.files[index];
-                                        let selected_path = Path::new(selected);
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
                                         if let Some((parent, placeholder_name)) =
-                                            rename_target(selected_path)
+                                            rename_target(Path::new(&selected))
                                         {
                                             app.current_path_to_edit =
                                                 parent.to_string_lossy().to_string();
                                             app.current_name_to_edit = placeholder_name.clone();
                                             app.create_edit_file_name = placeholder_name.clone();
                                             app.char_index = placeholder_name.len();
+                                            app.input_mode = InputMode::WatchRename;
                                         }
                                     }
-                                    app.input_mode = InputMode::WatchRename;
                                 }
                                 KeyCode::Char('.') => {
                                     let is_hidden = !app.show_hidden_files;
                                     app.show_hidden_files = is_hidden;
-                                    let selected_index = state.selected();
-                                    if let Some(indx) = selected_index {
-                                        let selected = &app.files[indx];
-
-                                        let new_path = containing_directory(Path::new(selected))
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
+                                        let new_path = containing_directory(Path::new(&selected))
                                             .to_string_lossy()
                                             .to_string();
                                         match get_inner_files_info(
@@ -2032,32 +1982,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('c') => {
-                                    // Copy selected file/directory in current location using async operation
-                                    if let Some(index) = state.selected() {
-                                        if index < app.files.len() {
-                                            let selected_path = &app.files[index];
-                                            let src_path = Path::new(selected_path);
-
-                                            // Get current directory (parent of selected item)
-                                            let current_dir =
-                                                containing_directory_or_current(src_path);
-
-                                            // Generate copy name
-                                            let new_src =
-                                                generate_copy_file_dir_name(src_path, &current_dir);
-
-                                            // Start async copy operation
-                                            let rx =
-                                                copy_dir_file_with_progress(src_path, &new_src);
-                                            copy_receiver = Some(rx);
-
-                                            // Initialize copy progress state
-                                            app.copy_in_progress = true;
-                                            app.copy_progress_message =
-                                                String::from("Starting copy...");
-                                            app.copy_files_processed = 0;
-                                            app.copy_total_files = 0;
-                                        }
+                                    // Copy the highlighted item beside its source.
+                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    {
+                                        let src_path = Path::new(&selected);
+                                        let current_dir = containing_directory_or_current(src_path);
+                                        let new_src =
+                                            generate_copy_file_dir_name(src_path, &current_dir);
+                                        copy_receiver =
+                                            Some(copy_dir_file_with_progress(src_path, &new_src));
+                                        app.preserved_selection_index = state.selected();
+                                        app.copy_in_progress = true;
+                                        app.copy_progress_message =
+                                            String::from("Starting copy...");
+                                        app.copy_files_processed = 0;
+                                        app.copy_total_files = 0;
                                     }
                                 }
 
@@ -2149,7 +2088,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if !check_if_exists(new_path) {
                                         match handle_rename(&app) {
                                             Ok(_) => {
-                                                let current_dir = app.current_path_to_edit.clone();
+                                                let current_dir = current_refresh_directory(
+                                                    &app,
+                                                    &startup_paths.refresh_fallback_path,
+                                                );
                                                 app.reset_create_edit_values();
                                                 let file_path_list = get_file_path_data(
                                                     current_dir,
@@ -2157,9 +2099,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     app.sort_by.clone(),
                                                     &app.sort_type,
                                                 )?;
-                                                app.files = file_path_list.clone();
-                                                app.read_only_files = file_path_list.clone();
-                                                app.update_file_references();
+                                                app.refresh_files_after_operation(
+                                                    file_path_list,
+                                                    &mut state,
+                                                );
                                                 status_bar.invalidate_cache();
                                                 app.input_mode = InputMode::Normal;
                                             }
@@ -2198,17 +2141,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             KeyCode::Enter => {
                                 // create file/dir
                                 if !app.create_edit_file_name.is_empty() {
-                                    let selected_index = state.selected();
-                                    let selected = &app.files[selected_index.unwrap()];
-                                    // If selected is a directory, create inside it
-                                    // If selected is a file, create next to it (in parent dir)
-                                    let new_path = if Path::new(selected).is_dir() {
-                                        selected.clone()
-                                    } else {
-                                        create_target_directory(Path::new(selected))
-                                            .to_string_lossy()
-                                            .to_string()
-                                    };
+                                    // Create inside a highlighted directory, beside a file,
+                                    // or in the browsed directory when no item is selected.
+                                    let new_path = app
+                                        .get_selected_path(state.selected())
+                                        .map(|selected| {
+                                            create_target_directory(Path::new(&selected))
+                                        })
+                                        .unwrap_or_else(|| app.current_directory_path())
+                                        .to_string_lossy()
+                                        .to_string();
                                     match create_item_based_on_type(
                                         new_path.clone(),
                                         app.create_edit_file_name.clone(),
@@ -2237,87 +2179,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         InputMode::WatchDelete => match key.code {
                             KeyCode::Char('q') => {
-                                app.render_popup = false;
-                                app.input_mode = InputMode::Normal;
+                                app.close_delete_popup();
                                 break;
                             }
-                            KeyCode::Char('n') => {
-                                app.render_popup = false;
-                                app.input_mode = InputMode::Normal;
+                            KeyCode::Char('n') | KeyCode::Esc => {
+                                app.close_delete_popup();
                             }
-
                             KeyCode::Char('y') => {
-                                let selected_index = state.selected();
-
-                                if let Some(selected_indx) = selected_index {
-                                    let selected = &app.files[selected_indx];
-                                    // Get parent directory for refresh
-                                    let current_dir = containing_directory(Path::new(selected))
-                                        .to_string_lossy()
-                                        .to_string();
-
-                                    let path = Path::new(selected);
-
+                                if let Some(selected) = app.close_delete_popup() {
+                                    let path = Path::new(&selected);
                                     if path
                                         .symlink_metadata()
                                         .map(|metadata| metadata.is_dir())
                                         .unwrap_or(false)
                                     {
-                                        // For directories, use async delete with progress
                                         app.delete_in_progress = true;
                                         app.delete_progress_message =
                                             "Counting files...".to_string();
-                                        app.preserved_selection_index = Some(selected_indx);
-                                        delete_target_dir = Some(current_dir);
-                                        delete_receiver = Some(delete_with_progress(selected));
-
-                                        // Close popup but stay in delete mode visually
-                                        app.render_popup = false;
-                                        app.input_mode = InputMode::Normal;
+                                        app.preserved_selection_index = state.selected();
+                                        delete_receiver = Some(delete_with_progress(&selected));
                                     } else {
-                                        // For files, use sync delete (fast operation)
-                                        // Handle TOCTOU: if file was deleted externally, treat as success
-                                        let delete_result = handle_delete_based_on_type(selected);
+                                        // A file removed externally already satisfies the request.
+                                        let delete_result = handle_delete_based_on_type(&selected);
                                         let is_success = match &delete_result {
                                             Ok(_) => true,
-                                            Err(e) => e.is_not_found(), // File already gone = success
+                                            Err(e) => e.is_not_found(),
                                         };
-
                                         if is_success {
-                                            // Refresh file list first
-                                            let file_path_list = get_file_path_data(
+                                            let current_dir = current_refresh_directory(
+                                                &app,
+                                                &startup_paths.refresh_fallback_path,
+                                            );
+                                            let files = get_file_path_data(
                                                 current_dir,
                                                 app.show_hidden_files,
                                                 app.sort_by.clone(),
                                                 &app.sort_type,
                                             )?;
-                                            app.render_popup = false;
-                                            app.files = file_path_list.clone();
-                                            app.read_only_files = file_path_list.clone();
-                                            app.update_file_references();
+                                            app.refresh_files_after_operation(files, &mut state);
                                             status_bar.invalidate_cache();
-
-                                            // Calculate selection AFTER refresh based on new list length
-                                            let new_len = app.files.len();
-                                            let next_selection_index = if new_len == 0 {
-                                                None
-                                            } else if selected_indx >= new_len {
-                                                // Deleted item was at or past new end, select last item
-                                                Some(new_len - 1)
-                                            } else {
-                                                // Select same index (item after deleted one moved up)
-                                                Some(selected_indx)
-                                            };
-
-                                            // Apply selection
-                                            state.select(next_selection_index);
-                                            app.input_mode = InputMode::Normal;
                                         } else if let Err(e) = delete_result {
-                                            // Show error in status bar
                                             status_bar.show_error(e.user_message(), None);
                                             warn!("Delete operation failed: {}", e.user_message());
-                                            app.render_popup = false;
-                                            app.input_mode = InputMode::Normal;
                                         }
                                     }
                                 }
