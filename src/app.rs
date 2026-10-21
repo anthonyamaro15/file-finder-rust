@@ -1201,7 +1201,14 @@ impl App {
     pub fn current_directory_path(&self) -> PathBuf {
         if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
             PathBuf::from(&self.right_pane.current_directory)
-        } else if !self.current_directory.is_empty() {
+        } else {
+            self.left_directory_path()
+        }
+    }
+
+    /// Get the directory shown by the left (main) listing, whichever pane is active.
+    pub fn left_directory_path(&self) -> PathBuf {
+        if !self.current_directory.is_empty() {
             PathBuf::from(&self.current_directory)
         } else if let Some(first_file) = self.files.first() {
             Path::new(first_file)
@@ -1656,6 +1663,7 @@ mod tests {
         app.right_pane = crate::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
 
         assert_eq!(app.current_directory_path(), PathBuf::from("/tmp/ff-right"));
+        assert_eq!(app.left_directory_path(), PathBuf::from("/tmp/ff-left"));
     }
 
     #[test]

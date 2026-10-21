@@ -100,8 +100,9 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
     }
 }
 
+/// Directory to reload the left listing from; the right pane refreshes itself.
 fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
-    let current_directory = app.current_directory_path();
+    let current_directory = app.left_directory_path();
 
     if current_directory == PathBuf::from(".") {
         fallback_start_path.to_string()
@@ -2588,6 +2589,20 @@ mod tests {
         assert_eq!(
             current_refresh_directory(&app, "/tmp/ff-settings-start"),
             "/tmp/ff-current"
+        );
+    }
+
+    #[test]
+    fn refresh_directory_stays_on_left_listing_while_right_pane_is_active() {
+        let mut app = App::new(vec!["/tmp/ff-left/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-left".to_string();
+        app.view_mode = ViewMode::DualPane;
+        app.active_pane = PanePosition::Right;
+        app.right_pane = file_finder::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-left"
         );
     }
 }
