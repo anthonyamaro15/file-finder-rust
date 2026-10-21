@@ -331,6 +331,8 @@ pub struct App {
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
+    /// Source name of a running `Shift+C` copy, which keeps its name in the other pane.
+    pub copy_to_other_pane: Option<String>,
 
     // File system watcher for real-time updates
     pub file_watcher: Option<FileSystemWatcher>,
@@ -454,6 +456,7 @@ impl App {
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
+            copy_to_other_pane: None,
 
             // Initialize file watcher
             file_watcher: None,
@@ -1181,6 +1184,27 @@ impl App {
             .map(|operation| format!("Wait for the current {operation} to finish"))
     }
 
+    /// Show a copy as running; its updates arrive on the copy channel.
+    pub fn start_copy(&mut self, to_other_pane: Option<String>) {
+        self.copy_in_progress = true;
+        self.copy_progress_message = String::from("Starting copy...");
+        self.copy_files_processed = 0;
+        self.copy_total_files = 0;
+        self.copy_to_other_pane = to_other_pane;
+    }
+
+    /// Source and destination folder for `Shift+C`/`Shift+M`: the active pane's
+    /// highlighted item goes to the other pane's folder.
+    pub fn other_pane_transfer(&self, selected_index: Option<usize>) -> Option<(String, String)> {
+        if self.is_right_pane_active() {
+            let destination = self.left_directory_path().to_string_lossy().to_string();
+            Some((self.right_pane.get_selected_path()?, destination))
+        } else {
+            let source = self.get_selected_path(selected_index)?;
+            Some((source, self.right_pane.current_directory.clone()))
+        }
+    }
+
     /// Freeze the highlighted target for the delete confirmation popup.
     pub fn prepare_delete(&mut self, selected_index: Option<usize>) {
         let Some(selected) = self.get_selected_path(selected_index) else {
@@ -1671,6 +1695,27 @@ mod tests {
         assert_eq!(
             app.busy_warning().as_deref(),
             Some("Wait for the current delete to finish")
+        );
+    }
+
+    #[test]
+    fn other_pane_transfer_uses_the_highlighted_item_of_the_active_pane() {
+        let mut app = local_search_app(&["/l/alpha.txt", "/l/charlie.txt"], "charlie");
+        app.current_directory = "/l".into();
+        app.view_mode = ViewMode::DualPane;
+        app.right_pane = crate::pane::Pane::new("/r".into(), vec!["/r/bravo.txt".into()]);
+
+        // Row 0 is the visible search result, not the folder's first file.
+        assert_eq!(
+            app.other_pane_transfer(Some(0)),
+            Some(("/l/charlie.txt".into(), "/r".into()))
+        );
+        assert_eq!(app.other_pane_transfer(Some(1)), None);
+
+        app.active_pane = PanePosition::Right;
+        assert_eq!(
+            app.other_pane_transfer(None),
+            Some(("/r/bravo.txt".into(), "/l".into()))
         );
     }
 

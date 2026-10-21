@@ -178,6 +178,15 @@ fn poll_copy_messages(
             message,
             skipped_special_files,
         }) => {
+            // The engine names the destination, which a cross-pane copy shares with its source.
+            let message = app
+                .copy_to_other_pane
+                .as_deref()
+                .and_then(|name| {
+                    let details = message.strip_prefix(&format!("Copied '{name}' to '{name}'"))?;
+                    Some(format!("Copied '{name}' to other pane{details}"))
+                })
+                .unwrap_or(message);
             if success {
                 debug!("Copy completed: {}", message);
                 if skipped_special_files > 0 {
@@ -202,6 +211,7 @@ fn poll_copy_messages(
     app.copy_progress_message.clear();
     app.copy_files_processed = 0;
     app.copy_total_files = 0;
+    app.copy_to_other_pane = None;
     *receiver = None;
     success
 }
@@ -1392,6 +1402,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.refresh_files_after_operation(files, &mut state);
                 status_bar.invalidate_cache();
             }
+            // Shift+C may have copied into the right pane's folder.
+            if app.view_mode.is_dual_pane() {
+                app.right_pane.refresh_files();
+            }
         }
 
         // Handle delete progress messages
@@ -1817,65 +1831,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('C') => {
-                                    // Shift+C: Copy selected file to other pane (DualPane mode only)
+                                    // Shift+C: copy the highlighted item into the other pane's folder.
                                     if app.view_mode.is_dual_pane() {
-                                        // Get source and destination based on active pane
-                                        let (src_path, dest_dir) = if app.is_right_pane_active() {
-                                            // Right pane active: copy from right to left
-                                            let src = app.right_pane.get_selected_path();
-                                            let dest = app.current_directory.clone();
-                                            (src, dest)
-                                        } else {
-                                            // Left pane active: copy from left to right
-                                            let src = state
-                                                .selected()
-                                                .and_then(|i| app.files.get(i).cloned());
-                                            let dest = app.right_pane.current_directory.clone();
-                                            (src, dest)
-                                        };
-
-                                        if let Some(src_path) = src_path {
-                                            let src = std::path::Path::new(&src_path);
-                                            let src_name = src
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("");
-                                            let dest =
-                                                std::path::Path::new(&dest_dir).join(src_name);
-
-                                            match operations::copy_dir_file_helper(src, &dest) {
-                                                Ok(()) => {
-                                                    // Refresh the destination pane
-                                                    if app.is_right_pane_active() {
-                                                        // Refresh left pane
-                                                        if let Ok(Some(new_files)) =
-                                                            get_inner_files_info(
-                                                                app.current_directory.clone(),
-                                                                app.show_hidden_files,
-                                                                app.sort_by.clone(),
-                                                                &app.sort_type,
-                                                            )
-                                                        {
-                                                            app.files = new_files;
-                                                            app.update_file_references();
-                                                        }
-                                                    } else {
-                                                        app.right_pane.refresh_files();
-                                                    }
-                                                    status_bar.show_info(
-                                                        format!(
-                                                            "Copied '{}' to other pane",
-                                                            src_name
-                                                        ),
-                                                        Some(2),
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    status_bar.show_error(
-                                                        format!("Copy failed: {}", e),
-                                                        Some(3),
-                                                    );
-                                                }
+                                        if let Some(warning) = app.busy_warning() {
+                                            status_bar.show_warning(warning, None);
+                                        } else if let Some((src_path, dest_dir)) =
+                                            app.other_pane_transfer(state.selected())
+                                        {
+                                            let src = Path::new(&src_path);
+                                            if let Some(src_name) = src.file_name() {
+                                                let dest = Path::new(&dest_dir).join(src_name);
+                                                copy_receiver =
+                                                    Some(copy_dir_file_with_progress(src, &dest));
+                                                app.preserved_selection_index = state.selected();
+                                                app.start_copy(Some(
+                                                    src_name.to_string_lossy().to_string(),
+                                                ));
                                             }
                                         }
                                     }
@@ -2025,11 +1996,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         copy_receiver =
                                             Some(copy_dir_file_with_progress(src_path, &new_src));
                                         app.preserved_selection_index = state.selected();
-                                        app.copy_in_progress = true;
-                                        app.copy_progress_message =
-                                            String::from("Starting copy...");
-                                        app.copy_files_processed = 0;
-                                        app.copy_total_files = 0;
+                                        app.start_copy(None);
                                     }
                                 }
 
@@ -2381,6 +2348,34 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("copy_data"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_to_other_pane_names_the_pane_and_keeps_details() {
+        for (skipped_special_files, details) in [
+            (0, ""),
+            (1, " (skipped 1 special file: sockets/pipes/devices)"),
+        ] {
+            let mut app = running_copy_app();
+            app.copy_to_other_pane = Some("data".into());
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: format!("Copied 'data' to 'data'{details}"),
+                skipped_special_files,
+            })
+            .unwrap();
+            let mut receiver = Some(rx);
+
+            assert!(poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(
+                status.error_message,
+                Some(format!("Copied 'data' to other pane{details}"))
+            );
+            assert_eq!(app.copy_to_other_pane, None);
             assert_copy_finished(&app, &receiver);
         }
     }
