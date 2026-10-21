@@ -1408,6 +1408,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
+        // A finished move or extraction may have changed both panes, even if it failed.
+        if let Some(result) = app.poll_job() {
+            let refresh_dir = current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
+            if let Ok(files) = get_file_path_data(
+                refresh_dir,
+                app.show_hidden_files,
+                app.sort_by.clone(),
+                &app.sort_type,
+            ) {
+                if result.is_ok() {
+                    app.refresh_files_after_operation(files, &mut state);
+                } else {
+                    app.refresh_files_from_watcher(files, &mut state);
+                }
+                status_bar.invalidate_cache();
+            }
+            if app.view_mode.is_dual_pane() {
+                app.right_pane.refresh_files();
+            }
+            match result {
+                Ok(message) => status_bar.show_info(message, None),
+                Err(message) => {
+                    warn!("Background operation failed: {}", message);
+                    status_bar.show_error(message, None);
+                }
+            }
+        }
+
         // Handle delete progress messages
         if let Some(ref rx) = delete_receiver {
             let mut last_msg: Option<DeleteMessage> = None;
@@ -1852,78 +1880,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('M') => {
-                                    // Shift+M: Move selected file to other pane (DualPane mode only)
+                                    // Shift+M: move the highlighted item into the other pane's folder.
                                     if app.view_mode.is_dual_pane() {
-                                        // Get source and destination based on active pane
-                                        let is_right_active = app.is_right_pane_active();
-                                        let (src_path, dest_dir) = if is_right_active {
-                                            // Right pane active: move from right to left
-                                            let src = app.right_pane.get_selected_path();
-                                            let dest = app.current_directory.clone();
-                                            (src, dest)
-                                        } else {
-                                            // Left pane active: move from left to right
-                                            let src = state
-                                                .selected()
-                                                .and_then(|i| app.files.get(i).cloned());
-                                            let dest = app.right_pane.current_directory.clone();
-                                            (src, dest)
-                                        };
-
-                                        if let Some(src_path) = src_path {
-                                            let src_name = std::path::Path::new(&src_path)
+                                        if let Some((src_path, dest_dir)) =
+                                            app.other_pane_transfer(state.selected())
+                                        {
+                                            let name = Path::new(&src_path)
                                                 .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("")
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
                                                 .to_string();
-
-                                            match operations::move_file_or_dir(&src_path, &dest_dir)
-                                            {
-                                                Ok(()) => {
-                                                    // Refresh both panes
-                                                    if let Ok(Some(new_files)) =
-                                                        get_inner_files_info(
-                                                            app.current_directory.clone(),
-                                                            app.show_hidden_files,
-                                                            app.sort_by.clone(),
-                                                            &app.sort_type,
-                                                        )
-                                                    {
-                                                        app.files = new_files;
-                                                        app.update_file_references();
-                                                    }
-                                                    app.right_pane.refresh_files();
-
-                                                    // Adjust selection in the source pane
-                                                    if is_right_active {
-                                                        // Selection adjustment handled by right_pane.refresh_files()
-                                                    } else {
-                                                        if let Some(index) = state.selected() {
-                                                            if app.files.is_empty() {
-                                                                state.select(None);
-                                                            } else if index >= app.files.len() {
-                                                                state.select(Some(
-                                                                    app.files.len() - 1,
-                                                                ));
-                                                            }
-                                                        }
-                                                    }
-
-                                                    status_bar.show_info(
-                                                        format!(
-                                                            "Moved '{}' to other pane",
-                                                            src_name
-                                                        ),
-                                                        Some(2),
-                                                    );
-                                                    status_bar.invalidate_cache();
-                                                }
-                                                Err(e) => {
-                                                    status_bar.show_error(
-                                                        format!("Move failed: {}", e),
-                                                        Some(3),
-                                                    );
-                                                }
+                                            let status = format!("Moving '{name}'…");
+                                            let started =
+                                                app.start_job("move", status, move || {
+                                                    operations::move_file_or_dir(
+                                                        &src_path, &dest_dir,
+                                                    )
+                                                    .map(|()| {
+                                                        format!("Moved '{name}' to other pane")
+                                                    })
+                                                    .map_err(|e| format!("Move failed: {e}"))
+                                                });
+                                            if let Err(warning) = started {
+                                                status_bar.show_warning(warning, None);
                                             }
                                         }
                                     }
@@ -1934,11 +1913,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let file_type = file_reader_content
                                             .get_file_extension(selected.clone());
                                         if let FileType::ZIP = file_type {
-                                            match FileContent::extract_zip_content(&selected) {
-                                                Ok(message) => status_bar.show_info(message, None),
-                                                Err(message) => {
-                                                    status_bar.show_error(message, None)
-                                                }
+                                            let name = Path::new(&selected)
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .to_string();
+                                            let status = format!("Extracting '{name}'…");
+                                            let started =
+                                                app.start_job("extraction", status, move || {
+                                                    FileContent::extract_zip_content(&selected)
+                                                });
+                                            if let Err(warning) = started {
+                                                status_bar.show_warning(warning, None);
                                             }
                                         }
                                     }

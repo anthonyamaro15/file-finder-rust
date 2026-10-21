@@ -228,6 +228,10 @@ impl Ui {
             }
         }
 
+        if let Some(job) = &app.job {
+            return job.status.clone();
+        }
+
         if app.loading {
             return "Loading...".to_string();
         }

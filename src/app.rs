@@ -385,12 +385,64 @@ pub struct App {
 
     // Async image loading (separate channel because DynamicImage has different traits)
     pub image_receiver: Option<mpsc::Receiver<ImageLoadResult>>,
+
+    /// Running move or ZIP extraction, if any.
+    pub job: Option<BackgroundJob>,
 }
 
 /// Result of async image loading
 pub struct ImageLoadResult {
     pub path: String,
     pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
+}
+
+/// One-shot background operation (move, ZIP extraction) that reports a single result.
+#[derive(Debug)]
+pub struct BackgroundJob {
+    /// Operation name for warnings, e.g. "move".
+    pub kind: &'static str,
+    /// List title while it runs, e.g. "Moving 'notes'…".
+    pub status: String,
+    receiver: mpsc::Receiver<Result<String, String>>,
+}
+
+impl BackgroundJob {
+    /// Run `work` on its own thread; its result is the notification, info or error.
+    pub fn spawn(
+        kind: &'static str,
+        status: String,
+        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) -> Self {
+        let (tx, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        Self {
+            kind,
+            status,
+            receiver,
+        }
+    }
+
+    /// The result once the job finishes; a job that dies without one reports an error.
+    pub fn poll(&self) -> Option<Result<String, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(format!(
+                "{} stopped unexpectedly before reporting a result",
+                sentence_case(self.kind)
+            ))),
+        }
+    }
+}
+
+/// Capitalize an operation name that starts a message ("move" -> "Move").
+fn sentence_case(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 impl App {
@@ -510,6 +562,8 @@ impl App {
 
             // Initialize async image loading
             image_receiver: None,
+
+            job: None,
         }
     }
 
@@ -1174,7 +1228,7 @@ impl App {
         } else if self.delete_in_progress {
             Some("delete")
         } else {
-            None
+            self.job.as_ref().map(|job| job.kind)
         }
     }
 
@@ -1182,6 +1236,27 @@ impl App {
     pub fn busy_warning(&self) -> Option<String> {
         self.busy_operation()
             .map(|operation| format!("Wait for the current {operation} to finish"))
+    }
+
+    /// Run `work` in the background unless another operation runs (returns its warning).
+    pub fn start_job(
+        &mut self,
+        kind: &'static str,
+        status: String,
+        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) -> Result<(), String> {
+        if let Some(warning) = self.busy_warning() {
+            return Err(warning);
+        }
+        self.job = Some(BackgroundJob::spawn(kind, status, work));
+        Ok(())
+    }
+
+    /// Take the job's result once it finishes, which frees the slot for the next operation.
+    pub fn poll_job(&mut self) -> Option<Result<String, String>> {
+        let result = self.job.as_ref()?.poll()?;
+        self.job = None;
+        Some(result)
     }
 
     /// Show a copy as running; its updates arrive on the copy channel.
@@ -1677,25 +1752,87 @@ mod tests {
         assert_eq!(app.curr_index, Some(0));
     }
 
+    /// Spin until the app's job reports, failing instead of hanging if it never does.
+    fn wait_for_job(app: &mut App) -> Result<String, String> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(result) = app.poll_job() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "job never reported a result");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Make `kind` the running operation; job kinds run until the sender is used.
+    fn start_operation(app: &mut App, kind: &'static str) -> Option<mpsc::Sender<()>> {
+        match kind {
+            "copy" => app.start_copy(None),
+            "delete" => app.delete_in_progress = true,
+            _ => {
+                let (release, wait) = mpsc::channel::<()>();
+                app.start_job(kind, format!("Running {kind}"), move || {
+                    wait.recv().map_err(|e| e.to_string())?;
+                    Ok(format!("Finished {kind}"))
+                })
+                .unwrap();
+                return Some(release);
+            }
+        }
+        None
+    }
+
     #[test]
-    fn busy_guard_names_the_running_operation() {
+    fn busy_guard_blocks_a_second_operation_of_each_kind_and_allows_browsing() {
+        for kind in ["copy", "delete", "move", "extraction"] {
+            let mut app = App::new(vec!["alpha.txt".into(), "bravo.txt".into()]);
+            assert_eq!(app.busy_warning(), None);
+            let release = start_operation(&mut app, kind);
+            let warning = format!("Wait for the current {kind} to finish");
+            assert_eq!(app.busy_operation(), Some(kind));
+            assert_eq!(app.busy_warning().as_deref(), Some(warning.as_str()));
+
+            // Another operation is refused and leaves the running one in place.
+            for other in ["move", "extraction"] {
+                let refused = app.start_job(other, "Second".into(), || Ok(String::new()));
+                assert_eq!(refused, Err(warning.clone()));
+            }
+            assert_eq!(app.busy_operation(), Some(kind));
+            if release.is_some() {
+                assert_eq!(app.job.as_ref().unwrap().status, format!("Running {kind}"));
+            }
+
+            // Browsing neither waits for nor ends the operation.
+            app.enter_search(SearchScope::CurrentDirectory);
+            app.perform_local_search("bravo");
+            assert_eq!(app.get_selected_path(Some(0)).as_deref(), Some("bravo.txt"));
+            app.clear_search();
+            app.view_mode = app.view_mode.next();
+            app.sync_preview_with_selection(Some(1));
+            assert_eq!(app.take_ready_preview(0).as_deref(), Some("bravo.txt"));
+            assert_eq!(app.busy_operation(), Some(kind));
+
+            if let Some(release) = release {
+                assert_eq!(app.poll_job(), None);
+                release.send(()).unwrap();
+                assert_eq!(wait_for_job(&mut app), Ok(format!("Finished {kind}")));
+                assert_eq!(app.busy_operation(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn panicking_background_job_reports_an_error() {
         let mut app = App::new(Vec::new());
+        app.start_job("extraction", "Extracting 'a.zip'…".into(), || {
+            panic!("extraction worker crashed")
+        })
+        .unwrap();
+        assert_eq!(
+            wait_for_job(&mut app),
+            Err("Extraction stopped unexpectedly before reporting a result".into())
+        );
         assert_eq!(app.busy_operation(), None);
-        assert_eq!(app.busy_warning(), None);
-
-        app.copy_in_progress = true;
-        assert_eq!(app.busy_operation(), Some("copy"));
-        assert_eq!(
-            app.busy_warning().as_deref(),
-            Some("Wait for the current copy to finish")
-        );
-
-        app.copy_in_progress = false;
-        app.delete_in_progress = true;
-        assert_eq!(
-            app.busy_warning().as_deref(),
-            Some("Wait for the current delete to finish")
-        );
     }
 
     #[test]
