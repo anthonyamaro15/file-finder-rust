@@ -119,12 +119,15 @@ fn poll_copy_messages(
     let Some(rx) = receiver.as_ref() else {
         return false;
     };
-    // Coalesce progress updates, but never discard a terminal result.
+    // Coalesce status/progress updates, but never discard a terminal result.
     let mut last_message = None;
     loop {
         match rx.try_recv() {
             Ok(message) => {
-                let finished = !matches!(message, CopyMessage::Progress { .. });
+                let finished = matches!(
+                    message,
+                    CopyMessage::Completed { .. } | CopyMessage::Error(_)
+                );
                 last_message = Some(message);
                 if finished {
                     break;
@@ -142,6 +145,10 @@ fn poll_copy_messages(
 
     let success = match last_message {
         None => return false,
+        Some(CopyMessage::Status(message)) => {
+            app.copy_progress_message = message;
+            return false;
+        }
         Some(CopyMessage::Progress {
             files_processed,
             total_files,
@@ -2423,6 +2430,60 @@ mod tests {
         assert!(app.copy_in_progress);
         assert!(receiver.is_some());
         assert!(!status.has_error());
+    }
+
+    #[test]
+    fn copy_status_keeps_receiver_alive_and_yields_to_progress() {
+        let mut app = running_copy_app();
+        let mut status = StatusBar::new();
+        let (tx, rx) = mpsc::channel();
+        let mut receiver = Some(rx);
+        tx.send(CopyMessage::Status("Cloning 'source'…".into()))
+            .unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert_eq!(app.copy_progress_message, "Cloning 'source'…");
+        assert!(app.copy_in_progress);
+        assert!(receiver.is_some());
+        assert!(!status.has_error());
+
+        tx.send(copy_progress()).unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert!(app.copy_progress_message.contains("30%"));
+        assert!(app.copy_in_progress);
+    }
+
+    #[test]
+    fn copy_status_does_not_hide_completion_or_disconnect() {
+        for completed in [false, true] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            let mut receiver = Some(rx);
+            tx.send(CopyMessage::Status("Cloning 'source'…".into()))
+                .unwrap();
+            if completed {
+                tx.send(CopyMessage::Completed {
+                    success: true,
+                    message: "Copied 'source' to 'copy_source'".into(),
+                    skipped_special_files: 0,
+                })
+                .unwrap();
+            }
+            drop(tx);
+            assert_eq!(
+                poll_copy_messages(&mut app, &mut status, &mut receiver),
+                completed
+            );
+            assert_copy_finished(&app, &receiver);
+            assert_eq!(
+                status.notification_kind,
+                if completed {
+                    NotificationKind::Info
+                } else {
+                    NotificationKind::Error
+                }
+            );
+        }
     }
 
     #[test]
