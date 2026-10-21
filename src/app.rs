@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -388,7 +388,12 @@ pub struct App {
 
     /// Running move or ZIP extraction, if any.
     pub job: Option<BackgroundJob>,
+    /// Exit key and time of the last "operation in progress" quit warning.
+    pub quit_warning: Option<(&'static str, Instant)>,
 }
+
+/// How long the same exit key, pressed again, leaves despite a running operation.
+pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 
 /// Result of async image loading
 pub struct ImageLoadResult {
@@ -564,6 +569,7 @@ impl App {
             image_receiver: None,
 
             job: None,
+            quit_warning: None,
         }
     }
 
@@ -1259,6 +1265,25 @@ impl App {
         Some(result)
     }
 
+    /// Allow leaving `ff` with `key` unless an operation runs. Then the first press
+    /// returns a warning, and the same key again within the window leaves anyway.
+    pub fn confirm_quit(&mut self, key: &'static str, now: Instant) -> Result<(), String> {
+        let Some(operation) = self.busy_operation() else {
+            return Ok(());
+        };
+        let repeated = self.quit_warning.is_some_and(|(warned_key, warned_at)| {
+            warned_key == key && now.saturating_duration_since(warned_at) <= QUIT_CONFIRM_WINDOW
+        });
+        if repeated {
+            return Ok(());
+        }
+        self.quit_warning = Some((key, now));
+        Err(format!(
+            "{} in progress — press {key} again to quit anyway",
+            sentence_case(operation)
+        ))
+    }
+
     /// Show a copy as running; its updates arrive on the copy channel.
     pub fn start_copy(&mut self, to_other_pane: Option<String>) {
         self.copy_in_progress = true;
@@ -1854,6 +1879,42 @@ mod tests {
             app.other_pane_transfer(None),
             Some(("/r/bravo.txt".into(), "/l".into()))
         );
+    }
+
+    #[test]
+    fn quit_while_busy_needs_the_same_key_again_within_the_window() {
+        let mut app = App::new(Vec::new());
+        let start = Instant::now();
+        assert_eq!(app.confirm_quit("q", start), Ok(()));
+
+        app.start_copy(None);
+        let warning = "Copy in progress — press q again to quit anyway".to_string();
+        assert_eq!(app.confirm_quit("q", start), Err(warning.clone()));
+        assert_eq!(
+            app.confirm_quit("q", start + Duration::from_secs(2)),
+            Ok(())
+        );
+
+        // Once the window passes, the next press warns again and restarts it.
+        let late = start + QUIT_CONFIRM_WINDOW + Duration::from_secs(1);
+        assert_eq!(app.confirm_quit("q", late), Err(warning));
+        // Another exit key is confirmed on its own.
+        let second = late + Duration::from_secs(1);
+        assert_eq!(
+            app.confirm_quit("Enter", second),
+            Err("Copy in progress — press Enter again to quit anyway".into())
+        );
+        assert_eq!(app.confirm_quit("Enter", second), Ok(()));
+
+        app.copy_in_progress = false;
+        app.delete_in_progress = true;
+        let later = second + QUIT_CONFIRM_WINDOW * 2;
+        assert_eq!(
+            app.confirm_quit("q", later),
+            Err("Delete in progress — press q again to quit anyway".into())
+        );
+        app.delete_in_progress = false;
+        assert_eq!(app.confirm_quit("o", later), Ok(()));
     }
 
     #[test]

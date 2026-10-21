@@ -216,6 +216,17 @@ fn poll_copy_messages(
     success
 }
 
+/// Whether an exit key may leave the main loop now; warns instead while an operation runs.
+fn may_exit(app: &mut App, status_bar: &mut StatusBar, key: &'static str) -> bool {
+    match app.confirm_quit(key, std::time::Instant::now()) {
+        Ok(()) => true,
+        Err(warning) => {
+            status_bar.show_warning(warning, None);
+            false
+        }
+    }
+}
+
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
 /// with fallback to Unicode halfblocks for unsupported terminals.
 struct ImageRenderer {
@@ -1646,7 +1657,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match key.code {
                                 KeyCode::Char('q') => {
-                                    break;
+                                    if may_exit(&mut app, &mut status_bar, "q") {
+                                        break;
+                                    }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     // In DualPane mode with right pane active, navigate right pane
@@ -1808,6 +1821,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 KeyCode::Char('o') => {
                                     if let Some(selected) = app.get_selected_path(state.selected())
                                     {
+                                        // Opening leaves ff, so it waits for confirmation during an operation.
+                                        if !may_exit(&mut app, &mut status_bar, "o") {
+                                            continue;
+                                        }
                                         // Spawn without waiting; null stdio keeps opener output off the TUI.
                                         match Command::new(system_opener())
                                             .arg(&selected)
@@ -1999,6 +2016,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let selected_path = app.get_selected_path(state.selected());
 
                                     if let Some(selected) = selected_path {
+                                        // Leaving for the shell or editor waits for confirmation during an operation.
+                                        if !may_exit(&mut app, &mut status_bar, "Enter") {
+                                            continue;
+                                        }
                                         app.input = selected.clone();
 
                                         // Check if print_path mode - hand the path to the shell integration
@@ -2166,7 +2187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchDelete => match key.code {
                             KeyCode::Char('q') => {
                                 app.close_delete_popup();
-                                break;
+                                if may_exit(&mut app, &mut status_bar, "q") {
+                                    break;
+                                }
                             }
                             KeyCode::Char('n') | KeyCode::Esc => {
                                 app.close_delete_popup();
