@@ -1402,6 +1402,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(msg) => last_msg = Some(msg),
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
+                        // A worker that dies without a result must not block later operations.
+                        if !matches!(
+                            last_msg,
+                            Some(DeleteMessage::Completed { .. } | DeleteMessage::Error(_))
+                        ) {
+                            last_msg = Some(DeleteMessage::Error(
+                                "Delete stopped unexpectedly before reporting a result".into(),
+                            ));
+                        }
                         delete_receiver = None;
                         break;
                     }
@@ -2004,7 +2013,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 KeyCode::Char('c') => {
                                     // Copy the highlighted item beside its source.
-                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    if let Some(warning) = app.busy_warning() {
+                                        status_bar.show_warning(warning, None);
+                                    } else if let Some(selected) =
+                                        app.get_selected_path(state.selected())
                                     {
                                         let src_path = Path::new(&selected);
                                         let current_dir = containing_directory_or_current(src_path);
@@ -2214,11 +2226,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .map(|metadata| metadata.is_dir())
                                         .unwrap_or(false)
                                     {
-                                        app.delete_in_progress = true;
-                                        app.delete_progress_message =
-                                            "Counting files...".to_string();
-                                        app.preserved_selection_index = state.selected();
-                                        delete_receiver = Some(delete_with_progress(&selected));
+                                        // Folders delete in the background, one operation at a time.
+                                        if let Some(warning) = app.busy_warning() {
+                                            status_bar.show_warning(warning, None);
+                                        } else {
+                                            app.delete_in_progress = true;
+                                            app.delete_progress_message =
+                                                "Counting files...".to_string();
+                                            app.preserved_selection_index = state.selected();
+                                            delete_receiver = Some(delete_with_progress(&selected));
+                                        }
                                     } else {
                                         // A file removed externally already satisfies the request.
                                         let delete_result = handle_delete_based_on_type(&selected);

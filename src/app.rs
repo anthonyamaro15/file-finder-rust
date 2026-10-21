@@ -1164,6 +1164,23 @@ impl App {
         }
     }
 
+    /// Name of the running background operation, if any; only one runs at a time.
+    pub fn busy_operation(&self) -> Option<&'static str> {
+        if self.copy_in_progress {
+            Some("copy")
+        } else if self.delete_in_progress {
+            Some("delete")
+        } else {
+            None
+        }
+    }
+
+    /// Warning for starting another operation while one runs; `None` means go ahead.
+    pub fn busy_warning(&self) -> Option<String> {
+        self.busy_operation()
+            .map(|operation| format!("Wait for the current {operation} to finish"))
+    }
+
     /// Freeze the highlighted target for the delete confirmation popup.
     pub fn prepare_delete(&mut self, selected_index: Option<usize>) {
         let Some(selected) = self.get_selected_path(selected_index) else {
@@ -1634,6 +1651,27 @@ mod tests {
         app.update_file_references();
 
         assert_eq!(app.curr_index, Some(0));
+    }
+
+    #[test]
+    fn busy_guard_names_the_running_operation() {
+        let mut app = App::new(Vec::new());
+        assert_eq!(app.busy_operation(), None);
+        assert_eq!(app.busy_warning(), None);
+
+        app.copy_in_progress = true;
+        assert_eq!(app.busy_operation(), Some("copy"));
+        assert_eq!(
+            app.busy_warning().as_deref(),
+            Some("Wait for the current copy to finish")
+        );
+
+        app.copy_in_progress = false;
+        app.delete_in_progress = true;
+        assert_eq!(
+            app.busy_warning().as_deref(),
+            Some("Wait for the current delete to finish")
+        );
     }
 
     #[test]
