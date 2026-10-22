@@ -42,8 +42,8 @@ use file_finder::{
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
     event::{
         file_actions::{
-            containing_directory_or_current, create_target_directory, refresh_file_list,
-            rename_target,
+            containing_directory_or_current, create_target_directory, created_item_path,
+            refresh_file_list, rename_target,
         },
         keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
@@ -212,8 +212,40 @@ fn poll_copy_messages(
     app.copy_files_processed = 0;
     app.copy_total_files = 0;
     app.copy_to_other_pane = None;
+    app.copy_destination = None;
     *receiver = None;
     success
+}
+
+/// Refresh completed copies and select an in-place duplicate when visible.
+fn refresh_after_copy(
+    app: &mut App,
+    state: &mut ListState,
+    status_bar: &mut StatusBar,
+    receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+    fallback_start_path: &str,
+) {
+    let destination = app
+        .copy_destination
+        .as_ref()
+        .filter(|_| app.copy_to_other_pane.is_none())
+        .map(|path| path.to_string_lossy().into_owned());
+    if poll_copy_messages(app, status_bar, receiver) {
+        let refresh_dir = current_refresh_directory(app, fallback_start_path);
+        if let Ok(files) = get_file_path_data(
+            refresh_dir,
+            app.show_hidden_files,
+            app.sort_by.clone(),
+            &app.sort_type,
+        ) {
+            app.refresh_files_after_operation(files, state, destination);
+            status_bar.invalidate_cache();
+        }
+        // Shift+C may have copied into the right pane's folder.
+        if app.view_mode.is_dual_pane() {
+            app.right_pane.refresh_files();
+        }
+    }
 }
 
 /// Confirm once, then cancel and wait for cleanup before any exit route proceeds.
@@ -269,6 +301,7 @@ fn may_exit<B: Backend>(
         app.copy_files_processed = 0;
         app.copy_total_files = 0;
         app.copy_to_other_pane = None;
+        app.copy_destination = None;
         result
     } else if let Some(job) = app.job.take() {
         // A move already deleting its source deliberately ignores cancellation.
@@ -1459,23 +1492,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Restore right pane list state after drawing (preserves scroll position)
         app.right_pane.list_state = right_pane_list_state;
 
-        // A successful copy returns to the current directory's refreshed listing.
-        if poll_copy_messages(&mut app, &mut status_bar, &mut copy_receiver) {
-            let refresh_dir = current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
-            if let Ok(files) = get_file_path_data(
-                refresh_dir,
-                app.show_hidden_files,
-                app.sort_by.clone(),
-                &app.sort_type,
-            ) {
-                app.refresh_files_after_operation(files, &mut state);
-                status_bar.invalidate_cache();
-            }
-            // Shift+C may have copied into the right pane's folder.
-            if app.view_mode.is_dual_pane() {
-                app.right_pane.refresh_files();
-            }
-        }
+        refresh_after_copy(
+            &mut app,
+            &mut state,
+            &mut status_bar,
+            &mut copy_receiver,
+            &startup_paths.refresh_fallback_path,
+        );
 
         // A finished move or extraction may have changed both panes, even if it failed.
         if let Some(result) = app.poll_job() {
@@ -1487,7 +1510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &app.sort_type,
             ) {
                 if result.is_ok() {
-                    app.refresh_files_after_operation(files, &mut state);
+                    app.refresh_files_after_operation(files, &mut state, None);
                 } else {
                     app.refresh_files_from_watcher(files, &mut state);
                 }
@@ -1567,7 +1590,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &app.sort_type,
                         ) {
                             if success {
-                                app.refresh_files_after_operation(files, &mut state);
+                                app.refresh_files_after_operation(files, &mut state, None);
                             } else {
                                 app.refresh_files_from_watcher(files, &mut state);
                             }
@@ -1959,9 +1982,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if let Some(src_name) = src.file_name() {
                                                 let dest = Path::new(&dest_dir).join(src_name);
                                                 app.preserved_selection_index = state.selected();
-                                                app.start_copy(Some(
-                                                    src_name.to_string_lossy().to_string(),
-                                                ));
+                                                app.start_copy(
+                                                    dest.clone(),
+                                                    Some(src_name.to_string_lossy().to_string()),
+                                                );
                                                 copy_receiver =
                                                     Some(copy_dir_file_with_progress_cancellable(
                                                         src,
@@ -2078,7 +2102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let new_src =
                                             generate_copy_file_dir_name(src_path, &current_dir);
                                         app.preserved_selection_index = state.selected();
-                                        app.start_copy(None);
+                                        app.start_copy(new_src.clone(), None);
                                         copy_receiver =
                                             Some(copy_dir_file_with_progress_cancellable(
                                                 src_path,
@@ -2187,7 +2211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         "{}/{}",
                                         app.current_path_to_edit, app.create_edit_file_name
                                     );
-                                    if !check_if_exists(new_path) {
+                                    if !check_if_exists(new_path.clone()) {
                                         match handle_rename(&app) {
                                             Ok(_) => {
                                                 let current_dir = current_refresh_directory(
@@ -2204,6 +2228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.refresh_files_after_operation(
                                                     file_path_list,
                                                     &mut state,
+                                                    Some(new_path),
                                                 );
                                                 status_bar.invalidate_cache();
                                                 app.input_mode = InputMode::Normal;
@@ -2260,11 +2285,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(_) => {
                                             app.input_mode = InputMode::Normal;
 
+                                            let created_path = created_item_path(
+                                                Path::new(&new_path),
+                                                &app.create_edit_file_name,
+                                            );
                                             app.reset_create_edit_values();
-                                            refresh_file_list(&mut app, Path::new(&new_path))?;
+                                            refresh_file_list(
+                                                &mut app,
+                                                Path::new(&new_path),
+                                                &mut state,
+                                                created_path,
+                                            )?;
                                             status_bar.invalidate_cache();
-                                            // Reset selection to first item to avoid index out of bounds
-                                            state.select(Some(0));
                                         }
                                         Err(e) => {
                                             app.is_create_edit_error = true;
@@ -2332,7 +2364,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 app.sort_by.clone(),
                                                 &app.sort_type,
                                             )?;
-                                            app.refresh_files_after_operation(files, &mut state);
+                                            app.refresh_files_after_operation(
+                                                files, &mut state, None,
+                                            );
                                             status_bar.invalidate_cache();
                                         } else if let Err(e) = delete_result {
                                             status_bar.show_error(e.user_message(), None);
@@ -2409,7 +2443,7 @@ mod tests {
 
     fn running_copy_app() -> App {
         let mut app = App::new(Vec::new());
-        app.copy_in_progress = true;
+        app.start_copy(PathBuf::from("copy_target"), None);
         app.copy_progress_message = "Copying...".into();
         app.copy_files_processed = 2;
         app.copy_total_files = 10;
@@ -2421,6 +2455,7 @@ mod tests {
         assert!(app.copy_progress_message.is_empty());
         assert_eq!(app.copy_files_processed, 0);
         assert_eq!(app.copy_total_files, 0);
+        assert!(app.copy_destination.is_none());
         assert!(receiver.is_none());
     }
 
@@ -2432,6 +2467,167 @@ mod tests {
             total_bytes: 100,
             current_file: "data.txt".into(),
         }
+    }
+
+    #[test]
+    fn copy_refresh_selects_successful_destination_and_updates_preview_and_metadata() {
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("zulu.txt");
+            std::fs::write(&source, "copy contents").unwrap();
+            std::fs::write(dir.path().join("alpha.txt"), "existing").unwrap();
+            std::fs::write(dir.path().join("middle.txt"), "existing").unwrap();
+            let destination = generate_copy_file_dir_name(&source, dir.path());
+            if fail {
+                std::fs::write(&destination, "existing destination").unwrap();
+            }
+            let directory = dir.path().to_string_lossy().into_owned();
+            let files =
+                get_file_path_data(directory.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+            let mut app = App::new(files);
+            app.current_directory = directory.clone();
+            app.sort_by = SortBy::Name;
+            app.sort_type = SortType::ASC;
+            let mut state = ListState::default();
+            state.select(Some(app.files.len() - 1));
+            app.curr_index = state.selected();
+            app.preserved_selection_index = state.selected();
+            app.sync_preview_with_selection(state.selected());
+            app.start_copy(destination.clone(), None);
+            let mut receiver = Some(copy_dir_file_with_progress_cancellable(
+                &source,
+                &destination,
+                app.copy_cancel.clone(),
+            ));
+            let mut status = StatusBar::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while receiver.is_some() {
+                refresh_after_copy(&mut app, &mut state, &mut status, &mut receiver, &directory);
+                assert!(std::time::Instant::now() < deadline, "copy did not finish");
+                std::thread::yield_now();
+            }
+
+            let expected = if fail { &source } else { &destination }
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(
+                app.get_selected_path(state.selected()),
+                Some(expected.clone())
+            );
+            assert_eq!(app.curr_index, state.selected());
+            assert_copy_finished(&app, &receiver);
+            assert_eq!(
+                std::fs::read_to_string(&destination).unwrap(),
+                if fail {
+                    "existing destination"
+                } else {
+                    "copy contents"
+                },
+            );
+            // The main loop synchronizes previews after refreshing all operation results.
+            app.sync_preview_with_selection(state.selected());
+            assert_eq!(app.take_ready_preview(0), Some(expected));
+            status.update(&app);
+            assert!(status.selected_item_info.starts_with(if fail {
+                "zulu.txt |"
+            } else {
+                "copy_zulu.txt |"
+            }));
+        }
+    }
+
+    #[test]
+    fn copy_refresh_preserves_selection_after_navigation_or_cross_pane_copy() {
+        for cross_pane in [false, true] {
+            let browsed = tempfile::tempdir().unwrap();
+            let other = tempfile::tempdir().unwrap();
+            for directory in [browsed.path(), other.path()] {
+                for name in ["alpha.txt", "copy_target.txt", "zulu.txt"] {
+                    std::fs::write(directory.join(name), "contents").unwrap();
+                }
+            }
+            let directory = browsed.path().to_string_lossy().into_owned();
+            let files =
+                get_file_path_data(directory.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+            let mut app = App::new(files);
+            app.current_directory = directory.clone();
+            app.sort_by = SortBy::Name;
+            app.sort_type = SortType::ASC;
+            app.view_mode = ViewMode::DualPane;
+            app.right_pane = file_finder::pane::Pane::new(
+                other.path().to_string_lossy().into_owned(),
+                Vec::new(),
+            );
+            app.right_pane.list_state.select(Some(2));
+            let mut state = ListState::default();
+            state.select(Some(0));
+            app.preserved_selection_index = state.selected();
+            // A right-to-left Shift+C keeps selection even when its destination is visible.
+            // A local copy finishing after navigation must not select an unrelated namesake.
+            let destination_dir = if cross_pane {
+                browsed.path()
+            } else {
+                other.path()
+            };
+            app.start_copy(
+                destination_dir.join("copy_target.txt"),
+                cross_pane.then(|| "copy_target.txt".into()),
+            );
+            let (tx, rx) = mpsc::channel();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: "Copied".into(),
+                skipped_special_files: 0,
+            })
+            .unwrap();
+            let mut receiver = Some(rx);
+
+            refresh_after_copy(
+                &mut app,
+                &mut state,
+                &mut StatusBar::new(),
+                &mut receiver,
+                &directory,
+            );
+
+            assert_eq!(state.selected(), Some(0));
+            assert_eq!(
+                app.get_selected_path(state.selected()),
+                Some(
+                    browsed
+                        .path()
+                        .join("alpha.txt")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            assert_eq!(app.right_pane.list_state.selected(), Some(2));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn rename_refresh_selects_the_destination_after_input_is_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.txt"), "rename me").unwrap();
+        std::fs::write(dir.path().join("middle.txt"), "existing").unwrap();
+        let directory = dir.path().to_string_lossy().into_owned();
+        let mut app = App::new(Vec::new());
+        app.current_path_to_edit = directory.clone();
+        app.current_name_to_edit = "alpha.txt".into();
+        app.create_edit_file_name = "zulu.txt".into();
+        let mut state = ListState::default();
+        state.select(Some(0));
+        let destination = format!("{}/{}", app.current_path_to_edit, app.create_edit_file_name);
+
+        handle_rename(&app).unwrap();
+        app.reset_create_edit_values();
+        let files = get_file_path_data(directory, false, SortBy::Name, &SortType::ASC).unwrap();
+        app.refresh_files_after_operation(files, &mut state, Some(destination.clone()));
+
+        assert_eq!(state.selected(), Some(1));
+        assert_eq!(app.get_selected_path(state.selected()), Some(destination));
+        assert!(app.create_edit_file_name.is_empty());
     }
 
     #[test]
@@ -2467,6 +2663,7 @@ mod tests {
                     &mut terminal,
                     &mut quit_error,
                 );
+                assert_copy_finished(&app, &receiver);
                 returned_tx
                     .send((
                         allowed,

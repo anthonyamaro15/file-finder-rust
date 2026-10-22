@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use ratatui::widgets::ListState;
+
 use crate::{app::App, event::navigation::parent_directory, utils::get_file_path_data};
 
 pub fn containing_directory(path: &Path) -> PathBuf {
@@ -25,7 +27,20 @@ pub fn rename_target(path: &Path) -> Option<(PathBuf, String)> {
     Some((parent, name))
 }
 
-pub fn refresh_file_list(app: &mut App, directory: &Path) -> anyhow::Result<()> {
+/// Select the visible entry for a possibly nested created name.
+pub fn created_item_path(directory: &Path, name: &str) -> Option<String> {
+    Path::new(name)
+        .components()
+        .next()
+        .map(|component| directory.join(component).to_string_lossy().into_owned())
+}
+
+pub fn refresh_file_list(
+    app: &mut App,
+    directory: &Path,
+    state: &mut ListState,
+    select_path: Option<String>,
+) -> anyhow::Result<()> {
     let file_path_list = get_file_path_data(
         directory.to_string_lossy().to_string(),
         app.show_hidden_files,
@@ -33,9 +48,7 @@ pub fn refresh_file_list(app: &mut App, directory: &Path) -> anyhow::Result<()> 
         &app.sort_type,
     )?;
 
-    app.files = file_path_list.clone();
-    app.read_only_files = file_path_list;
-    app.update_file_references();
+    app.refresh_files_after_operation(file_path_list, state, select_path);
 
     Ok(())
 }
@@ -72,6 +85,78 @@ mod tests {
     }
 
     #[test]
+    fn create_refresh_selects_the_new_file_or_folder() {
+        for name in ["zulu.txt", "zulu"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join("alpha.txt"), "existing").unwrap();
+            let mut app = App::new(Vec::new());
+            app.sort_by = SortBy::Name;
+            app.sort_type = SortType::ASC;
+            let mut state = ratatui::widgets::ListState::default();
+            state.select(Some(0));
+            crate::operations::create_item_based_on_type(
+                dir.path().to_string_lossy().into_owned(),
+                name.into(),
+            )
+            .unwrap();
+
+            refresh_file_list(
+                &mut app,
+                dir.path(),
+                &mut state,
+                created_item_path(dir.path(), name),
+            )
+            .unwrap();
+
+            assert_eq!(state.selected(), Some(1));
+            assert_eq!(
+                app.get_selected_path(state.selected()),
+                Some(dir.path().join(name).to_string_lossy().into_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn create_refresh_selects_first_component_and_preserves_selection_for_hidden_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("alpha.txt"), "existing").unwrap();
+        fs::create_dir_all(dir.path().join("zulu/child")).unwrap();
+        let mut app = App::new(Vec::new());
+        app.sort_by = SortBy::Name;
+        app.sort_type = SortType::ASC;
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(0));
+
+        refresh_file_list(
+            &mut app,
+            dir.path(),
+            &mut state,
+            created_item_path(dir.path(), "zulu/child"),
+        )
+        .unwrap();
+        assert_eq!(state.selected(), Some(1));
+        assert_eq!(
+            app.get_selected_path(state.selected()),
+            Some(dir.path().join("zulu").to_string_lossy().into_owned())
+        );
+
+        crate::operations::create_item_based_on_type(
+            dir.path().to_string_lossy().into_owned(),
+            ".hidden.txt".into(),
+        )
+        .unwrap();
+        refresh_file_list(
+            &mut app,
+            dir.path(),
+            &mut state,
+            created_item_path(dir.path(), ".hidden.txt"),
+        )
+        .unwrap();
+        assert_eq!(state.selected(), Some(1));
+        assert_eq!(app.files.len(), 2);
+    }
+
+    #[test]
     fn refresh_file_list_preserves_current_sort_preferences() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         fs::write(temp_dir.path().join("apple.txt"), "small").expect("write apple");
@@ -81,7 +166,8 @@ mod tests {
         app.sort_by = SortBy::Name;
         app.sort_type = SortType::DESC;
 
-        refresh_file_list(&mut app, temp_dir.path()).expect("refresh");
+        refresh_file_list(&mut app, temp_dir.path(), &mut ListState::default(), None)
+            .expect("refresh");
 
         let names = app
             .files
