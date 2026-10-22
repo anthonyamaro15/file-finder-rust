@@ -334,6 +334,7 @@ pub struct App {
     pub copy_total_files: usize,
     /// Source name of a running `Shift+C` copy, which keeps its name in the other pane.
     pub copy_to_other_pane: Option<String>,
+    pub copy_destination: Option<PathBuf>,
 
     // File system watcher for real-time updates
     pub file_watcher: Option<FileSystemWatcher>,
@@ -530,6 +531,7 @@ impl App {
             copy_files_processed: 0,
             copy_total_files: 0,
             copy_to_other_pane: None,
+            copy_destination: None,
 
             // Initialize file watcher
             file_watcher: None,
@@ -901,12 +903,34 @@ impl App {
     }
 
     /// Show the refreshed directory after a successful file operation.
-    pub fn refresh_files_after_operation(&mut self, files: Vec<String>, state: &mut ListState) {
+    pub fn refresh_files_after_operation(
+        &mut self,
+        files: Vec<String>,
+        state: &mut ListState,
+        select_path: Option<String>,
+    ) {
         self.curr_index = self.preserved_selection_index.take().or(state.selected());
         self.clear_search();
         self.files = files.clone();
         self.read_only_files = files;
-        self.update_file_references();
+        // Match directory aliases (e.g. /tmp and /private/tmp), but keep symlink names distinct.
+        let select_path = select_path.and_then(|path| {
+            let path = Path::new(&path);
+            self.files
+                .iter()
+                .find(|file| {
+                    let file = Path::new(file);
+                    file == path
+                        || (file.file_name() == path.file_name()
+                            && file
+                                .parent()
+                                .and_then(|p| p.canonicalize().ok())
+                                .zip(path.parent().and_then(|p| p.canonicalize().ok()))
+                                .is_some_and(|(a, b)| a == b))
+                })
+                .cloned()
+        });
+        self.update_file_references_with_selection_preservation(select_path);
         state.select(self.curr_index);
         self.preserved_selection_index = self.curr_index;
     }
@@ -1302,7 +1326,7 @@ impl App {
     }
 
     /// Show a copy as running; its updates arrive on the copy channel.
-    pub fn start_copy(&mut self, to_other_pane: Option<String>) {
+    pub fn start_copy(&mut self, destination: PathBuf, to_other_pane: Option<String>) {
         self.quit_warning = None;
         self.copy_cancel = Arc::new(AtomicBool::new(false));
         self.copy_in_progress = true;
@@ -1310,6 +1334,7 @@ impl App {
         self.copy_files_processed = 0;
         self.copy_total_files = 0;
         self.copy_to_other_pane = to_other_pane;
+        self.copy_destination = Some(destination);
     }
 
     /// Source and destination folder for `Shift+C`/`Shift+M`: the active pane's
@@ -1593,6 +1618,104 @@ mod tests {
     }
 
     #[test]
+    fn operation_refresh_selects_new_path_after_sorting_and_clears_local_search() {
+        let mut app = local_search_app(&["cwd/alpha.txt", "cwd/zulu.txt"], "alpha");
+        app.preserved_selection_index = Some(0);
+        let mut state = ListState::default();
+        state.select(Some(0));
+
+        app.refresh_files_after_operation(
+            vec![
+                "cwd/alpha.txt".into(),
+                "cwd/bravo.txt".into(),
+                "cwd/zulu.txt".into(),
+            ],
+            &mut state,
+            Some("cwd/zulu.txt".into()),
+        );
+
+        assert_eq!(state.selected(), Some(2));
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("cwd/zulu.txt")
+        );
+        assert_eq!(app.curr_index, Some(2));
+        assert_eq!(app.preserved_selection_index, Some(2));
+        assert!(app.search_results.is_empty());
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn operation_refresh_missing_path_keeps_the_clamped_selection() {
+        for (preserved, selected, files, expected) in [
+            (
+                Some(1),
+                Some(0),
+                vec!["cwd/alpha", "cwd/bravo", "cwd/charlie"],
+                Some(1),
+            ),
+            (
+                None,
+                Some(1),
+                vec!["cwd/alpha", "cwd/bravo", "cwd/charlie"],
+                Some(1),
+            ),
+            (Some(9), Some(0), vec!["cwd/alpha", "cwd/bravo"], Some(1)),
+            (None, None, vec!["cwd/alpha"], Some(0)),
+            (Some(1), Some(1), Vec::new(), None),
+        ] {
+            let mut app = App::new(Vec::new());
+            app.preserved_selection_index = preserved;
+            let mut state = ListState::default();
+            state.select(selected);
+
+            app.refresh_files_after_operation(
+                files.into_iter().map(String::from).collect(),
+                &mut state,
+                Some("elsewhere/alpha".into()),
+            );
+
+            assert_eq!(state.selected(), expected);
+            assert_eq!(app.curr_index, expected);
+            assert_eq!(app.preserved_selection_index, expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn operation_refresh_matches_directory_aliases_without_following_leaf_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let alias = dir.path().join("alias");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        std::fs::write(real.join("alpha.txt"), "source").unwrap();
+        std::os::unix::fs::symlink("alpha.txt", real.join("zulu.txt")).unwrap();
+        let files = crate::utils::get_file_path_data(
+            real.to_string_lossy().into_owned(),
+            false,
+            SortBy::Name,
+            &SortType::ASC,
+        )
+        .unwrap();
+        let mut app = App::new(files.clone());
+        let mut state = ListState::default();
+        state.select(Some(0));
+
+        app.refresh_files_after_operation(
+            files,
+            &mut state,
+            Some(alias.join("zulu.txt").to_string_lossy().into_owned()),
+        );
+
+        assert_eq!(state.selected(), Some(1));
+        assert_eq!(
+            app.get_selected_path(state.selected()),
+            Some(real.join("zulu.txt").to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
     fn operation_refresh_clears_search_and_clamps_preserved_selection() {
         for (files, expected) in [
             (
@@ -1609,7 +1732,7 @@ mod tests {
             let mut state = ListState::default();
             state.select(Some(0));
 
-            app.refresh_files_after_operation(files.clone(), &mut state);
+            app.refresh_files_after_operation(files.clone(), &mut state, None);
 
             assert_eq!(app.current_directory, "cwd");
             assert!(app.search_results.is_empty());
@@ -1811,7 +1934,7 @@ mod tests {
     /// Make `kind` the running operation; job kinds run until the sender is used.
     fn start_operation(app: &mut App, kind: &'static str) -> Option<mpsc::Sender<()>> {
         match kind {
-            "copy" => app.start_copy(None),
+            "copy" => app.start_copy(PathBuf::from("copy_target"), None),
             "delete" => app.delete_in_progress = true,
             _ => {
                 let (release, wait) = mpsc::channel::<()>();
@@ -1906,7 +2029,7 @@ mod tests {
         let start = Instant::now();
         assert_eq!(app.confirm_quit("q", start), Ok(()));
 
-        app.start_copy(None);
+        app.start_copy(PathBuf::from("copy_target"), None);
         let warning = "Copy in progress — press q again to quit anyway".to_string();
         assert_eq!(app.confirm_quit("q", start), Err(warning.clone()));
         assert_eq!(
