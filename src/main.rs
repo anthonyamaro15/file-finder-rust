@@ -100,8 +100,9 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
     }
 }
 
+/// Directory to reload the left listing from; the right pane refreshes itself.
 fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
-    let current_directory = app.current_directory_path();
+    let current_directory = app.left_directory_path();
 
     if current_directory == PathBuf::from(".") {
         fallback_start_path.to_string()
@@ -177,6 +178,15 @@ fn poll_copy_messages(
             message,
             skipped_special_files,
         }) => {
+            // The engine names the destination, which a cross-pane copy shares with its source.
+            let message = app
+                .copy_to_other_pane
+                .as_deref()
+                .and_then(|name| {
+                    let details = message.strip_prefix(&format!("Copied '{name}' to '{name}'"))?;
+                    Some(format!("Copied '{name}' to other pane{details}"))
+                })
+                .unwrap_or(message);
             if success {
                 debug!("Copy completed: {}", message);
                 if skipped_special_files > 0 {
@@ -201,8 +211,20 @@ fn poll_copy_messages(
     app.copy_progress_message.clear();
     app.copy_files_processed = 0;
     app.copy_total_files = 0;
+    app.copy_to_other_pane = None;
     *receiver = None;
     success
+}
+
+/// Whether an exit key may leave the main loop now; warns instead while an operation runs.
+fn may_exit(app: &mut App, status_bar: &mut StatusBar, key: &'static str) -> bool {
+    match app.confirm_quit(key, std::time::Instant::now()) {
+        Ok(()) => true,
+        Err(warning) => {
+            status_bar.show_warning(warning, None);
+            false
+        }
+    }
 }
 
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
@@ -1391,6 +1413,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.refresh_files_after_operation(files, &mut state);
                 status_bar.invalidate_cache();
             }
+            // Shift+C may have copied into the right pane's folder.
+            if app.view_mode.is_dual_pane() {
+                app.right_pane.refresh_files();
+            }
+        }
+
+        // A finished move or extraction may have changed both panes, even if it failed.
+        if let Some(result) = app.poll_job() {
+            let refresh_dir = current_refresh_directory(&app, &startup_paths.refresh_fallback_path);
+            if let Ok(files) = get_file_path_data(
+                refresh_dir,
+                app.show_hidden_files,
+                app.sort_by.clone(),
+                &app.sort_type,
+            ) {
+                if result.is_ok() {
+                    app.refresh_files_after_operation(files, &mut state);
+                } else {
+                    app.refresh_files_from_watcher(files, &mut state);
+                }
+                status_bar.invalidate_cache();
+            }
+            if app.view_mode.is_dual_pane() {
+                app.right_pane.refresh_files();
+            }
+            match result {
+                Ok(message) => status_bar.show_info(message, None),
+                Err(message) => {
+                    warn!("Background operation failed: {}", message);
+                    status_bar.show_error(message, None);
+                }
+            }
         }
 
         // Handle delete progress messages
@@ -1401,6 +1455,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(msg) => last_msg = Some(msg),
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
+                        // A worker that dies without a result must not block later operations.
+                        if !matches!(
+                            last_msg,
+                            Some(DeleteMessage::Completed { .. } | DeleteMessage::Error(_))
+                        ) {
+                            last_msg = Some(DeleteMessage::Error(
+                                "Delete stopped unexpectedly before reporting a result".into(),
+                            ));
+                        }
                         delete_receiver = None;
                         break;
                     }
@@ -1594,7 +1657,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match key.code {
                                 KeyCode::Char('q') => {
-                                    break;
+                                    if may_exit(&mut app, &mut status_bar, "q") {
+                                        break;
+                                    }
                                 }
                                 KeyCode::Down | KeyCode::Char('j') => {
                                     // In DualPane mode with right pane active, navigate right pane
@@ -1756,6 +1821,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 KeyCode::Char('o') => {
                                     if let Some(selected) = app.get_selected_path(state.selected())
                                     {
+                                        // Opening leaves ff, so it waits for confirmation during an operation.
+                                        if !may_exit(&mut app, &mut status_bar, "o") {
+                                            continue;
+                                        }
                                         // Spawn without waiting; null stdio keeps opener output off the TUI.
                                         match Command::new(system_opener())
                                             .arg(&selected)
@@ -1807,142 +1876,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 KeyCode::Char('C') => {
-                                    // Shift+C: Copy selected file to other pane (DualPane mode only)
+                                    // Shift+C: copy the highlighted item into the other pane's folder.
                                     if app.view_mode.is_dual_pane() {
-                                        // Get source and destination based on active pane
-                                        let (src_path, dest_dir) = if app.is_right_pane_active() {
-                                            // Right pane active: copy from right to left
-                                            let src = app.right_pane.get_selected_path();
-                                            let dest = app.current_directory.clone();
-                                            (src, dest)
-                                        } else {
-                                            // Left pane active: copy from left to right
-                                            let src = state
-                                                .selected()
-                                                .and_then(|i| app.files.get(i).cloned());
-                                            let dest = app.right_pane.current_directory.clone();
-                                            (src, dest)
-                                        };
-
-                                        if let Some(src_path) = src_path {
-                                            let src = std::path::Path::new(&src_path);
-                                            let src_name = src
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("");
-                                            let dest =
-                                                std::path::Path::new(&dest_dir).join(src_name);
-
-                                            match operations::copy_dir_file_helper(src, &dest) {
-                                                Ok(()) => {
-                                                    // Refresh the destination pane
-                                                    if app.is_right_pane_active() {
-                                                        // Refresh left pane
-                                                        if let Ok(Some(new_files)) =
-                                                            get_inner_files_info(
-                                                                app.current_directory.clone(),
-                                                                app.show_hidden_files,
-                                                                app.sort_by.clone(),
-                                                                &app.sort_type,
-                                                            )
-                                                        {
-                                                            app.files = new_files;
-                                                            app.update_file_references();
-                                                        }
-                                                    } else {
-                                                        app.right_pane.refresh_files();
-                                                    }
-                                                    status_bar.show_info(
-                                                        format!(
-                                                            "Copied '{}' to other pane",
-                                                            src_name
-                                                        ),
-                                                        Some(2),
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    status_bar.show_error(
-                                                        format!("Copy failed: {}", e),
-                                                        Some(3),
-                                                    );
-                                                }
+                                        if let Some(warning) = app.busy_warning() {
+                                            status_bar.show_warning(warning, None);
+                                        } else if let Some((src_path, dest_dir)) =
+                                            app.other_pane_transfer(state.selected())
+                                        {
+                                            let src = Path::new(&src_path);
+                                            if let Some(src_name) = src.file_name() {
+                                                let dest = Path::new(&dest_dir).join(src_name);
+                                                copy_receiver =
+                                                    Some(copy_dir_file_with_progress(src, &dest));
+                                                app.preserved_selection_index = state.selected();
+                                                app.start_copy(Some(
+                                                    src_name.to_string_lossy().to_string(),
+                                                ));
                                             }
                                         }
                                     }
                                 }
                                 KeyCode::Char('M') => {
-                                    // Shift+M: Move selected file to other pane (DualPane mode only)
+                                    // Shift+M: move the highlighted item into the other pane's folder.
                                     if app.view_mode.is_dual_pane() {
-                                        // Get source and destination based on active pane
-                                        let is_right_active = app.is_right_pane_active();
-                                        let (src_path, dest_dir) = if is_right_active {
-                                            // Right pane active: move from right to left
-                                            let src = app.right_pane.get_selected_path();
-                                            let dest = app.current_directory.clone();
-                                            (src, dest)
-                                        } else {
-                                            // Left pane active: move from left to right
-                                            let src = state
-                                                .selected()
-                                                .and_then(|i| app.files.get(i).cloned());
-                                            let dest = app.right_pane.current_directory.clone();
-                                            (src, dest)
-                                        };
-
-                                        if let Some(src_path) = src_path {
-                                            let src_name = std::path::Path::new(&src_path)
+                                        if let Some((src_path, dest_dir)) =
+                                            app.other_pane_transfer(state.selected())
+                                        {
+                                            let name = Path::new(&src_path)
                                                 .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("")
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
                                                 .to_string();
-
-                                            match operations::move_file_or_dir(&src_path, &dest_dir)
-                                            {
-                                                Ok(()) => {
-                                                    // Refresh both panes
-                                                    if let Ok(Some(new_files)) =
-                                                        get_inner_files_info(
-                                                            app.current_directory.clone(),
-                                                            app.show_hidden_files,
-                                                            app.sort_by.clone(),
-                                                            &app.sort_type,
-                                                        )
-                                                    {
-                                                        app.files = new_files;
-                                                        app.update_file_references();
-                                                    }
-                                                    app.right_pane.refresh_files();
-
-                                                    // Adjust selection in the source pane
-                                                    if is_right_active {
-                                                        // Selection adjustment handled by right_pane.refresh_files()
-                                                    } else {
-                                                        if let Some(index) = state.selected() {
-                                                            if app.files.is_empty() {
-                                                                state.select(None);
-                                                            } else if index >= app.files.len() {
-                                                                state.select(Some(
-                                                                    app.files.len() - 1,
-                                                                ));
-                                                            }
-                                                        }
-                                                    }
-
-                                                    status_bar.show_info(
-                                                        format!(
-                                                            "Moved '{}' to other pane",
-                                                            src_name
-                                                        ),
-                                                        Some(2),
-                                                    );
-                                                    status_bar.invalidate_cache();
-                                                }
-                                                Err(e) => {
-                                                    status_bar.show_error(
-                                                        format!("Move failed: {}", e),
-                                                        Some(3),
-                                                    );
-                                                }
+                                            let status = format!("Moving '{name}'…");
+                                            let started =
+                                                app.start_job("move", status, move || {
+                                                    operations::move_file_or_dir(
+                                                        &src_path, &dest_dir,
+                                                    )
+                                                    .map(|()| {
+                                                        format!("Moved '{name}' to other pane")
+                                                    })
+                                                    .map_err(|e| format!("Move failed: {e}"))
+                                                });
+                                            if let Err(warning) = started {
+                                                status_bar.show_warning(warning, None);
                                             }
                                         }
                                     }
@@ -1953,11 +1930,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let file_type = file_reader_content
                                             .get_file_extension(selected.clone());
                                         if let FileType::ZIP = file_type {
-                                            match FileContent::extract_zip_content(&selected) {
-                                                Ok(message) => status_bar.show_info(message, None),
-                                                Err(message) => {
-                                                    status_bar.show_error(message, None)
-                                                }
+                                            let name = Path::new(&selected)
+                                                .file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .to_string();
+                                            let status = format!("Extracting '{name}'…");
+                                            let started =
+                                                app.start_job("extraction", status, move || {
+                                                    FileContent::extract_zip_content(&selected)
+                                                });
+                                            if let Err(warning) = started {
+                                                status_bar.show_warning(warning, None);
                                             }
                                         }
                                     }
@@ -2003,7 +1987,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 KeyCode::Char('c') => {
                                     // Copy the highlighted item beside its source.
-                                    if let Some(selected) = app.get_selected_path(state.selected())
+                                    if let Some(warning) = app.busy_warning() {
+                                        status_bar.show_warning(warning, None);
+                                    } else if let Some(selected) =
+                                        app.get_selected_path(state.selected())
                                     {
                                         let src_path = Path::new(&selected);
                                         let current_dir = containing_directory_or_current(src_path);
@@ -2012,11 +1999,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         copy_receiver =
                                             Some(copy_dir_file_with_progress(src_path, &new_src));
                                         app.preserved_selection_index = state.selected();
-                                        app.copy_in_progress = true;
-                                        app.copy_progress_message =
-                                            String::from("Starting copy...");
-                                        app.copy_files_processed = 0;
-                                        app.copy_total_files = 0;
+                                        app.start_copy(None);
                                     }
                                 }
 
@@ -2033,6 +2016,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let selected_path = app.get_selected_path(state.selected());
 
                                     if let Some(selected) = selected_path {
+                                        // Leaving for the shell or editor waits for confirmation during an operation.
+                                        if !may_exit(&mut app, &mut status_bar, "Enter") {
+                                            continue;
+                                        }
                                         app.input = selected.clone();
 
                                         // Check if print_path mode - hand the path to the shell integration
@@ -2200,7 +2187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchDelete => match key.code {
                             KeyCode::Char('q') => {
                                 app.close_delete_popup();
-                                break;
+                                if may_exit(&mut app, &mut status_bar, "q") {
+                                    break;
+                                }
                             }
                             KeyCode::Char('n') | KeyCode::Esc => {
                                 app.close_delete_popup();
@@ -2213,11 +2202,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .map(|metadata| metadata.is_dir())
                                         .unwrap_or(false)
                                     {
-                                        app.delete_in_progress = true;
-                                        app.delete_progress_message =
-                                            "Counting files...".to_string();
-                                        app.preserved_selection_index = state.selected();
-                                        delete_receiver = Some(delete_with_progress(&selected));
+                                        // Folders delete in the background, one operation at a time.
+                                        if let Some(warning) = app.busy_warning() {
+                                            status_bar.show_warning(warning, None);
+                                        } else {
+                                            app.delete_in_progress = true;
+                                            app.delete_progress_message =
+                                                "Counting files...".to_string();
+                                            app.preserved_selection_index = state.selected();
+                                            delete_receiver = Some(delete_with_progress(&selected));
+                                        }
                                     } else {
                                         // A file removed externally already satisfies the request.
                                         let delete_result = handle_delete_based_on_type(&selected);
@@ -2363,6 +2357,34 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("copy_data"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_to_other_pane_names_the_pane_and_keeps_details() {
+        for (skipped_special_files, details) in [
+            (0, ""),
+            (1, " (skipped 1 special file: sockets/pipes/devices)"),
+        ] {
+            let mut app = running_copy_app();
+            app.copy_to_other_pane = Some("data".into());
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: format!("Copied 'data' to 'data'{details}"),
+                skipped_special_files,
+            })
+            .unwrap();
+            let mut receiver = Some(rx);
+
+            assert!(poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(
+                status.error_message,
+                Some(format!("Copied 'data' to other pane{details}"))
+            );
+            assert_eq!(app.copy_to_other_pane, None);
             assert_copy_finished(&app, &receiver);
         }
     }
@@ -2588,6 +2610,20 @@ mod tests {
         assert_eq!(
             current_refresh_directory(&app, "/tmp/ff-settings-start"),
             "/tmp/ff-current"
+        );
+    }
+
+    #[test]
+    fn refresh_directory_stays_on_left_listing_while_right_pane_is_active() {
+        let mut app = App::new(vec!["/tmp/ff-left/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-left".to_string();
+        app.view_mode = ViewMode::DualPane;
+        app.active_pane = PanePosition::Right;
+        app.right_pane = file_finder::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-left"
         );
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -331,6 +331,8 @@ pub struct App {
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
+    /// Source name of a running `Shift+C` copy, which keeps its name in the other pane.
+    pub copy_to_other_pane: Option<String>,
 
     // File system watcher for real-time updates
     pub file_watcher: Option<FileSystemWatcher>,
@@ -383,12 +385,69 @@ pub struct App {
 
     // Async image loading (separate channel because DynamicImage has different traits)
     pub image_receiver: Option<mpsc::Receiver<ImageLoadResult>>,
+
+    /// Running move or ZIP extraction, if any.
+    pub job: Option<BackgroundJob>,
+    /// Exit key and time of the last "operation in progress" quit warning.
+    pub quit_warning: Option<(&'static str, Instant)>,
 }
+
+/// How long the same exit key, pressed again, leaves despite a running operation.
+pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 
 /// Result of async image loading
 pub struct ImageLoadResult {
     pub path: String,
     pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
+}
+
+/// One-shot background operation (move, ZIP extraction) that reports a single result.
+#[derive(Debug)]
+pub struct BackgroundJob {
+    /// Operation name for warnings, e.g. "move".
+    pub kind: &'static str,
+    /// List title while it runs, e.g. "Moving 'notes'…".
+    pub status: String,
+    receiver: mpsc::Receiver<Result<String, String>>,
+}
+
+impl BackgroundJob {
+    /// Run `work` on its own thread; its result is the notification, info or error.
+    pub fn spawn(
+        kind: &'static str,
+        status: String,
+        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) -> Self {
+        let (tx, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        Self {
+            kind,
+            status,
+            receiver,
+        }
+    }
+
+    /// The result once the job finishes; a job that dies without one reports an error.
+    pub fn poll(&self) -> Option<Result<String, String>> {
+        match self.receiver.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(format!(
+                "{} stopped unexpectedly before reporting a result",
+                sentence_case(self.kind)
+            ))),
+        }
+    }
+}
+
+/// Capitalize an operation name that starts a message ("move" -> "Move").
+fn sentence_case(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 impl App {
@@ -454,6 +513,7 @@ impl App {
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
+            copy_to_other_pane: None,
 
             // Initialize file watcher
             file_watcher: None,
@@ -507,6 +567,9 @@ impl App {
 
             // Initialize async image loading
             image_receiver: None,
+
+            job: None,
+            quit_warning: None,
         }
     }
 
@@ -1164,6 +1227,84 @@ impl App {
         }
     }
 
+    /// Name of the running background operation, if any; only one runs at a time.
+    pub fn busy_operation(&self) -> Option<&'static str> {
+        if self.copy_in_progress {
+            Some("copy")
+        } else if self.delete_in_progress {
+            Some("delete")
+        } else {
+            self.job.as_ref().map(|job| job.kind)
+        }
+    }
+
+    /// Warning for starting another operation while one runs; `None` means go ahead.
+    pub fn busy_warning(&self) -> Option<String> {
+        self.busy_operation()
+            .map(|operation| format!("Wait for the current {operation} to finish"))
+    }
+
+    /// Run `work` in the background unless another operation runs (returns its warning).
+    pub fn start_job(
+        &mut self,
+        kind: &'static str,
+        status: String,
+        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) -> Result<(), String> {
+        if let Some(warning) = self.busy_warning() {
+            return Err(warning);
+        }
+        self.job = Some(BackgroundJob::spawn(kind, status, work));
+        Ok(())
+    }
+
+    /// Take the job's result once it finishes, which frees the slot for the next operation.
+    pub fn poll_job(&mut self) -> Option<Result<String, String>> {
+        let result = self.job.as_ref()?.poll()?;
+        self.job = None;
+        Some(result)
+    }
+
+    /// Allow leaving `ff` with `key` unless an operation runs. Then the first press
+    /// returns a warning, and the same key again within the window leaves anyway.
+    pub fn confirm_quit(&mut self, key: &'static str, now: Instant) -> Result<(), String> {
+        let Some(operation) = self.busy_operation() else {
+            return Ok(());
+        };
+        let repeated = self.quit_warning.is_some_and(|(warned_key, warned_at)| {
+            warned_key == key && now.saturating_duration_since(warned_at) <= QUIT_CONFIRM_WINDOW
+        });
+        if repeated {
+            return Ok(());
+        }
+        self.quit_warning = Some((key, now));
+        Err(format!(
+            "{} in progress — press {key} again to quit anyway",
+            sentence_case(operation)
+        ))
+    }
+
+    /// Show a copy as running; its updates arrive on the copy channel.
+    pub fn start_copy(&mut self, to_other_pane: Option<String>) {
+        self.copy_in_progress = true;
+        self.copy_progress_message = String::from("Starting copy...");
+        self.copy_files_processed = 0;
+        self.copy_total_files = 0;
+        self.copy_to_other_pane = to_other_pane;
+    }
+
+    /// Source and destination folder for `Shift+C`/`Shift+M`: the active pane's
+    /// highlighted item goes to the other pane's folder.
+    pub fn other_pane_transfer(&self, selected_index: Option<usize>) -> Option<(String, String)> {
+        if self.is_right_pane_active() {
+            let destination = self.left_directory_path().to_string_lossy().to_string();
+            Some((self.right_pane.get_selected_path()?, destination))
+        } else {
+            let source = self.get_selected_path(selected_index)?;
+            Some((source, self.right_pane.current_directory.clone()))
+        }
+    }
+
     /// Freeze the highlighted target for the delete confirmation popup.
     pub fn prepare_delete(&mut self, selected_index: Option<usize>) {
         let Some(selected) = self.get_selected_path(selected_index) else {
@@ -1201,7 +1342,14 @@ impl App {
     pub fn current_directory_path(&self) -> PathBuf {
         if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
             PathBuf::from(&self.right_pane.current_directory)
-        } else if !self.current_directory.is_empty() {
+        } else {
+            self.left_directory_path()
+        }
+    }
+
+    /// Get the directory shown by the left (main) listing, whichever pane is active.
+    pub fn left_directory_path(&self) -> PathBuf {
+        if !self.current_directory.is_empty() {
             PathBuf::from(&self.current_directory)
         } else if let Some(first_file) = self.files.first() {
             Path::new(first_file)
@@ -1629,6 +1777,146 @@ mod tests {
         assert_eq!(app.curr_index, Some(0));
     }
 
+    /// Spin until the app's job reports, failing instead of hanging if it never does.
+    fn wait_for_job(app: &mut App) -> Result<String, String> {
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(result) = app.poll_job() {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "job never reported a result");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Make `kind` the running operation; job kinds run until the sender is used.
+    fn start_operation(app: &mut App, kind: &'static str) -> Option<mpsc::Sender<()>> {
+        match kind {
+            "copy" => app.start_copy(None),
+            "delete" => app.delete_in_progress = true,
+            _ => {
+                let (release, wait) = mpsc::channel::<()>();
+                app.start_job(kind, format!("Running {kind}"), move || {
+                    wait.recv().map_err(|e| e.to_string())?;
+                    Ok(format!("Finished {kind}"))
+                })
+                .unwrap();
+                return Some(release);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn busy_guard_blocks_a_second_operation_of_each_kind_and_allows_browsing() {
+        for kind in ["copy", "delete", "move", "extraction"] {
+            let mut app = App::new(vec!["alpha.txt".into(), "bravo.txt".into()]);
+            assert_eq!(app.busy_warning(), None);
+            let release = start_operation(&mut app, kind);
+            let warning = format!("Wait for the current {kind} to finish");
+            assert_eq!(app.busy_operation(), Some(kind));
+            assert_eq!(app.busy_warning().as_deref(), Some(warning.as_str()));
+
+            // Another operation is refused and leaves the running one in place.
+            for other in ["move", "extraction"] {
+                let refused = app.start_job(other, "Second".into(), || Ok(String::new()));
+                assert_eq!(refused, Err(warning.clone()));
+            }
+            assert_eq!(app.busy_operation(), Some(kind));
+            if release.is_some() {
+                assert_eq!(app.job.as_ref().unwrap().status, format!("Running {kind}"));
+            }
+
+            // Browsing neither waits for nor ends the operation.
+            app.enter_search(SearchScope::CurrentDirectory);
+            app.perform_local_search("bravo");
+            assert_eq!(app.get_selected_path(Some(0)).as_deref(), Some("bravo.txt"));
+            app.clear_search();
+            app.view_mode = app.view_mode.next();
+            app.sync_preview_with_selection(Some(1));
+            assert_eq!(app.take_ready_preview(0).as_deref(), Some("bravo.txt"));
+            assert_eq!(app.busy_operation(), Some(kind));
+
+            if let Some(release) = release {
+                assert_eq!(app.poll_job(), None);
+                release.send(()).unwrap();
+                assert_eq!(wait_for_job(&mut app), Ok(format!("Finished {kind}")));
+                assert_eq!(app.busy_operation(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn panicking_background_job_reports_an_error() {
+        let mut app = App::new(Vec::new());
+        app.start_job("extraction", "Extracting 'a.zip'…".into(), || {
+            panic!("extraction worker crashed")
+        })
+        .unwrap();
+        assert_eq!(
+            wait_for_job(&mut app),
+            Err("Extraction stopped unexpectedly before reporting a result".into())
+        );
+        assert_eq!(app.busy_operation(), None);
+    }
+
+    #[test]
+    fn other_pane_transfer_uses_the_highlighted_item_of_the_active_pane() {
+        let mut app = local_search_app(&["/l/alpha.txt", "/l/charlie.txt"], "charlie");
+        app.current_directory = "/l".into();
+        app.view_mode = ViewMode::DualPane;
+        app.right_pane = crate::pane::Pane::new("/r".into(), vec!["/r/bravo.txt".into()]);
+
+        // Row 0 is the visible search result, not the folder's first file.
+        assert_eq!(
+            app.other_pane_transfer(Some(0)),
+            Some(("/l/charlie.txt".into(), "/r".into()))
+        );
+        assert_eq!(app.other_pane_transfer(Some(1)), None);
+
+        app.active_pane = PanePosition::Right;
+        assert_eq!(
+            app.other_pane_transfer(None),
+            Some(("/r/bravo.txt".into(), "/l".into()))
+        );
+    }
+
+    #[test]
+    fn quit_while_busy_needs_the_same_key_again_within_the_window() {
+        let mut app = App::new(Vec::new());
+        let start = Instant::now();
+        assert_eq!(app.confirm_quit("q", start), Ok(()));
+
+        app.start_copy(None);
+        let warning = "Copy in progress — press q again to quit anyway".to_string();
+        assert_eq!(app.confirm_quit("q", start), Err(warning.clone()));
+        assert_eq!(
+            app.confirm_quit("q", start + Duration::from_secs(2)),
+            Ok(())
+        );
+
+        // Once the window passes, the next press warns again and restarts it.
+        let late = start + QUIT_CONFIRM_WINDOW + Duration::from_secs(1);
+        assert_eq!(app.confirm_quit("q", late), Err(warning));
+        // Another exit key is confirmed on its own.
+        let second = late + Duration::from_secs(1);
+        assert_eq!(
+            app.confirm_quit("Enter", second),
+            Err("Copy in progress — press Enter again to quit anyway".into())
+        );
+        assert_eq!(app.confirm_quit("Enter", second), Ok(()));
+
+        app.copy_in_progress = false;
+        app.delete_in_progress = true;
+        let later = second + QUIT_CONFIRM_WINDOW * 2;
+        assert_eq!(
+            app.confirm_quit("q", later),
+            Err("Delete in progress — press q again to quit anyway".into())
+        );
+        app.delete_in_progress = false;
+        assert_eq!(app.confirm_quit("o", later), Ok(()));
+    }
+
     #[test]
     fn current_directory_path_falls_back_to_dot_without_state() {
         let app = App::new(Vec::new());
@@ -1656,6 +1944,7 @@ mod tests {
         app.right_pane = crate::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
 
         assert_eq!(app.current_directory_path(), PathBuf::from("/tmp/ff-right"));
+        assert_eq!(app.left_directory_path(), PathBuf::from("/tmp/ff-left"));
     }
 
     #[test]
