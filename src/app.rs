@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{atomic::AtomicBool, mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -328,6 +328,7 @@ pub struct App {
 
     // Copy progress tracking
     pub copy_in_progress: bool,
+    pub copy_cancel: Arc<AtomicBool>,
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
@@ -409,6 +410,7 @@ pub struct BackgroundJob {
     /// List title while it runs, e.g. "Moving 'notes'…".
     pub status: String,
     receiver: mpsc::Receiver<Result<String, String>>,
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl BackgroundJob {
@@ -416,17 +418,30 @@ impl BackgroundJob {
     pub fn spawn(
         kind: &'static str,
         status: String,
-        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+        work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Self {
         let (tx, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(work());
+            let _ = tx.send(work(worker_cancel));
         });
         Self {
             kind,
             status,
             receiver,
+            cancel,
         }
+    }
+
+    /// Wait until the worker has finished writing and cleaning up.
+    pub fn wait(self) -> Result<String, String> {
+        self.receiver.recv().unwrap_or_else(|_| {
+            Err(format!(
+                "{} stopped unexpectedly before reporting a result",
+                sentence_case(self.kind)
+            ))
+        })
     }
 
     /// The result once the job finishes; a job that dies without one reports an error.
@@ -510,6 +525,7 @@ impl App {
 
             // Initialize copy progress tracking
             copy_in_progress: false,
+            copy_cancel: Arc::new(AtomicBool::new(false)),
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
@@ -1249,11 +1265,12 @@ impl App {
         &mut self,
         kind: &'static str,
         status: String,
-        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+        work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Result<(), String> {
         if let Some(warning) = self.busy_warning() {
             return Err(warning);
         }
+        self.quit_warning = None;
         self.job = Some(BackgroundJob::spawn(kind, status, work));
         Ok(())
     }
@@ -1286,6 +1303,8 @@ impl App {
 
     /// Show a copy as running; its updates arrive on the copy channel.
     pub fn start_copy(&mut self, to_other_pane: Option<String>) {
+        self.quit_warning = None;
+        self.copy_cancel = Arc::new(AtomicBool::new(false));
         self.copy_in_progress = true;
         self.copy_progress_message = String::from("Starting copy...");
         self.copy_files_processed = 0;
@@ -1796,7 +1815,7 @@ mod tests {
             "delete" => app.delete_in_progress = true,
             _ => {
                 let (release, wait) = mpsc::channel::<()>();
-                app.start_job(kind, format!("Running {kind}"), move || {
+                app.start_job(kind, format!("Running {kind}"), move |_| {
                     wait.recv().map_err(|e| e.to_string())?;
                     Ok(format!("Finished {kind}"))
                 })
@@ -1819,7 +1838,7 @@ mod tests {
 
             // Another operation is refused and leaves the running one in place.
             for other in ["move", "extraction"] {
-                let refused = app.start_job(other, "Second".into(), || Ok(String::new()));
+                let refused = app.start_job(other, "Second".into(), |_| Ok(String::new()));
                 assert_eq!(refused, Err(warning.clone()));
             }
             assert_eq!(app.busy_operation(), Some(kind));
@@ -1849,7 +1868,7 @@ mod tests {
     #[test]
     fn panicking_background_job_reports_an_error() {
         let mut app = App::new(Vec::new());
-        app.start_job("extraction", "Extracting 'a.zip'…".into(), || {
+        app.start_job("extraction", "Extracting 'a.zip'…".into(), |_| {
             panic!("extraction worker crashed")
         })
         .unwrap();
