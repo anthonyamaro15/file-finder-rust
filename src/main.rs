@@ -52,7 +52,7 @@ use file_finder::{
     },
     file_reader_content::{FileContent, FileType},
     operations::{
-        copy_dir_file_with_progress, create_item_based_on_type, delete_with_progress,
+        copy_dir_file_with_progress_cancellable, create_item_based_on_type, delete_with_progress,
         handle_delete_based_on_type, handle_rename, CopyMessage, DeleteMessage,
     },
     render::{
@@ -216,15 +216,72 @@ fn poll_copy_messages(
     success
 }
 
-/// Whether an exit key may leave the main loop now; warns instead while an operation runs.
-fn may_exit(app: &mut App, status_bar: &mut StatusBar, key: &'static str) -> bool {
-    match app.confirm_quit(key, std::time::Instant::now()) {
-        Ok(()) => true,
-        Err(warning) => {
-            status_bar.show_warning(warning, None);
-            false
+/// Confirm once, then cancel and wait for cleanup before any exit route proceeds.
+fn may_exit<B: Backend>(
+    app: &mut App,
+    status_bar: &mut StatusBar,
+    key: &'static str,
+    receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+    terminal: &mut Terminal<B>,
+    quit_error: &mut Option<String>,
+) -> bool {
+    use std::sync::atomic::Ordering;
+
+    if let Err(warning) = app.confirm_quit(key, std::time::Instant::now()) {
+        status_bar.show_warning(warning, None);
+        return false;
+    }
+    let Some(operation) = app.busy_operation().filter(|kind| *kind != "delete") else {
+        return true;
+    };
+
+    app.copy_cancel.store(true, Ordering::Relaxed);
+    if let Some(job) = &app.job {
+        job.cancel.store(true, Ordering::Relaxed);
+    }
+    let message = format!("Stopping the {operation} and removing partial files…");
+    status_bar.show_info(message.clone(), None);
+    // A draw failure must not bypass the wait and leave a worker writing.
+    if let Err(error) = terminal.draw(|frame| {
+        frame.render_widget(
+            Paragraph::new(message)
+                .block(Block::default().borders(Borders::ALL).title("Quitting"))
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            frame.size(),
+        );
+    }) {
+        warn!("Could not redraw while stopping {operation}: {error}");
+    }
+
+    let result = if let Some(rx) = receiver.take() {
+        let result = loop {
+            match rx.recv() {
+                Ok(CopyMessage::Completed { success: true, .. }) => break Ok(String::new()),
+                Ok(CopyMessage::Completed { message, .. } | CopyMessage::Error(message)) => {
+                    break Err(message)
+                }
+                Ok(_) => {} // Progress is not an acknowledgement of cancellation.
+                Err(_) => break Err("Copy stopped unexpectedly before reporting a result".into()),
+            }
+        };
+        app.copy_in_progress = false;
+        app.copy_progress_message.clear();
+        app.copy_files_processed = 0;
+        app.copy_total_files = 0;
+        app.copy_to_other_pane = None;
+        result
+    } else if let Some(job) = app.job.take() {
+        // A move already deleting its source deliberately ignores cancellation.
+        job.wait()
+    } else {
+        Ok(String::new())
+    };
+    if let Err(error) = result {
+        if error.contains("failed to remove partial copy") || !error.contains("cancelled") {
+            *quit_error = Some(error);
         }
     }
+    true
 }
 
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
@@ -763,6 +820,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // File chosen with Enter, handled after the terminal is restored
     let mut selected_file: Option<String> = None;
+    let mut quit_error = None;
 
     // Main loop
     loop {
@@ -1657,7 +1715,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             match key.code {
                                 KeyCode::Char('q') => {
-                                    if may_exit(&mut app, &mut status_bar, "q") {
+                                    if may_exit(
+                                        &mut app,
+                                        &mut status_bar,
+                                        "q",
+                                        &mut copy_receiver,
+                                        &mut terminal,
+                                        &mut quit_error,
+                                    ) {
                                         break;
                                     }
                                 }
@@ -1822,7 +1887,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if let Some(selected) = app.get_selected_path(state.selected())
                                     {
                                         // Opening leaves ff, so it waits for confirmation during an operation.
-                                        if !may_exit(&mut app, &mut status_bar, "o") {
+                                        if !may_exit(
+                                            &mut app,
+                                            &mut status_bar,
+                                            "o",
+                                            &mut copy_receiver,
+                                            &mut terminal,
+                                            &mut quit_error,
+                                        ) {
                                             continue;
                                         }
                                         // Spawn without waiting; null stdio keeps opener output off the TUI.
@@ -1886,12 +1958,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let src = Path::new(&src_path);
                                             if let Some(src_name) = src.file_name() {
                                                 let dest = Path::new(&dest_dir).join(src_name);
-                                                copy_receiver =
-                                                    Some(copy_dir_file_with_progress(src, &dest));
                                                 app.preserved_selection_index = state.selected();
                                                 app.start_copy(Some(
                                                     src_name.to_string_lossy().to_string(),
                                                 ));
+                                                copy_receiver =
+                                                    Some(copy_dir_file_with_progress_cancellable(
+                                                        src,
+                                                        &dest,
+                                                        app.copy_cancel.clone(),
+                                                    ));
                                             }
                                         }
                                     }
@@ -1909,9 +1985,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .to_string();
                                             let status = format!("Moving '{name}'…");
                                             let started =
-                                                app.start_job("move", status, move || {
-                                                    operations::move_file_or_dir(
-                                                        &src_path, &dest_dir,
+                                                app.start_job("move", status, move |cancel| {
+                                                    operations::move_file_or_dir_cancellable(
+                                                        &src_path, &dest_dir, &cancel,
                                                     )
                                                     .map(|()| {
                                                         format!("Moved '{name}' to other pane")
@@ -1936,10 +2012,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 .to_string_lossy()
                                                 .to_string();
                                             let status = format!("Extracting '{name}'…");
-                                            let started =
-                                                app.start_job("extraction", status, move || {
-                                                    FileContent::extract_zip_content(&selected)
-                                                });
+                                            let started = app.start_job(
+                                                "extraction",
+                                                status,
+                                                move |cancel| {
+                                                    FileContent::extract_zip_content_cancellable(
+                                                        &selected, &cancel,
+                                                    )
+                                                },
+                                            );
                                             if let Err(warning) = started {
                                                 status_bar.show_warning(warning, None);
                                             }
@@ -1996,10 +2077,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let current_dir = containing_directory_or_current(src_path);
                                         let new_src =
                                             generate_copy_file_dir_name(src_path, &current_dir);
-                                        copy_receiver =
-                                            Some(copy_dir_file_with_progress(src_path, &new_src));
                                         app.preserved_selection_index = state.selected();
                                         app.start_copy(None);
+                                        copy_receiver =
+                                            Some(copy_dir_file_with_progress_cancellable(
+                                                src_path,
+                                                &new_src,
+                                                app.copy_cancel.clone(),
+                                            ));
                                     }
                                 }
 
@@ -2017,7 +2102,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     if let Some(selected) = selected_path {
                                         // Leaving for the shell or editor waits for confirmation during an operation.
-                                        if !may_exit(&mut app, &mut status_bar, "Enter") {
+                                        if !may_exit(
+                                            &mut app,
+                                            &mut status_bar,
+                                            "Enter",
+                                            &mut copy_receiver,
+                                            &mut terminal,
+                                            &mut quit_error,
+                                        ) {
                                             continue;
                                         }
                                         app.input = selected.clone();
@@ -2044,6 +2136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 DisableMouseCapture
                                             )?;
                                             terminal.show_cursor()?;
+                                            if let Some(error) = &quit_error {
+                                                eprintln!("ff: {error}");
+                                            }
 
                                             // No result file (old shell function or direct use): print to stdout
                                             if !wrote_result_file {
@@ -2187,7 +2282,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchDelete => match key.code {
                             KeyCode::Char('q') => {
                                 app.close_delete_popup();
-                                if may_exit(&mut app, &mut status_bar, "q") {
+                                if may_exit(
+                                    &mut app,
+                                    &mut status_bar,
+                                    "q",
+                                    &mut copy_receiver,
+                                    &mut terminal,
+                                    &mut quit_error,
+                                ) {
                                     break;
                                 }
                             }
@@ -2287,6 +2389,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
     terminal.clear()?;
 
+    if let Some(error) = quit_error {
+        eprintln!("ff: {error}");
+    }
     if let Some(file) = selected_file {
         if let Err(message) = handle_file_selection(&file, app.get_selected_ide()) {
             eprintln!("ff: {}", message);
@@ -2326,6 +2431,67 @@ mod tests {
             bytes_copied: 30,
             total_bytes: 100,
             current_file: "data.txt".into(),
+        }
+    }
+
+    #[test]
+    fn confirmed_quit_cancels_copy_and_waits_for_the_final_message() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        for key in ["q", "o", "Enter"] {
+            let mut app = running_copy_app();
+            let cancel = app.copy_cancel.clone();
+            let mut status = StatusBar::new();
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 6)).unwrap();
+            let mut quit_error = None;
+            let (tx, rx) = mpsc::channel();
+            let mut receiver = Some(rx);
+            assert!(!may_exit(
+                &mut app,
+                &mut status,
+                key,
+                &mut receiver,
+                &mut terminal,
+                &mut quit_error
+            ));
+            assert!(!cancel.load(Ordering::Relaxed));
+
+            let (returned_tx, returned_rx) = mpsc::channel();
+            let waiter = std::thread::spawn(move || {
+                let allowed = may_exit(
+                    &mut app,
+                    &mut status,
+                    key,
+                    &mut receiver,
+                    &mut terminal,
+                    &mut quit_error,
+                );
+                returned_tx
+                    .send((
+                        allowed,
+                        app.copy_in_progress,
+                        receiver.is_none(),
+                        quit_error,
+                    ))
+                    .unwrap();
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !cancel.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(cancel.load(Ordering::Relaxed));
+            tx.send(copy_progress()).unwrap();
+            assert!(matches!(
+                returned_rx.recv_timeout(Duration::from_millis(25)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            let error =
+                "Copy cancelled (failed to remove partial copy 'leftover': permission denied)";
+            tx.send(CopyMessage::Error(error.into())).unwrap();
+            let result = returned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(result, (true, false, true, Some(error.into())));
+            waiter.join().unwrap();
         }
     }
 

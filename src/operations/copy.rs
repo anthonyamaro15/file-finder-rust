@@ -5,8 +5,8 @@ use rayon::prelude::*;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use walkdir::{DirEntry, WalkDir};
 
@@ -122,7 +122,7 @@ fn make_directories_writable(root: &Path) {
 /// Remove a destination that did not exist before this failed copy.
 /// `remove_dir_all` doesn't follow symlinks, so links we created inside are
 /// removed without touching their targets.
-fn remove_partial_copy(dest: &Path, error: anyhow::Error) -> anyhow::Error {
+pub(crate) fn remove_partial_copy(dest: &Path, error: anyhow::Error) -> anyhow::Error {
     let removed = match fs::symlink_metadata(dest) {
         Ok(metadata) if metadata.is_dir() => {
             make_directories_writable(dest);
@@ -143,15 +143,34 @@ fn remove_partial_copy(dest: &Path, error: anyhow::Error) -> anyhow::Error {
     }
 }
 
+/// Cancellation is checked between filesystem operations, never during cleanup.
+pub(crate) fn check_copy_cancelled(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(io::Error::new(ErrorKind::Interrupted, "Copy cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
 /// Synchronous copy helper for files and directories.
 pub fn copy_dir_file_helper(src: &Path, new_src: &Path) -> anyhow::Result<()> {
-    copy_dir_file_helper_with_options(src, new_src, folder_cloning_allowed())
+    copy_dir_file_helper_cancellable(src, new_src, &AtomicBool::new(false))
+}
+
+/// Copy with cancellation, removing partial output before returning an error.
+pub fn copy_dir_file_helper_cancellable(
+    src: &Path,
+    new_src: &Path,
+    cancel: &AtomicBool,
+) -> anyhow::Result<()> {
+    copy_dir_file_helper_with_options(src, new_src, folder_cloning_allowed(), cancel)
 }
 
 fn copy_dir_file_helper_with_options(
     src: &Path,
     new_src: &Path,
     allow_clone: bool,
+    cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
     let metadata = fs::symlink_metadata(src)
         .map_err(|e| anyhow::anyhow!("Failed to read source '{}': {}", src.display(), e))?;
@@ -166,7 +185,7 @@ fn copy_dir_file_helper_with_options(
         Err(e) => return Err(e.into()),
     }
 
-    copy_to_new_destination(src, new_src, &metadata, allow_clone)
+    copy_to_new_destination(src, new_src, &metadata, allow_clone, cancel)
         .map_err(|e| remove_partial_copy(new_src, e))
 }
 
@@ -175,13 +194,16 @@ fn copy_to_new_destination(
     new_src: &Path,
     metadata: &fs::Metadata,
     allow_clone: bool,
+    cancel: &AtomicBool,
 ) -> anyhow::Result<()> {
     if metadata.file_type().is_symlink() {
+        check_copy_cancelled(cancel)?;
         if let Some(parent) = new_src.parent() {
             fs::create_dir_all(parent)?;
         }
         copy_symlink(src, new_src)?;
     } else if metadata.is_file() {
+        check_copy_cancelled(cancel)?;
         // Ensure parent directory exists
         if let Some(parent) = new_src.parent() {
             fs::create_dir_all(parent)
@@ -197,7 +219,7 @@ fn copy_to_new_destination(
             )
         })?;
     } else if metadata.is_dir() {
-        copy_directory(src, new_src, allow_clone, None)?;
+        copy_directory(src, new_src, allow_clone, None, cancel)?;
     } else {
         return Err(anyhow::anyhow!(
             "Source is neither a file nor a directory: {}",
@@ -205,6 +227,7 @@ fn copy_to_new_destination(
         ));
     }
 
+    check_copy_cancelled(cancel)?;
     Ok(())
 }
 
@@ -226,9 +249,10 @@ fn copy_directory(
     dest: &Path,
     allow_clone: bool,
     tx: Option<&mpsc::Sender<CopyMessage>>,
+    cancel: &AtomicBool,
 ) -> anyhow::Result<(CopyMethod, Vec<DirEntry>)> {
     #[cfg(target_os = "macos")]
-    if allow_clone && try_clone_directory(src, dest, tx)? {
+    if allow_clone && try_clone_directory(src, dest, tx, cancel)? {
         debug!(
             "Copied directory '{}' using {:?}",
             src.display(),
@@ -240,8 +264,8 @@ fn copy_directory(
     let _ = allow_clone;
 
     let skipped = match tx {
-        Some(tx) => copy_dir_with_progress(src, dest, tx)?,
-        None => copy_dir_per_file(src, dest)?,
+        Some(tx) => copy_dir_with_progress(src, dest, tx, cancel)?,
+        None => copy_dir_per_file(src, dest, cancel)?,
     };
     debug!(
         "Copied directory '{}' using {:?}",
@@ -289,6 +313,7 @@ fn try_clone_directory(
     src: &Path,
     dest: &Path,
     tx: Option<&mpsc::Sender<CopyMessage>>,
+    cancel: &AtomicBool,
 ) -> anyhow::Result<bool> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
@@ -319,6 +344,7 @@ fn try_clone_directory(
         }
         Ok(true)
     })();
+    check_copy_cancelled(cancel)?;
     match eligible {
         Ok(true) => {}
         Ok(false) => return Ok(false),
@@ -342,6 +368,7 @@ fn try_clone_directory(
             Err(io::Error::last_os_error())
         }
     })();
+    check_copy_cancelled(cancel)?;
     match cloned {
         Ok(()) => Ok(true),
         Err(error) => {
@@ -364,7 +391,11 @@ fn try_clone_directory(
 }
 
 /// The existing synchronous per-file engine, used when a tree cannot be cloned.
-fn copy_dir_per_file(src: &Path, new_src: &Path) -> anyhow::Result<Vec<DirEntry>> {
+fn copy_dir_per_file(
+    src: &Path,
+    new_src: &Path,
+    cancel: &AtomicBool,
+) -> anyhow::Result<Vec<DirEntry>> {
     // Create the destination directory
     fs::create_dir_all(new_src)
         .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
@@ -374,12 +405,14 @@ fn copy_dir_per_file(src: &Path, new_src: &Path) -> anyhow::Result<Vec<DirEntry>
         .follow_root_links(false)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
+    check_copy_cancelled(cancel)?;
     let (entries, special) = split_special_files(entries);
     for entry in &special {
         warn!("Skipping special file: {}", entry.path().display());
     }
 
     entries.par_iter().try_for_each(|entry| {
+        check_copy_cancelled(cancel)?;
         let entry_path = entry.path();
         let relative_path = entry_path.strip_prefix(src).map_err(|e| {
             io::Error::new(ErrorKind::Other, format!("Failed to strip prefix: {}", e))
@@ -421,7 +454,9 @@ fn copy_dir_per_file(src: &Path, new_src: &Path) -> anyhow::Result<Vec<DirEntry>
 
         Ok::<(), io::Error>(())
     })?;
+    check_copy_cancelled(cancel)?;
     preserve_directory_permissions(src, new_src, &entries)?;
+    check_copy_cancelled(cancel)?;
     Ok(special)
 }
 
@@ -472,13 +507,23 @@ pub fn fast_copy_file(src: &Path, dst: &Path) -> io::Result<()> {
 /// Async copy function with progress tracking.
 /// Returns a channel receiver for progress updates.
 pub fn copy_dir_file_with_progress(src: &Path, new_src: &Path) -> mpsc::Receiver<CopyMessage> {
-    copy_dir_file_with_progress_options(src, new_src, folder_cloning_allowed())
+    copy_dir_file_with_progress_cancellable(src, new_src, Arc::new(AtomicBool::new(false)))
+}
+
+/// Async copy whose final message is sent only after cancellation cleanup finishes.
+pub fn copy_dir_file_with_progress_cancellable(
+    src: &Path,
+    new_src: &Path,
+    cancel: Arc<AtomicBool>,
+) -> mpsc::Receiver<CopyMessage> {
+    copy_dir_file_with_progress_options(src, new_src, folder_cloning_allowed(), cancel)
 }
 
 fn copy_dir_file_with_progress_options(
     src: &Path,
     new_src: &Path,
     allow_clone: bool,
+    cancel: Arc<AtomicBool>,
 ) -> mpsc::Receiver<CopyMessage> {
     let (tx, rx) = mpsc::channel();
     let src = src.to_path_buf();
@@ -512,7 +557,8 @@ fn copy_dir_file_with_progress_options(
         }
 
         let result = if metadata.file_type().is_symlink() {
-            copy_dir_file_helper(&src, &new_src).map(|()| Vec::new())
+            copy_to_new_destination(&src, &new_src, &metadata, allow_clone, &cancel)
+                .map(|()| Vec::new())
         } else if metadata.is_file() {
             // Single file copy
             if let Some(parent) = new_src.parent() {
@@ -539,7 +585,7 @@ fn copy_dir_file_with_progress_options(
                     .to_string(),
             });
 
-            match fast_copy_file(&src, &new_src) {
+            match check_copy_cancelled(&cancel).and_then(|()| fast_copy_file(&src, &new_src)) {
                 Ok(()) => {
                     let _ = tx.send(CopyMessage::Progress {
                         files_processed: 1,
@@ -562,13 +608,19 @@ fn copy_dir_file_with_progress_options(
                 )),
             }
         } else if metadata.is_dir() {
-            copy_directory(&src, &new_src, allow_clone, Some(&tx)).map(|(_, skipped)| skipped)
+            copy_directory(&src, &new_src, allow_clone, Some(&tx), &cancel)
+                .map(|(_, skipped)| skipped)
         } else {
             Err(anyhow::anyhow!(
                 "Source is neither a file nor a directory: {}",
                 src.display()
             ))
         };
+
+        let result = result.and_then(|skipped| {
+            check_copy_cancelled(&cancel)?;
+            Ok(skipped)
+        });
 
         // Send completion message
         match result {
@@ -615,6 +667,7 @@ fn copy_dir_with_progress(
     src: &Path,
     new_src: &Path,
     tx: &mpsc::Sender<CopyMessage>,
+    cancel: &AtomicBool,
 ) -> anyhow::Result<Vec<DirEntry>> {
     fs::create_dir_all(new_src)
         .map_err(|e| anyhow::anyhow!("Failed to create destination directory: {}", e))?;
@@ -625,6 +678,7 @@ fn copy_dir_with_progress(
         .follow_root_links(false)
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
+    check_copy_cancelled(cancel)?;
     let (entries, special) = split_special_files(entries);
     let (dirs, files): (Vec<_>, Vec<_>) = entries.into_iter().partition(|e| e.file_type().is_dir());
 
@@ -632,6 +686,7 @@ fn copy_dir_with_progress(
     let mut dir_paths: Vec<_> = dirs.iter().map(|e| e.path().to_path_buf()).collect();
     dir_paths.sort();
     for dir_path in &dir_paths {
+        check_copy_cancelled(cancel)?;
         let rel = dir_path
             .strip_prefix(src)
             .map_err(|e| anyhow::anyhow!("Failed to strip prefix: {}", e))?;
@@ -651,6 +706,7 @@ fn copy_dir_with_progress(
         .map(|m| m.len())
         .sum();
 
+    check_copy_cancelled(cancel)?;
     let total_files = files.len();
     let processed = AtomicUsize::new(0);
     let bytes_copied = std::sync::atomic::AtomicU64::new(0);
@@ -670,6 +726,7 @@ fn copy_dir_with_progress(
         files
             .par_iter()
             .try_for_each(|entry| -> anyhow::Result<()> {
+                check_copy_cancelled(cancel)?;
                 let entry_path = entry.path();
                 let rel = entry_path
                     .strip_prefix(src)
@@ -719,7 +776,9 @@ fn copy_dir_with_progress(
             })
     })?;
 
+    check_copy_cancelled(cancel)?;
     preserve_directory_permissions(src, new_src, &dirs)?;
+    check_copy_cancelled(cancel)?;
     Ok(special)
 }
 
@@ -727,6 +786,66 @@ fn copy_dir_with_progress(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn cancelled_copy_removes_destination_and_preserves_source() {
+        for allow_clone in [false, cfg!(target_os = "macos")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("source");
+            fs::create_dir_all(src.join("nested")).unwrap();
+            fs::write(src.join("nested/data"), b"original\0bytes").unwrap();
+            for asynchronous in [false, true] {
+                let dest = tmp.path().join("copy");
+                let cancel = Arc::new(AtomicBool::new(true));
+                let error = if asynchronous {
+                    drain_until_complete(copy_dir_file_with_progress_options(
+                        &src,
+                        &dest,
+                        allow_clone,
+                        cancel,
+                    ))
+                    .unwrap_err()
+                } else {
+                    copy_dir_file_helper_with_options(&src, &dest, allow_clone, &cancel)
+                        .unwrap_err()
+                        .to_string()
+                };
+                assert!(error.contains("cancelled"), "{error}");
+                assert!(!dest.exists());
+                assert_eq!(
+                    fs::read(src.join("nested/data")).unwrap(),
+                    b"original\0bytes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_file_copy_preserves_existing_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("copy");
+        fs::write(&src, b"source").unwrap();
+        fs::write(&dest, b"unrelated").unwrap();
+        let cancel = Arc::new(AtomicBool::new(true));
+        assert!(drain_until_complete(copy_dir_file_with_progress_options(
+            &src,
+            &dest,
+            false,
+            cancel.clone(),
+        ))
+        .is_err());
+        assert!(copy_dir_file_helper_with_options(&src, &dest, false, &cancel).is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"unrelated");
+        fs::remove_file(&dest).unwrap();
+        let error = drain_until_complete(copy_dir_file_with_progress_options(
+            &src, &dest, false, cancel,
+        ))
+        .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(!dest.exists());
+        assert_eq!(fs::read(&src).unwrap(), b"source");
+    }
 
     #[cfg(target_os = "macos")]
     mod folder_clones {
@@ -873,9 +992,14 @@ mod tests {
                     .path()
                     .join(if asynchronous { "async" } else { "sync" });
                 let (tx, rx) = mpsc::channel();
-                let (method, skipped) =
-                    copy_directory(&tree.source(), &dest, true, asynchronous.then_some(&tx))
-                        .unwrap();
+                let (method, skipped) = copy_directory(
+                    &tree.source(),
+                    &dest,
+                    true,
+                    asynchronous.then_some(&tx),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
                 assert_eq!(method, CopyMethod::Clone);
                 assert!(skipped.is_empty());
                 tree.assert_copied(&dest);
@@ -901,10 +1025,15 @@ mod tests {
             fs::write(&locked, "unreadable contents").unwrap();
             fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
 
-            let sync_result = copy_dir_file_helper_with_options(&src, &dest, true);
+            let sync_result =
+                copy_dir_file_helper_with_options(&src, &dest, true, &AtomicBool::new(false));
             let sync_destination = fs::symlink_metadata(&dest).map_err(|error| error.kind());
-            let async_result =
-                drain_until_complete(copy_dir_file_with_progress_options(&src, &dest, true));
+            let async_result = drain_until_complete(copy_dir_file_with_progress_options(
+                &src,
+                &dest,
+                true,
+                Arc::new(AtomicBool::new(false)),
+            ));
             let async_destination = fs::symlink_metadata(&dest).map_err(|error| error.kind());
             fs::set_permissions(&locked, fs::Permissions::from_mode(0o600)).unwrap();
 
@@ -931,8 +1060,14 @@ mod tests {
                 fs::create_dir(&dest).unwrap();
                 fs::write(dest.join("partial"), "must be removed").unwrap();
                 let (tx, _rx) = mpsc::channel();
-                let (method, skipped) =
-                    copy_directory(&src, &dest, true, asynchronous.then_some(&tx)).unwrap();
+                let (method, skipped) = copy_directory(
+                    &src,
+                    &dest,
+                    true,
+                    asynchronous.then_some(&tx),
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
                 assert_eq!(method, CopyMethod::PerFile);
                 assert!(skipped.is_empty());
                 assert_eq!(
@@ -985,8 +1120,14 @@ mod tests {
         for asynchronous in [false, true] {
             let dest = tmp.path().join(if asynchronous { "async" } else { "sync" });
             let (tx, rx) = mpsc::channel();
-            let (method, skipped) =
-                copy_directory(&src, &dest, false, asynchronous.then_some(&tx)).unwrap();
+            let (method, skipped) = copy_directory(
+                &src,
+                &dest,
+                false,
+                asynchronous.then_some(&tx),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
             assert_eq!(method, CopyMethod::PerFile);
             assert!(skipped.is_empty());
             assert_eq!(
@@ -1126,7 +1267,12 @@ mod tests {
             symlink(target, src.join(name)).unwrap();
         }
         if asynchronous {
-            let rx = copy_dir_file_with_progress_options(&src, &dst, false);
+            let rx = copy_dir_file_with_progress_options(
+                &src,
+                &dst,
+                false,
+                Arc::new(AtomicBool::new(false)),
+            );
             let mut final_progress = None;
             loop {
                 match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -1243,11 +1389,15 @@ mod tests {
         let _listener = std::os::unix::net::UnixListener::bind(src.join(socket)).unwrap();
 
         let sync_dst = tmp.path().join("sync");
-        copy_dir_file_helper_with_options(&src, &sync_dst, false).unwrap();
+        copy_dir_file_helper_with_options(&src, &sync_dst, false, &AtomicBool::new(false)).unwrap();
         let async_dst = tmp.path().join("async");
-        let (message, skipped) =
-            drain_until_complete(copy_dir_file_with_progress_options(&src, &async_dst, false))
-                .unwrap();
+        let (message, skipped) = drain_until_complete(copy_dir_file_with_progress_options(
+            &src,
+            &async_dst,
+            false,
+            Arc::new(AtomicBool::new(false)),
+        ))
+        .unwrap();
         assert_eq!(skipped, 1);
         assert!(message.contains("skipped 1 special file:"), "{message}");
 

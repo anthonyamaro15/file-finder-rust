@@ -3,6 +3,7 @@ use std::{
     fs,
     io::{self},
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::SystemTime,
 };
 
@@ -1386,6 +1387,14 @@ impl FileContent<'_> {
     /// Extract the ZIP at `path` into a new sibling directory named after it.
     /// Returns the success message, or an error message if anything failed.
     pub fn extract_zip_content(path: &str) -> Result<String, String> {
+        Self::extract_zip_content_cancellable(path, &AtomicBool::new(false))
+    }
+
+    /// Stop between entries and remove only the directory reserved by this extraction.
+    pub fn extract_zip_content_cancellable(
+        path: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
         let fname = Path::new(path);
         let file = fs::File::open(fname).map_err(|e| format!("Error opening ZIP: {}", e))?;
         let mut archive =
@@ -1407,6 +1416,13 @@ impl FileContent<'_> {
         let mut failed = 0;
         let mut first_error = None;
         for i in 0..archive.len() {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(crate::operations::copy::remove_partial_copy(
+                    &target_dir,
+                    anyhow::anyhow!("Extraction cancelled"),
+                )
+                .to_string());
+            }
             let result = (|| -> io::Result<bool> {
                 let mut file = archive.by_index(i)?;
                 let enclosed_name = match file.enclosed_name() {
@@ -1473,6 +1489,13 @@ impl FileContent<'_> {
                     first_error.get_or_insert_with(|| format!("entry {}: {}", i, e));
                 }
             }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(crate::operations::copy::remove_partial_copy(
+                &target_dir,
+                anyhow::anyhow!("Extraction cancelled"),
+            )
+            .to_string());
         }
         let message = format!(
             "Extracted {} entries to {}",
@@ -1701,6 +1724,33 @@ mod extraction_tests {
 
     fn extract(path: &Path) -> Result<String, String> {
         FileContent::extract_zip_content(path.to_str().unwrap())
+    }
+
+    #[test]
+    fn cancelled_extraction_removes_target_and_preserves_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("archive.zip");
+        let target = tmp.path().join("archive");
+        write_zip(&archive, &[("a.txt", "alpha"), ("sub/b.txt", "beta")]);
+        let original = fs::read(&archive).unwrap();
+        let cancel = AtomicBool::new(true);
+        let error =
+            FileContent::extract_zip_content_cancellable(archive.to_str().unwrap(), &cancel)
+                .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(!target.exists());
+        assert_eq!(fs::read(&archive).unwrap(), original);
+
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), "unrelated").unwrap();
+        assert!(
+            FileContent::extract_zip_content_cancellable(archive.to_str().unwrap(), &cancel)
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("keep")).unwrap(),
+            "unrelated"
+        );
     }
 
     #[test]

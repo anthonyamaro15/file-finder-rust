@@ -4,8 +4,11 @@ pub mod copy;
 pub mod file_ops;
 
 // Re-export items used by main.rs
-pub use copy::{copy_dir_file_helper, copy_dir_file_with_progress, CopyMessage};
+pub use copy::{
+    copy_dir_file_helper, copy_dir_file_with_progress, copy_dir_file_with_progress_cancellable,
+    CopyMessage,
+};
 pub use file_ops::{
     create_item_based_on_type, delete_with_progress, handle_delete_based_on_type, handle_rename,
-    move_file_or_dir, DeleteMessage,
+    move_file_or_dir, move_file_or_dir_cancellable, DeleteMessage,
 };

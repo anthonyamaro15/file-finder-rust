@@ -3,7 +3,7 @@
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::{atomic::AtomicBool, mpsc};
 use std::thread;
 
 use log::warn;
@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::app::App;
 use crate::errors::{validation, FileOperationError, FileOperationResult};
-use crate::operations::copy::copy_dir_file_helper;
+use crate::operations::copy::copy_dir_file_helper_cancellable;
 
 /// Progress message for delete operations.
 #[derive(Debug, Clone)]
@@ -311,6 +311,15 @@ pub fn create_item_based_on_type(
 /// Move a file or directory to a new location.
 /// Falls back to copy+delete for cross-filesystem moves.
 pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<()> {
+    move_file_or_dir_cancellable(src_path, dest_dir, &AtomicBool::new(false))
+}
+
+/// Cancel cross-device moves only while copying; source deletion must finish.
+pub fn move_file_or_dir_cancellable(
+    src_path: &str,
+    dest_dir: &str,
+    cancel: &AtomicBool,
+) -> FileOperationResult<()> {
     let src = Path::new(src_path);
     let src_name = src
         .file_name()
@@ -334,7 +343,7 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
             // If cross-device link error, fall back to copy+delete
             if e.raw_os_error() == Some(18) {
                 // EXDEV (cross-device link) on Unix
-                copy_then_delete(src, &dest)
+                copy_then_delete(src, &dest, cancel)
             } else {
                 Err(match e.kind() {
                     io::ErrorKind::PermissionDenied => FileOperationError::permission_denied(
@@ -351,7 +360,7 @@ pub fn move_file_or_dir(src_path: &str, dest_dir: &str) -> FileOperationResult<(
 }
 
 /// Cross-device fallback: remove the source only after a successful copy.
-fn copy_then_delete(src: &Path, dest: &Path) -> FileOperationResult<()> {
+fn copy_then_delete(src: &Path, dest: &Path, cancel: &AtomicBool) -> FileOperationResult<()> {
     // Copying skips special files, so reject them before creating a destination
     // that would otherwise lead to deleting the uncopied source entries.
     for entry in WalkDir::new(src)
@@ -372,9 +381,10 @@ fn copy_then_delete(src: &Path, dest: &Path) -> FileOperationResult<()> {
         }
     }
 
-    copy_dir_file_helper(src, dest).map_err(|e| FileOperationError::Io {
+    copy_dir_file_helper_cancellable(src, dest, cancel).map_err(|e| FileOperationError::Io {
         message: e.to_string(),
     })?;
+    // The copy is committed. Ignore cancellation once source deletion starts.
     handle_delete_based_on_type(
         src.to_str()
             .ok_or_else(|| FileOperationError::InvalidPath {
@@ -560,7 +570,7 @@ mod tests {
         let socket = src.join("nested/socket");
         let _listener = UnixListener::bind(&socket).unwrap();
 
-        let error = copy_then_delete(&src, &dest).unwrap_err();
+        let error = copy_then_delete(&src, &dest, &AtomicBool::new(false)).unwrap_err();
 
         match error {
             FileOperationError::UnsupportedOperation { path, .. } => {
@@ -578,6 +588,25 @@ mod tests {
     }
 
     #[test]
+    fn copy_then_delete_cancelled_copy_keeps_source() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("source");
+        let dest = tmp.path().join("destination");
+        fs::create_dir_all(src.join("nested")).unwrap();
+        fs::write(src.join("nested/data"), b"original\0bytes").unwrap();
+        let cancel = AtomicBool::new(true);
+
+        let error = copy_then_delete(&src, &dest, &cancel).unwrap_err();
+
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(!dest.exists());
+        assert_eq!(
+            fs::read(src.join("nested/data")).unwrap(),
+            b"original\0bytes"
+        );
+    }
+
+    #[test]
     fn copy_then_delete_moves_regular_directory_contents() {
         let tmp = tempdir().unwrap();
         let src = tmp.path().join("source");
@@ -586,7 +615,7 @@ mod tests {
         fs::write(src.join("file.txt"), "top level").unwrap();
         fs::write(src.join("nested/child.txt"), "nested content").unwrap();
 
-        copy_then_delete(&src, &dest).unwrap();
+        copy_then_delete(&src, &dest, &AtomicBool::new(false)).unwrap();
 
         assert!(!src.exists());
         assert_eq!(
@@ -608,7 +637,7 @@ mod tests {
         let src = tmp.path().join("source");
         let dest = tmp.path().join("destination");
         symlink("outside", &src).unwrap();
-        copy_then_delete(&src, &dest).unwrap();
+        copy_then_delete(&src, &dest, &AtomicBool::new(false)).unwrap();
         assert!(fs::symlink_metadata(&dest)
             .unwrap()
             .file_type()
@@ -630,7 +659,7 @@ mod tests {
         fs::write(src.join("real.txt"), "data").unwrap();
         symlink("../outside", src.join("link")).unwrap();
         symlink(".", src.join("loop")).unwrap();
-        copy_then_delete(&src, &dest).unwrap();
+        copy_then_delete(&src, &dest, &AtomicBool::new(false)).unwrap();
         for (name, target) in [("link", "../outside"), ("loop", ".")] {
             assert!(fs::symlink_metadata(dest.join(name))
                 .unwrap()
@@ -657,7 +686,7 @@ mod tests {
         fs::write(src.join("keep"), "keep").unwrap();
         fs::write(src.join("locked"), "locked").unwrap();
         fs::set_permissions(src.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
-        assert!(copy_then_delete(&src, &dest).is_err());
+        assert!(copy_then_delete(&src, &dest, &AtomicBool::new(false)).is_err());
         assert_eq!(fs::read_to_string(src.join("keep")).unwrap(), "keep");
         assert!(src.join("locked").exists());
         assert!(fs::symlink_metadata(&dest).is_err());
