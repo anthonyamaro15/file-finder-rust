@@ -2,14 +2,12 @@
 
 use std::cmp::Reverse;
 use std::ffi::OsString;
-use std::fs::{self, Metadata};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
-
-use super::format::{format_file_size, format_system_time};
 
 /// Sort order direction.
 #[derive(Clone, Debug, PartialEq)]
@@ -168,31 +166,6 @@ pub fn is_file(path: String) -> bool {
     }
 }
 
-/// Generate a formatted string with file metadata info.
-pub fn generate_metadata_str_info(metadata: anyhow::Result<Option<Metadata>>) -> String {
-    let metadata_info = match metadata {
-        Ok(res) => match res {
-            Some(info) => {
-                let size = format_file_size(info.len());
-                let permissions = info.permissions();
-                let readonly = if permissions.readonly() { "RO" } else { "RW" };
-
-                // Try to get modification time
-                let modified = info
-                    .modified()
-                    .map(format_system_time)
-                    .unwrap_or_else(|_| "unknown".to_string());
-
-                format!("{} | {} | modified {}", size, readonly, modified)
-            }
-            None => String::from("Info not available"),
-        },
-        Err(_) => String::from("Error reading metadata"),
-    };
-
-    metadata_info
-}
-
 /// Generate a unique copy path in `new_path` by prefixing the file name with
 /// "copy_" (then "copy_2_", "copy_3_", ...) until no entry with that name exists.
 pub fn generate_copy_file_dir_name(
@@ -261,18 +234,6 @@ mod tests {
         assert_eq!(get_curr_path("/foo/bar/baz.txt".to_string()), "/foo/bar");
         assert_eq!(get_curr_path("/foo/bar".to_string()), "/foo");
         assert_eq!(get_curr_path("/foo".to_string()), "/");
-    }
-
-    #[test]
-    fn test_generate_metadata_str_info_none() {
-        let result = generate_metadata_str_info(Ok(None));
-        assert_eq!(result, "Info not available");
-    }
-
-    #[test]
-    fn test_generate_metadata_str_info_error() {
-        let result = generate_metadata_str_info(Err(anyhow::anyhow!("test error")));
-        assert_eq!(result, "Error reading metadata");
     }
 
     #[test]

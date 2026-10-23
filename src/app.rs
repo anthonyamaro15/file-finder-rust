@@ -311,7 +311,6 @@ pub struct App {
 
     pub loading: bool,
     pub curr_index: Option<usize>,
-    pub curr_stats: String,
 
     pub preview_files: Vec<String>,
     pub preview_file_content: String,
@@ -510,7 +509,6 @@ impl App {
             current_name_to_edit: String::new(),
             loading: false,
             curr_index: Some(0),
-            curr_stats: String::new(),
 
             preview_files: Vec::new(),
             preview_file_content: String::new(),
