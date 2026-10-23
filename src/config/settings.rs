@@ -23,16 +23,6 @@ pub enum LayoutStyle {
     Miller,
 }
 
-impl LayoutStyle {
-    pub fn is_modern(&self) -> bool {
-        matches!(self, LayoutStyle::Modern | LayoutStyle::Miller)
-    }
-
-    pub fn is_miller(&self) -> bool {
-        matches!(self, LayoutStyle::Miller)
-    }
-}
-
 /// Nerd font usage setting
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -220,14 +210,6 @@ impl Settings {
         self.keymap.merge_missing_defaults();
     }
 
-    /// Save current settings to TOML file
-    pub fn save(&self) -> AppResult<()> {
-        let config_dir = get_config_dir()?;
-        let settings_path = config_dir.join("settings.toml");
-
-        self.save_to_file(&settings_path)
-    }
-
     /// Save settings to a specific TOML file path
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> AppResult<()> {
         let toml_content = toml::to_string_pretty(self).map_err(|e| AppError::Configuration {
@@ -263,15 +245,6 @@ impl Settings {
         }
 
         Ok(())
-    }
-
-    /// Update a specific setting and save to file
-    pub fn update_setting<F>(&mut self, updater: F) -> AppResult<()>
-    where
-        F: FnOnce(&mut Self),
-    {
-        updater(self);
-        self.save()
     }
 }
 

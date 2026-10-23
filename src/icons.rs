@@ -38,15 +38,14 @@ impl IconPair {
 }
 
 /// Common icons used throughout the UI
+// Keep the existing icon namespace to avoid import churn.
+#[allow(clippy::module_inception)]
 pub mod icons {
     use super::IconPair;
 
     // File types
     pub const DIRECTORY: IconPair = IconPair::new("\u{f07b}", "\u{1f4c1}"); //  vs 📁
-    pub const DIRECTORY_OPEN: IconPair = IconPair::new("\u{f07c}", "\u{1f4c2}"); //  vs 📂
     pub const FILE_DEFAULT: IconPair = IconPair::new("\u{f15b}", "\u{1f4c4}"); //  vs 📄
-    pub const FILE_TEXT: IconPair = IconPair::new("\u{f15c}", "\u{1f4c4}"); //  vs 📄
-    pub const FILE_CODE: IconPair = IconPair::new("\u{f1c9}", "\u{1f4c4}"); //  vs 📄
 
     // Programming languages
     pub const RUST: IconPair = IconPair::new("\u{e7a8}", "\u{1f980}"); //  vs 🦀
@@ -100,11 +99,6 @@ pub mod icons {
     pub const FONT: IconPair = IconPair::new("\u{f031}", "\u{1f520}"); //  vs 🔠
     pub const MAKEFILE: IconPair = IconPair::new("\u{e673}", "\u{1f6e0}"); //  vs 🛠
     pub const DOCKERFILE: IconPair = IconPair::new("\u{f308}", "\u{1f433}"); //  vs 🐳
-
-    // UI indicators
-    pub const SYMLINK: IconPair = IconPair::new("\u{f0c1}", "\u{1f517}"); //  vs 🔗
-    pub const HIDDEN: IconPair = IconPair::new("\u{f070}", "\u{1f441}"); //  vs 👁
-    pub const EXECUTABLE: IconPair = IconPair::new("\u{f489}", "\u{2699}"); //  vs ⚙
 }
 
 /// Icon provider that handles nerd font detection and fallback

@@ -193,14 +193,15 @@ impl CliArgs {
 mod path_utils {
     use super::*;
     use std::io;
+    use std::path::Path;
 
     /// Normalize a path by:
     /// 1. Expanding ~ to home directory
     /// 2. Converting "." to current directory
     /// 3. Canonicalizing the path if it exists
-    pub fn normalize_path(path: &PathBuf) -> io::Result<PathBuf> {
+    pub fn normalize_path(path: &Path) -> io::Result<PathBuf> {
         let expanded = expand_home(path)?;
-        let absolute = if expanded == PathBuf::from(".") {
+        let absolute = if expanded == Path::new(".") {
             env::current_dir()?
         } else if expanded.is_relative() {
             env::current_dir()?.join(expanded)
@@ -210,15 +211,15 @@ mod path_utils {
 
         // Try to canonicalize, but fall back to the absolute path if it fails
         // (e.g., if the path doesn't exist yet)
-        absolute.canonicalize().or_else(|_| Ok(absolute))
+        absolute.canonicalize().or(Ok(absolute))
     }
 
     /// Expand ~ to the home directory
-    fn expand_home(path: &PathBuf) -> io::Result<PathBuf> {
+    fn expand_home(path: &Path) -> io::Result<PathBuf> {
         if let Some(path_str) = path.to_str() {
-            if path_str.starts_with("~/") {
+            if let Some(remainder) = path_str.strip_prefix("~/") {
                 if let Some(home) = dirs::home_dir() {
-                    return Ok(home.join(&path_str[2..]));
+                    return Ok(home.join(remainder));
                 }
             } else if path_str == "~" {
                 if let Some(home) = dirs::home_dir() {
@@ -226,7 +227,7 @@ mod path_utils {
                 }
             }
         }
-        Ok(path.clone())
+        Ok(path.to_path_buf())
     }
 }
 

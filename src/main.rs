@@ -5,7 +5,7 @@
 // Standard library imports
 use std::{
     io,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
     sync::mpsc,
 };
@@ -20,7 +20,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use image::ImageReader;
 use log::{debug, warn};
 use ratatui::{
     backend::CrosstermBackend,
@@ -65,17 +64,13 @@ use file_finder::{
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
     utils::{
-        check_if_exists, format_file_size, generate_copy_file_dir_name, generate_metadata_str_info,
-        get_content_from_path, get_curr_path, get_file_path_data, get_inner_files_info,
-        get_metadata_info, init, is_file, SortBy, SortType,
+        check_if_exists, format_file_size, generate_copy_file_dir_name, get_curr_path,
+        get_file_path_data, get_inner_files_info, init, is_file, SortBy, SortType,
     },
 };
 
 /// Default font size for terminal graphics protocol picker (width, height in pixels)
 const DEFAULT_FONT_SIZE: (u16, u16) = (8, 16);
-
-/// Maximum image dimension allowed for preview (to avoid memory pressure)
-const MAX_IMAGE_DIMENSION: u32 = 8192;
 
 /// Preview debounce delay in milliseconds
 /// Prevents rapid preview updates when scrolling quickly through files
@@ -104,7 +99,7 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
 fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
     let current_directory = app.left_directory_path();
 
-    if current_directory == PathBuf::from(".") {
+    if current_directory == Path::new(".") {
         fallback_start_path.to_string()
     } else {
         current_directory.to_string_lossy().to_string()
@@ -347,57 +342,6 @@ impl ImageRenderer {
         }
     }
 
-    /// Load an image from the given path
-    pub fn load_img(&mut self, path: String) {
-        self.clear();
-
-        match ImageReader::open(&path) {
-            Ok(reader) => {
-                // Save format before calling decode since decode consumes reader
-                let format = reader
-                    .format()
-                    .map(|f| format!("{:?}", f))
-                    .unwrap_or_else(|| "Unknown".to_string());
-
-                match reader.decode() {
-                    Ok(decoded_image) => {
-                        let width = decoded_image.width();
-                        let height = decoded_image.height();
-
-                        // Check if image is too large (to avoid memory pressure)
-                        if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
-                            self.has_image = false;
-                            self.error_message = Some(format!(
-                                "Image too large for preview ({}x{}, max {})",
-                                width, height, MAX_IMAGE_DIMENSION
-                            ));
-                            return;
-                        }
-
-                        // Store metadata
-                        self.image_info = format!("{}x{} {}", width, height, format);
-
-                        // Create protocol state for rendering
-                        let protocol = self.picker.new_resize_protocol(decoded_image);
-                        self.image_state = Some(protocol);
-                        self.has_image = true;
-                        self.error_message = None;
-                    }
-                    Err(e) => {
-                        debug!("Failed to decode image {}: {}", path, e);
-                        self.has_image = false;
-                        self.error_message = Some(format!("Failed to decode: {}", e));
-                    }
-                }
-            }
-            Err(e) => {
-                debug!("Failed to open image {}: {}", path, e);
-                self.has_image = false;
-                self.error_message = Some(format!("Failed to open: {}", e));
-            }
-        }
-    }
-
     /// Load an image from a pre-decoded DynamicImage (for async loading)
     pub fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
         self.clear();
@@ -500,133 +444,6 @@ fn write_result_file(result_file: &Path, selected: &str) -> io::Result<()> {
         .truncate(true)
         .open(result_file)?
         .write_all(selected.as_bytes())
-}
-
-/// Update the preview panel for a given file/directory path.
-/// This consolidates the duplicated preview update logic from navigation handlers.
-/// Note: Currently unused as preview loading is now async, but kept for potential future use.
-#[allow(dead_code)]
-fn update_preview_for_path(
-    path: &str,
-    app: &mut App,
-    file_reader_content: &mut FileContent,
-    image_renderer: &mut ImageRenderer,
-) {
-    // Update metadata stats
-    let metadata = get_metadata_info(path.to_owned());
-    app.curr_stats = generate_metadata_str_info(metadata);
-
-    // Update the current selected path in file reader
-    file_reader_content.curr_selected_path = path.to_string();
-
-    if !is_file(path.to_string()) {
-        // Directory: show contents
-        if let Some(file_names) = get_content_from_path(path.to_string()) {
-            image_renderer.clear();
-            file_reader_content.file_type = FileType::NotAvailable;
-            app.preview_files = file_names;
-        }
-    } else {
-        // File: detect type and show appropriate preview
-        let file_extension = file_reader_content.get_file_extension(path.to_string());
-
-        match file_extension {
-            FileType::SourceCode
-            | FileType::Markdown
-            | FileType::TextFile
-            | FileType::ConfigFile
-            | FileType::JSON => {
-                image_renderer.clear();
-                file_reader_content.file_type = file_extension.clone();
-
-                let file_content = file_reader_content.read_file_content(path.to_string());
-                let curr_file_type = file_reader_content.get_file_extension_type(path.to_string());
-                let highlighted_content =
-                    file_reader_content.get_highlighted_content(file_content, curr_file_type);
-
-                if !file_reader_content.is_error {
-                    app.preview_file_content = highlighted_content;
-                }
-            }
-            FileType::Image => {
-                image_renderer.clear();
-                file_reader_content.curr_asset_path = path.to_string();
-                image_renderer.load_img(path.to_string());
-                file_reader_content.file_type = FileType::Image;
-                app.preview_file_content.clear();
-                file_reader_content.hightlighted_content = None;
-            }
-            FileType::ZIP => {
-                image_renderer.clear();
-                file_reader_content.read_zip_content(path.to_string());
-                file_reader_content.file_type = FileType::ZIP;
-            }
-            FileType::Archive => {
-                image_renderer.clear();
-                file_reader_content.file_type = FileType::Archive;
-
-                // Determine archive type by extension
-                let ext = std::path::Path::new(path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                let entries = match ext.as_str() {
-                    "tar" => file_reader_content.read_tar_content(path),
-                    "tgz" => file_reader_content.read_tar_gz_content(path),
-                    "gz" => {
-                        // Only treat as tar.gz if the path ends with .tar.gz
-                        if path.to_lowercase().ends_with(".tar.gz") {
-                            file_reader_content.read_tar_gz_content(path)
-                        } else {
-                            vec!["Gzip file (not a tar archive)".to_string()]
-                        }
-                    }
-                    "bz2" | "tbz2" => {
-                        // Only treat as tar.bz2 if the path ends with .tar.bz2
-                        if path.to_lowercase().ends_with(".tar.bz2") {
-                            file_reader_content.read_tar_bz2_content(path)
-                        } else {
-                            vec!["Bzip2 file (not a tar archive)".to_string()]
-                        }
-                    }
-                    "xz" | "txz" => {
-                        // Only treat as tar.xz if the path ends with .tar.xz
-                        if path.to_lowercase().ends_with(".tar.xz") {
-                            file_reader_content.read_tar_xz_content(path)
-                        } else {
-                            vec!["XZ file (not a tar archive)".to_string()]
-                        }
-                    }
-                    _ => vec![format!("Archive type '{}' preview not supported", ext)],
-                };
-
-                app.preview_file_content = entries.join("\n");
-            }
-            FileType::CSV => {
-                image_renderer.clear();
-                file_reader_content.read_csv_content();
-                file_reader_content.file_type = FileType::CSV;
-            }
-            FileType::PDF => {
-                image_renderer.clear();
-                file_reader_content.file_type = FileType::PDF;
-                app.preview_file_content = file_reader_content.read_pdf_content(path);
-            }
-            FileType::Binary => {
-                image_renderer.clear();
-                file_reader_content.file_type = FileType::Binary;
-                app.preview_file_content = file_reader_content.read_binary_hex_view(path);
-            }
-            _ => {
-                image_renderer.clear();
-                file_reader_content.file_type = FileType::NotAvailable;
-            }
-        }
-
-        app.preview_files = Vec::new();
-    }
 }
 
 /// Open `file` with `editor` and wait for it to exit.
@@ -994,7 +811,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             {
                                                 file_reader_content.read_tar_xz_content(&path)
                                             }
-                                            _ => vec![format!("Archive preview not supported")],
+                                            _ => vec!["Archive preview not supported".to_string()],
                                         };
                                         app.preview_file_content = entries.join("\n");
                                     }
@@ -1201,10 +1018,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut list_title = String::new();
             if app.loading {
-                let title_with_loader = format!("Copying Files...");
+                let title_with_loader = "Copying Files...".to_string();
                 list_title.push_str(&title_with_loader);
             } else {
-                list_title.push_str(&"List");
+                list_title.push_str("List");
             }
                         // Render the status bar based on style setting
             match settings.status_bar_style {
@@ -1356,7 +1173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|p| std::path::Path::new(p).is_dir())
                         .unwrap_or(false);
                     let path = right_pane.files.get(idx)
-                        .map(|p| std::path::Path::new(p))
+                        .map(std::path::Path::new)
                         .unwrap_or(std::path::Path::new(""));
                     let icon = widgets_ui.icon_provider.get_for_path(path, is_dir);
 
@@ -1639,62 +1456,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Process cache loading progress
-        if app.input_mode == InputMode::CacheLoading {
-            if app.process_cache_loading_progress() {
-                // Cache loading is complete, finish setup
-                debug!("Cache loading completed, finalizing...");
+        if app.input_mode == InputMode::CacheLoading && app.process_cache_loading_progress() {
+            // Cache loading is complete, finish setup
+            debug!("Cache loading completed, finalizing...");
 
-                // Use the completed cache if available, otherwise fallback to current directory
-                // Capture the completed cache and persist it; also update the in-memory store used for global search
-                let completed_directories = if let Some(ref cache_store) = app.completed_cache_store
-                {
-                    debug!(
-                        "Using completed cache with {} directories",
-                        cache_store.directories.len()
-                    );
+            // Use the completed cache if available, otherwise fallback to current directory
+            // Capture the completed cache and persist it; also update the in-memory store used for global search
+            let completed_directories = if let Some(ref cache_store) = app.completed_cache_store {
+                debug!(
+                    "Using completed cache with {} directories",
+                    cache_store.directories.len()
+                );
 
-                    // Update the in-memory store so global search starts working immediately
-                    store = cache_store.clone();
+                // Update the in-memory store so global search starts working immediately
+                store = cache_store.clone();
 
-                    // Save the cache to file for future use
-                    match file_finder::directory_store::save_directory_to_file(
-                        cache_store,
-                        &settings.cache_directory,
-                    ) {
-                        Ok(()) => {
-                            debug!(
-                                "Successfully saved cache to file: {}",
-                                settings.cache_directory
-                            );
-                            if let Some(ms) = app.cache_build_elapsed_ms {
-                                debug!("Directory cache built and saved in {} ms", ms);
-                            }
-                        }
-                        Err(e) => {
-                            debug!("Failed to save cache to file: {}", e);
+                // Save the cache to file for future use
+                match file_finder::directory_store::save_directory_to_file(
+                    cache_store,
+                    &settings.cache_directory,
+                ) {
+                    Ok(()) => {
+                        debug!(
+                            "Successfully saved cache to file: {}",
+                            settings.cache_directory
+                        );
+                        if let Some(ms) = app.cache_build_elapsed_ms {
+                            debug!("Directory cache built and saved in {} ms", ms);
                         }
                     }
+                    Err(e) => {
+                        debug!("Failed to save cache to file: {}", e);
+                    }
+                }
 
-                    // We no longer replace the current file list with the entire cache; keep current directory view.
-                    // Still return directories for compatibility (ignored by finish_cache_loading).
-                    cache_store.directories.clone()
-                } else {
-                    debug!("No completed cache available, falling back to current directory");
-                    // Fallback to current directory files
-                    get_file_path_data(
-                        startup_paths.refresh_fallback_path.clone(),
-                        false,
-                        app.sort_by.clone(),
-                        &app.sort_type,
-                    )
-                    .unwrap_or_else(|_| Vec::new())
-                };
+                // We no longer replace the current file list with the entire cache; keep current directory view.
+                // Still return directories for compatibility (ignored by finish_cache_loading).
+                cache_store.directories.clone()
+            } else {
+                debug!("No completed cache available, falling back to current directory");
+                // Fallback to current directory files
+                get_file_path_data(
+                    startup_paths.refresh_fallback_path.clone(),
+                    false,
+                    app.sort_by.clone(),
+                    &app.sort_type,
+                )
+                .unwrap_or_else(|_| Vec::new())
+            };
 
-                // Finalize cache loading without changing the current directory view
-                app.finish_cache_loading(completed_directories);
+            // Finalize cache loading without changing the current directory view
+            app.finish_cache_loading(completed_directories);
 
-                debug!("Cache loading finished, app is now in normal mode");
-            }
+            debug!("Cache loading finished, app is now in normal mode");
         }
 
         // Apply preserved selection and clamp after all refreshes, before handling a key.
@@ -2265,43 +2079,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 app.reset_create_edit_values();
                                 // create methods to reset the create_edit_file_name and state of it
                             }
-                            KeyCode::Enter => {
+                            KeyCode::Enter if !app.create_edit_file_name.is_empty() => {
                                 // create file/dir
-                                if !app.create_edit_file_name.is_empty() {
-                                    // Create inside a highlighted directory, beside a file,
-                                    // or in the browsed directory when no item is selected.
-                                    let new_path = app
-                                        .get_selected_path(state.selected())
-                                        .map(|selected| {
-                                            create_target_directory(Path::new(&selected))
-                                        })
-                                        .unwrap_or_else(|| app.current_directory_path())
-                                        .to_string_lossy()
-                                        .to_string();
-                                    match create_item_based_on_type(
-                                        new_path.clone(),
-                                        app.create_edit_file_name.clone(),
-                                    ) {
-                                        Ok(_) => {
-                                            app.input_mode = InputMode::Normal;
+                                // Create inside a highlighted directory, beside a file,
+                                // or in the browsed directory when no item is selected.
+                                let new_path = app
+                                    .get_selected_path(state.selected())
+                                    .map(|selected| create_target_directory(Path::new(&selected)))
+                                    .unwrap_or_else(|| app.current_directory_path())
+                                    .to_string_lossy()
+                                    .to_string();
+                                match create_item_based_on_type(
+                                    new_path.clone(),
+                                    app.create_edit_file_name.clone(),
+                                ) {
+                                    Ok(_) => {
+                                        app.input_mode = InputMode::Normal;
 
-                                            let created_path = created_item_path(
-                                                Path::new(&new_path),
-                                                &app.create_edit_file_name,
-                                            );
-                                            app.reset_create_edit_values();
-                                            refresh_file_list(
-                                                &mut app,
-                                                Path::new(&new_path),
-                                                &mut state,
-                                                created_path,
-                                            )?;
-                                            status_bar.invalidate_cache();
-                                        }
-                                        Err(e) => {
-                                            app.is_create_edit_error = true;
-                                            app.error_message = e.user_message();
-                                        }
+                                        let created_path = created_item_path(
+                                            Path::new(&new_path),
+                                            &app.create_edit_file_name,
+                                        );
+                                        app.reset_create_edit_values();
+                                        refresh_file_list(
+                                            &mut app,
+                                            Path::new(&new_path),
+                                            &mut state,
+                                            created_path,
+                                        )?;
+                                        status_bar.invalidate_cache();
+                                    }
+                                    Err(e) => {
+                                        app.is_create_edit_error = true;
+                                        app.error_message = e.user_message();
                                     }
                                 }
                             }
@@ -2399,12 +2209,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             _ => {}
                         },
 
-                        InputMode::WatchKeyBinding => match key.code {
-                            KeyCode::Char('q') => {
+                        InputMode::WatchKeyBinding => {
+                            if let KeyCode::Char('q') = key.code {
                                 app.input_mode = InputMode::Normal;
                             }
-                            _ => {}
-                        },
+                        }
                         _ => {}
                     }
                 }

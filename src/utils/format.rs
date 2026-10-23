@@ -192,13 +192,7 @@ pub fn format_path_for_display(path: &str, max_width: usize) -> String {
     }
 
     // Step 7: Reconstruct path
-    let prefix = if is_home_path {
-        "~"
-    } else if is_absolute {
-        ""
-    } else {
-        ""
-    };
+    let prefix = if is_home_path { "~" } else { "" };
     let sep = if is_home_path || is_absolute { "/" } else { "" };
 
     if result_parts.is_empty() {

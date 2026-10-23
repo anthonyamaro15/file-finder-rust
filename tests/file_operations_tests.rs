@@ -1,5 +1,3 @@
-mod common;
-
 use file_finder::app::App;
 use file_finder::operations::file_ops::{create_new_dir, create_new_file, delete_dir, delete_file};
 use file_finder::operations::{

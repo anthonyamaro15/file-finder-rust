@@ -8,7 +8,6 @@ pub use theme::{Theme, ThemeColors};
 
 use crate::errors::{AppError, AppResult};
 use std::fs;
-use std::path::Path;
 
 /// Initialize configuration directories and files on first run
 pub fn ensure_config_directories() -> AppResult<()> {

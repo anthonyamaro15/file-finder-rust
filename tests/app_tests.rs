@@ -1,5 +1,3 @@
-mod common;
-
 use file_finder::app::{App, InputMode, SearchScope, IDE};
 use file_finder::directory_store::DirectoryStore;
 
