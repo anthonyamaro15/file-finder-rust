@@ -414,25 +414,23 @@ fn copy_dir_per_file(
     entries.par_iter().try_for_each(|entry| {
         check_copy_cancelled(cancel)?;
         let entry_path = entry.path();
-        let relative_path = entry_path.strip_prefix(src).map_err(|e| {
-            io::Error::new(ErrorKind::Other, format!("Failed to strip prefix: {}", e))
-        })?;
+        let relative_path = entry_path
+            .strip_prefix(src)
+            .map_err(|e| io::Error::other(format!("Failed to strip prefix: {}", e)))?;
         let dst_path = new_src.join(relative_path);
 
         if entry.file_type().is_dir() {
             fs::create_dir_all(&dst_path).map_err(|e| {
-                io::Error::new(
-                    ErrorKind::Other,
-                    format!("Failed to create directory '{}': {}", dst_path.display(), e),
-                )
+                io::Error::other(format!(
+                    "Failed to create directory '{}': {}",
+                    dst_path.display(),
+                    e
+                ))
             })?;
         } else {
             if let Some(parent) = dst_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    io::Error::new(
-                        ErrorKind::Other,
-                        format!("Failed to create parent directory: {}", e),
-                    )
+                    io::Error::other(format!("Failed to create parent directory: {}", e))
                 })?;
             }
             if entry.file_type().is_symlink() {
@@ -440,15 +438,12 @@ fn copy_dir_per_file(
                 return Ok(());
             }
             fs::copy(entry_path, &dst_path).map_err(|e| {
-                io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "Failed to copy file '{}' to '{}': {}",
-                        entry_path.display(),
-                        dst_path.display(),
-                        e
-                    ),
-                )
+                io::Error::other(format!(
+                    "Failed to copy file '{}' to '{}': {}",
+                    entry_path.display(),
+                    dst_path.display(),
+                    e
+                ))
             })?;
         }
 
@@ -716,7 +711,7 @@ fn copy_dir_with_progress(
     let threads = std::env::var("FF_COPY_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n >= 1 && n <= 64)
+        .filter(|&n| (1..=64).contains(&n))
         .unwrap_or(4);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -758,7 +753,7 @@ fn copy_dir_with_progress(
                     bytes_copied.fetch_add(file_size, Ordering::Relaxed) + file_size;
 
                 let count = processed.fetch_add(1, Ordering::Relaxed) + 1;
-                if count % UPDATE_INTERVAL == 0 || count == total_files {
+                if count.is_multiple_of(UPDATE_INTERVAL) || count == total_files {
                     let _ = tx.send(CopyMessage::Progress {
                         files_processed: count,
                         total_files,

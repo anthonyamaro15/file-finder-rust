@@ -30,9 +30,6 @@ const MAX_PREVIEW_LINES: usize = 100;
 /// Maximum archive entries to display in preview
 const MAX_ARCHIVE_ENTRIES: usize = 100;
 
-/// Maximum CSV rows to display in preview
-const MAX_CSV_ROWS: usize = 100;
-
 /// Maximum bytes to read for hex preview of binary files
 const MAX_HEX_PREVIEW_BYTES: usize = 512;
 
@@ -110,16 +107,6 @@ impl PreviewCache {
     /// Clear all cached entries
     pub fn clear(&mut self) {
         self.entries.clear();
-    }
-
-    /// Get current cache size
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Check if cache is empty
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     /// Check if a path has a valid cached preview (file hasn't been modified)
@@ -341,13 +328,12 @@ pub fn load_image_async(
 pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
-    let mut code_block_lang = String::new();
 
     for line in content.lines() {
         if line.starts_with("```") {
             in_code_block = !in_code_block;
             if in_code_block {
-                code_block_lang = line.trim_start_matches('`').to_string();
+                let code_block_lang = line.trim_start_matches('`').to_string();
                 // Show language indicator if present
                 if !code_block_lang.is_empty() {
                     lines.push(Line::from(Span::styled(
@@ -641,12 +627,7 @@ fn is_escaped(chars: &[char], pos: usize) -> bool {
 
 /// Find closing delimiter
 fn find_closing(chars: &[char], start: usize, delim: char) -> Option<usize> {
-    for i in start..chars.len() {
-        if chars[i] == delim && !is_escaped(chars, i) {
-            return Some(i);
-        }
-    }
-    None
+    (start..chars.len()).find(|&i| chars[i] == delim && !is_escaped(chars, i))
 }
 
 /// Find double closing delimiter (**)
@@ -887,21 +868,6 @@ impl FileContent<'_> {
         }
     }
 
-    /// Get list of available syntax themes
-    pub fn available_themes(&self) -> Vec<&str> {
-        self.theme_set.themes.keys().map(|s| s.as_str()).collect()
-    }
-
-    /// Clear the preview cache
-    pub fn clear_preview_cache(&mut self) {
-        self.preview_cache.clear();
-    }
-
-    /// Get the current number of cached previews
-    pub fn cache_size(&self) -> usize {
-        self.preview_cache.len()
-    }
-
     /// Check if a path has a valid cached preview (without retrieving it)
     /// This is used to decide whether to use sync or async loading
     pub fn is_cached(&self, path: &str) -> bool {
@@ -919,20 +885,6 @@ impl FileContent<'_> {
             true
         } else {
             false
-        }
-    }
-
-    pub fn is_curr_path_file(path: String) -> bool {
-        match fs::metadata(path) {
-            Ok(file) => {
-                let file_t = file.file_type();
-                if file_t.is_file() {
-                    true
-                } else {
-                    false
-                }
-            }
-            Err(_) => false,
         }
     }
 
@@ -1049,105 +1001,6 @@ impl FileContent<'_> {
         self.hightlighted_content = Some(paragraph);
     }
 
-    pub fn read_file_content(&mut self, path: String) -> String {
-        // Check if this is an image file first to avoid trying to read binary data as text
-        let file_type = self.get_file_extension(path.clone());
-        if matches!(file_type, FileType::Image | FileType::Binary) {
-            return format!(
-                "Cannot display {} file as text",
-                match file_type {
-                    FileType::Image => "image",
-                    FileType::Binary => "binary",
-                    _ => "unknown",
-                }
-            );
-        }
-
-        // Check file size first
-        if let Ok(metadata) = fs::metadata(&path) {
-            let file_size = metadata.len();
-
-            // Skip preview entirely for very large files (> 5MB)
-            if file_size > MAX_PREVIEW_FILE_SIZE {
-                return self.create_large_file_placeholder(&path, file_size);
-            }
-        }
-
-        // Always use line-limited reader for consistent performance
-        // This ensures we never read more than 100 lines regardless of file size
-        self.read_file_lines_limited(&path)
-    }
-
-    /// Create a placeholder message for files too large to preview
-    fn create_large_file_placeholder(&self, path: &str, file_size: u64) -> String {
-        let filename = Path::new(path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("Unknown");
-
-        let size_str = Self::format_file_size(file_size);
-
-        format!(
-            "  File too large to preview\n\n\
-             \n\
-               {}
-             \n\n\
-               Size: {}\n\
-               Limit: 5 MB\n\n\
-             \n\
-               Press Enter to open in editor",
-            filename, size_str
-        )
-    }
-
-    /// Read only the first N lines of a file for preview (default: 100 lines)
-    /// This is used for ALL files to ensure consistent performance
-    fn read_file_lines_limited(&self, path: &str) -> String {
-        use std::io::{BufRead, BufReader};
-
-        let file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => return format!("Error opening file: {}", e),
-        };
-
-        let total_size = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let reader = BufReader::new(file);
-        let mut lines = Vec::with_capacity(MAX_PREVIEW_LINES);
-        let mut total_lines_count = 0;
-        let mut truncated = false;
-
-        for line_result in reader.lines() {
-            total_lines_count += 1;
-
-            if lines.len() < MAX_PREVIEW_LINES {
-                match line_result {
-                    Ok(line) => lines.push(line),
-                    Err(_) => break, // Stop on read error (likely binary content)
-                }
-            } else {
-                truncated = true;
-                // Count remaining lines without storing them
-                if line_result.is_err() {
-                    break;
-                }
-            }
-        }
-
-        let preview = lines.join("\n");
-
-        if truncated {
-            let size_str = Self::format_file_size(total_size);
-            format!(
-                "{}\n\n... ({} more lines, {} total)",
-                preview,
-                total_lines_count - MAX_PREVIEW_LINES,
-                size_str
-            )
-        } else {
-            preview
-        }
-    }
-
     /// Format file size for display
     fn format_file_size(size: u64) -> String {
         const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
@@ -1169,10 +1022,8 @@ impl FileContent<'_> {
     pub fn get_file_extension_type(&mut self, path: String) -> Option<String> {
         let file_extension = Path::new(&path).extension();
 
-        let curr_extension_type = match file_extension {
-            Some(extension) => Some(extension.to_owned().into_string().unwrap()),
-            None => None, // TODO: find out what would be the best default
-        };
+        let curr_extension_type =
+            file_extension.map(|extension| extension.to_owned().into_string().unwrap());
 
         //self.curr_extension_tpe = curr_extension_type;
 
@@ -1297,43 +1148,6 @@ impl FileContent<'_> {
 
         // Default to text file if we can't determine otherwise
         FileType::TextFile
-    }
-
-    pub fn read_csv_content(&mut self) {
-        let file = match fs::File::open(self.curr_selected_path.clone()) {
-            Ok(f) => f,
-            Err(_) => {
-                self.curr_csv_content = vec!["Error: Could not open CSV file".to_string()];
-                return;
-            }
-        };
-
-        let mut rdr = csv::Reader::from_reader(file);
-
-        let mut file_content: Vec<String> = Vec::new();
-        let mut row_count = 0;
-        let mut total_rows = 0;
-
-        for result in rdr.records() {
-            total_rows += 1;
-            if row_count >= MAX_CSV_ROWS {
-                continue; // Keep counting total but don't store more
-            }
-            // Skip records that fail to parse instead of crashing
-            if let Ok(record) = result {
-                for val in record.iter() {
-                    file_content.push(val.to_string());
-                }
-                row_count += 1;
-            }
-        }
-
-        // Add truncation message if there are more rows
-        if total_rows > MAX_CSV_ROWS {
-            file_content.push(format!("... and {} more rows", total_rows - MAX_CSV_ROWS));
-        }
-
-        self.curr_csv_content = file_content;
     }
 
     pub fn read_zip_content(&mut self, path: String) -> i32 {
@@ -1508,55 +1322,6 @@ impl FileContent<'_> {
                 message, failed, error
             )),
             None => Ok(message),
-        }
-    }
-
-    /// Maximum PDF file size for preview (50MB)
-    const MAX_PDF_SIZE: u64 = 50 * 1024 * 1024;
-
-    /// Read and extract text content from a PDF file
-    pub fn read_pdf_content(&mut self, path: &str) -> String {
-        // Check file size before attempting to extract
-        if let Ok(metadata) = fs::metadata(path) {
-            if metadata.len() > Self::MAX_PDF_SIZE {
-                return format!(
-                    "PDF file is too large for preview ({:.1} MB).\n\nMaximum size: 50 MB\n\nUse an external PDF viewer.",
-                    metadata.len() as f64 / (1024.0 * 1024.0)
-                );
-            }
-        }
-
-        match pdf_extract::extract_text(path) {
-            Ok(text) => {
-                if text.trim().is_empty() {
-                    "PDF file contains no extractable text.\n\nThis may be a scanned document or image-based PDF.".to_string()
-                } else {
-                    // Count lines once, then take for preview
-                    let all_lines: Vec<&str> = text.lines().collect();
-                    let total_lines = all_lines.len();
-                    let preview_lines: Vec<&str> = all_lines.into_iter().take(200).collect();
-                    let preview = preview_lines.join("\n");
-
-                    if total_lines > 200 {
-                        format!(
-                            "{}\n\n... (truncated, {} more lines)",
-                            preview,
-                            total_lines - 200
-                        )
-                    } else {
-                        preview
-                    }
-                }
-            }
-            Err(e) => {
-                // Check for common PDF issues
-                let error_str = e.to_string();
-                if error_str.contains("password") || error_str.contains("encrypted") {
-                    "PDF file is password-protected.\n\nUnable to extract text without the password.".to_string()
-                } else {
-                    format!("Unable to read PDF content.\n\nError: {}\n\nTry opening with an external PDF viewer.", e)
-                }
-            }
         }
     }
 

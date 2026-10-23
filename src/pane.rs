@@ -5,8 +5,6 @@
 
 use std::path::Path;
 
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
 use ratatui::widgets::ListState;
 
 use crate::app::SearchResult;
@@ -87,21 +85,6 @@ impl Pane {
             list_state,
             show_hidden_files: false,
         }
-    }
-
-    /// Create a pane from a directory path
-    pub fn from_directory(path: &str, show_hidden: bool) -> Self {
-        let files = get_inner_files_info(
-            path.to_string(),
-            show_hidden,
-            SortBy::Default,
-            &SortType::ASC,
-        )
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-
-        Self::new(path.to_string(), files)
     }
 
     /// Update file references after the file list changes
@@ -201,60 +184,12 @@ impl Pane {
         self.list_state.select(Some(new_index));
     }
 
-    /// Perform local fuzzy search on file names
-    pub fn perform_local_search(&mut self, query: &str) {
-        if query.is_empty() {
-            self.search_results.clear();
-            self.filtered_indexes = (0..self.files.len()).collect();
-            return;
-        }
-
-        let matcher = SkimMatcherV2::default();
-        let mut results: Vec<SearchResult> = Vec::new();
-
-        for (index, file) in self.files.iter().enumerate() {
-            let file_name = Path::new(file)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(file);
-
-            if let Some(score) = matcher.fuzzy_match(file_name, query) {
-                let is_directory = Path::new(file).is_dir();
-                results.push(SearchResult {
-                    file_path: file.clone(),
-                    display_name: file_name.to_string(),
-                    score,
-                    is_directory,
-                    original_index: index,
-                });
-            }
-        }
-
-        // Sort by score descending
-        results.sort_by(|a, b| b.score.cmp(&a.score));
-
-        // Update filtered indexes based on search results
-        self.filtered_indexes = results.iter().map(|r| r.original_index).collect();
-        self.search_results = results;
-
-        // Reset selection to first result
-        if !self.search_results.is_empty() {
-            self.selected_index = Some(0);
-            self.list_state.select(Some(0));
-        }
-    }
-
     /// Clear search state
     pub fn clear_search(&mut self) {
         self.search_input.clear();
         self.cursor_index = 0;
         self.search_results.clear();
         self.filtered_indexes = (0..self.files.len()).collect();
-    }
-
-    /// Check if this pane is in search mode
-    pub fn is_searching(&self) -> bool {
-        !self.search_input.is_empty() || !self.search_results.is_empty()
     }
 
     /// Refresh files from the current directory

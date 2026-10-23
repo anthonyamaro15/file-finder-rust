@@ -38,6 +38,12 @@ pub struct StatusBar {
     cache_valid: bool,
 }
 
+impl Default for StatusBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StatusBar {
     pub fn new() -> Self {
         StatusBar {
@@ -449,26 +455,6 @@ impl StatusBar {
         format!("{}{}{}", r, w, x)
     }
 
-    pub fn render_detailed(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
-        // More detailed status bar for when there's more vertical space
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Main status line
-                Constraint::Length(3), // Selected item info
-            ])
-            .split(area);
-
-        // Render main status bar
-        self.render(frame, chunks[0], app, theme);
-
-        // Selected item details
-        let selected_widget = Paragraph::new(self.selected_item_info.clone())
-            .block(Block::default().borders(Borders::ALL).title("Selection"))
-            .style(Style::default().fg(theme.green));
-        frame.render_widget(selected_widget, chunks[1]);
-    }
-
     /// Show an error message for a specified duration (default: 3 seconds)
     pub fn show_error(&mut self, message: String, duration_secs: Option<u64>) {
         self.show_notification(NotificationKind::Error, message, duration_secs);
@@ -555,42 +541,6 @@ impl StatusBar {
 
             frame.render_widget(error_block, popup_area);
         }
-    }
-
-    pub fn get_status_text(&self, app: &App, theme: &ThemeColors) -> Vec<Line> {
-        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
-
-        // If there's an error, show it in the status line
-        if let Some(ref error_msg) = self.error_message {
-            return vec![Line::from(vec![
-                Span::styled(
-                    "ERROR: ",
-                    Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(error_msg.clone(), Style::default().fg(theme.fg)),
-            ])];
-        }
-
-        vec![Line::from(vec![
-            Span::styled(
-                format!("[{}]", mode_text),
-                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" "),
-            Span::styled(&self.current_directory, Style::default().fg(theme.fg)),
-            Span::raw(" | "),
-            Span::styled(
-                format!("{}F/{}D", self.file_count, self.directory_count),
-                Style::default().fg(theme.cyan),
-            ),
-            Span::raw(" | "),
-            Span::styled(
-                Self::format_file_size(self.total_size),
-                Style::default().fg(theme.yellow),
-            ),
-            Span::raw(" | "),
-            Span::styled(&self.system_info, Style::default().fg(theme.gray)),
-        ])]
     }
 }
 

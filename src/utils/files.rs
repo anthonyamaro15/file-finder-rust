@@ -143,32 +143,6 @@ pub fn get_inner_files_info(
     Ok(Some(file_strings))
 }
 
-/// Get file names from a directory path (without full paths).
-pub fn get_content_from_path(path: String) -> Option<Vec<String>> {
-    let mut file_name_list: Vec<String> = Vec::new();
-    match fs::read_dir(path) {
-        Ok(val) => {
-            for name in val.into_iter() {
-                match name {
-                    Ok(result) => {
-                        let file_name = result.file_name().to_str().unwrap().to_string();
-                        file_name_list.push(file_name);
-                    }
-                    Err(e) => {
-                        println!("error getting content from path: {:?}", e);
-                        return None;
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            println!("her: {:?}", e);
-            return None;
-        }
-    };
-    Some(file_name_list)
-}
-
 /// Get sorted file paths from a starting directory.
 pub fn get_file_path_data(
     start_path: String,
@@ -192,16 +166,6 @@ pub fn is_file(path: String) -> bool {
         Ok(file) => file.file_type().is_file(),
         Err(_) => false,
     }
-}
-
-/// Get metadata for a file path.
-pub fn get_metadata_info(path: String) -> anyhow::Result<Option<Metadata>> {
-    let metadata = match fs::metadata(path) {
-        Ok(info) => Some(info),
-        Err(_) => None,
-    };
-
-    Ok(metadata)
 }
 
 /// Generate a formatted string with file metadata info.
@@ -263,13 +227,7 @@ pub fn generate_copy_file_dir_name(
 
 /// Check if a path exists.
 pub fn check_if_exists(new_path: String) -> bool {
-    match Path::new(&new_path).try_exists() {
-        Ok(value) => value,
-        Err(_) => {
-            // If we can't determine existence, assume it doesn't exist
-            false
-        }
-    }
+    Path::new(&new_path).try_exists().unwrap_or_default()
 }
 
 /// Get the parent directory path from a file path.
@@ -278,31 +236,6 @@ pub fn get_curr_path(path: String) -> String {
         .parent()
         .map(|parent| parent.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-/// Get directory statistics (file count and total size).
-/// Returns (file_count, total_size_bytes).
-pub fn get_directory_stats(path: &Path) -> (usize, u64) {
-    let mut file_count = 0usize;
-    let mut total_size = 0u64;
-
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            if entry_path.is_file() {
-                file_count += 1;
-                if let Ok(metadata) = entry_path.metadata() {
-                    total_size += metadata.len();
-                }
-            } else if entry_path.is_dir() {
-                let (sub_count, sub_size) = get_directory_stats(&entry_path);
-                file_count += sub_count;
-                total_size += sub_size;
-            }
-        }
-    }
-
-    (file_count, total_size)
 }
 
 #[cfg(test)]

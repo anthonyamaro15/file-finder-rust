@@ -10,7 +10,7 @@ use ratatui::widgets::ListState;
 use rayon::prelude::*;
 
 use crate::directory_store::DirectoryStore;
-use crate::errors::{AppError, AppResult};
+use crate::errors::AppResult;
 use crate::file_reader_content::FileType;
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
@@ -1377,11 +1377,6 @@ impl App {
         self.delete_target_path.take()
     }
 
-    /// Get the active current directory as a string.
-    pub fn get_current_dir(&self) -> String {
-        self.current_directory_path().to_string_lossy().to_string()
-    }
-
     /// Get the active current directory as a path.
     pub fn current_directory_path(&self) -> PathBuf {
         if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
@@ -1405,11 +1400,6 @@ impl App {
         }
     }
 
-    /// Check if we're currently in search mode (either global or local).
-    pub fn is_in_search_mode(&self) -> bool {
-        !self.search_results.is_empty()
-    }
-
     /// Clear search state and return to normal file list view.
     pub fn clear_search(&mut self) {
         self.global_search_mode = false;
@@ -1427,11 +1417,6 @@ impl App {
         self.active_pane = self.active_pane.toggle();
     }
 
-    /// Check if the left pane is active
-    pub fn is_left_pane_active(&self) -> bool {
-        self.active_pane == PanePosition::Left
-    }
-
     /// Check if the right pane is active
     pub fn is_right_pane_active(&self) -> bool {
         self.active_pane == PanePosition::Right
@@ -1444,19 +1429,6 @@ impl App {
         self.right_pane =
             crate::pane::Pane::new(self.current_directory.clone(), self.files.clone());
         self.right_pane.show_hidden_files = self.show_hidden_files;
-    }
-
-    /// Get the directory of the inactive pane (for cross-pane operations)
-    pub fn get_inactive_pane_directory(&self) -> String {
-        match self.active_pane {
-            PanePosition::Left => self.right_pane.current_directory.clone(),
-            PanePosition::Right => self.current_directory.clone(),
-        }
-    }
-
-    /// Refresh the right pane's file list
-    pub fn refresh_right_pane(&mut self) {
-        self.right_pane.refresh_files();
     }
 
     /// Request a preview update with debouncing

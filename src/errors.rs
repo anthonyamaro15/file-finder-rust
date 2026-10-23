@@ -11,165 +11,12 @@ pub enum AppError {
     #[error("Configuration error: {message}")]
     Configuration { message: String },
 
-    #[error("Path error: {message}")]
-    Path { message: String },
-
-    #[error("Image processing error: {message}")]
-    Image { message: String },
-
-    #[error("Terminal/UI error: {message}")]
-    Terminal { message: String },
-
-    #[error("Clipboard error: {message}")]
-    Clipboard { message: String },
-
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("IDE validation error: '{ide}' is not supported. Valid options: nvim, vscode, zed")]
-    InvalidIDE { ide: String },
-
-    #[error("Directory traversal error: {message}")]
-    DirectoryTraversal { message: String },
-
-    #[error("Cache error: {message}")]
-    Cache { message: String },
 }
 
 /// Result type alias for convenience
 pub type AppResult<T> = Result<T, AppError>;
-
-impl AppError {
-    /// Create a configuration error
-    pub fn config<S: Into<String>>(message: S) -> Self {
-        Self::Configuration {
-            message: message.into(),
-        }
-    }
-
-    /// Create a path error
-    pub fn path<S: Into<String>>(message: S) -> Self {
-        Self::Path {
-            message: message.into(),
-        }
-    }
-
-    /// Create an image processing error
-    pub fn image<S: Into<String>>(message: S) -> Self {
-        Self::Image {
-            message: message.into(),
-        }
-    }
-
-    /// Create a terminal/UI error
-    pub fn terminal<S: Into<String>>(message: S) -> Self {
-        Self::Terminal {
-            message: message.into(),
-        }
-    }
-
-    /// Create a clipboard error
-    pub fn clipboard<S: Into<String>>(message: S) -> Self {
-        Self::Clipboard {
-            message: message.into(),
-        }
-    }
-
-    /// Create an IDE validation error
-    pub fn invalid_ide<S: Into<String>>(ide: S) -> Self {
-        Self::InvalidIDE { ide: ide.into() }
-    }
-
-    /// Create a directory traversal error
-    pub fn directory_traversal<S: Into<String>>(message: S) -> Self {
-        Self::DirectoryTraversal {
-            message: message.into(),
-        }
-    }
-
-    /// Create a cache error
-    pub fn cache<S: Into<String>>(message: S) -> Self {
-        Self::Cache {
-            message: message.into(),
-        }
-    }
-
-    /// Check if this error is recoverable
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            AppError::FileSystem(_) => true,        // Can retry file operations
-            AppError::Configuration { .. } => true, // Can use defaults
-            AppError::Cache { .. } => true,         // Can rebuild cache
-            AppError::Clipboard { .. } => true,     // Can fall back to terminal output
-            AppError::Image { .. } => true,         // Can skip image preview
-            AppError::DirectoryTraversal { .. } => true, // Can try different directory
-            AppError::Path { .. } => false,         // Usually indicates corrupt data
-            AppError::Terminal { .. } => false,     // Terminal issues are usually fatal
-            AppError::Json(_) => false,             // Indicates corrupt config
-            AppError::InvalidIDE { .. } => false,   // User input validation error
-        }
-    }
-
-    /// Get a user-friendly message for display in UI
-    pub fn user_message(&self) -> String {
-        match self {
-            AppError::FileSystem(e) => match e.kind() {
-                io::ErrorKind::NotFound => "File or directory not found".to_string(),
-                io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
-                io::ErrorKind::AlreadyExists => "File or directory already exists".to_string(),
-                _ => format!("File system error: {}", e),
-            },
-            AppError::Configuration { message } => {
-                format!("Configuration issue: {}", message)
-            }
-            AppError::Path { message } => {
-                format!("Path issue: {}", message)
-            }
-            AppError::Image { message } => {
-                format!("Cannot display image: {}", message)
-            }
-            AppError::Terminal { message } => {
-                format!("Terminal error: {}", message)
-            }
-            AppError::Clipboard { message } => {
-                format!("Clipboard error: {}", message)
-            }
-            AppError::Json(_) => "Configuration file is corrupted. Using defaults.".to_string(),
-            AppError::InvalidIDE { ide } => {
-                format!(
-                    "'{}' is not a supported editor. Use: nvim, vscode, or zed",
-                    ide
-                )
-            }
-            AppError::DirectoryTraversal { message } => {
-                format!("Cannot access directory: {}", message)
-            }
-            AppError::Cache { message } => {
-                format!("Cache issue: {}", message)
-            }
-        }
-    }
-}
-
-/// Helper trait to convert path-related operations to AppError
-pub trait PathErrorExt<T> {
-    fn path_context<S: Into<String>>(self, message: S) -> AppResult<T>;
-}
-
-impl<T> PathErrorExt<T> for Option<T> {
-    fn path_context<S: Into<String>>(self, message: S) -> AppResult<T> {
-        self.ok_or_else(|| AppError::path(message))
-    }
-}
-
-impl<T, E> PathErrorExt<T> for Result<T, E>
-where
-    E: std::fmt::Display,
-{
-    fn path_context<S: Into<String>>(self, message: S) -> AppResult<T> {
-        self.map_err(|_| AppError::path(message))
-    }
-}
 
 /// Specific error type for file operations with detailed context
 #[derive(Error, Debug, Clone)]
@@ -179,9 +26,6 @@ pub enum FileOperationError {
 
     #[error("File not found: '{path}' does not exist")]
     FileNotFound { path: String },
-
-    #[error("Directory not empty: '{path}' contains files and cannot be deleted")]
-    DirectoryNotEmpty { path: String },
 
     #[error("Invalid name: '{name}' is not valid. {reason}")]
     InvalidName { name: String, reason: String },
@@ -197,12 +41,6 @@ pub enum FileOperationError {
 
     #[error("Disk full: Not enough space to complete operation on '{path}'")]
     DiskFull { path: String },
-
-    #[error("File too large: '{path}' is too large for this operation")]
-    FileTooLarge { path: String },
-
-    #[error("Cross-device operation: Cannot move '{from}' to '{to}' (different filesystems)")]
-    CrossDevice { from: String, to: String },
 
     #[error("IO error: {message}")]
     Io { message: String },
@@ -236,7 +74,7 @@ impl From<io::Error> for FileOperationError {
 
 impl From<FileOperationError> for AppError {
     fn from(error: FileOperationError) -> Self {
-        AppError::FileSystem(io::Error::new(io::ErrorKind::Other, error.to_string()))
+        AppError::FileSystem(io::Error::other(error.to_string()))
     }
 }
 
@@ -271,36 +109,6 @@ impl FileOperationError {
         }
     }
 
-    /// Create a directory not empty error
-    pub fn directory_not_empty<P: AsRef<Path>>(path: P) -> Self {
-        Self::DirectoryNotEmpty {
-            path: path.as_ref().display().to_string(),
-        }
-    }
-
-    /// Create an invalid path error
-    pub fn invalid_path<P: AsRef<Path>>(path: P) -> Self {
-        Self::InvalidPath {
-            path: path.as_ref().display().to_string(),
-        }
-    }
-
-    /// Create an unsupported operation error
-    pub fn unsupported_operation<P: AsRef<Path>>(operation: &str, path: P) -> Self {
-        Self::UnsupportedOperation {
-            operation: operation.to_string(),
-            path: path.as_ref().display().to_string(),
-        }
-    }
-
-    /// Create a cross-device error
-    pub fn cross_device<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Self {
-        Self::CrossDevice {
-            from: from.as_ref().display().to_string(),
-            to: to.as_ref().display().to_string(),
-        }
-    }
-
     /// Check if this is a "file not found" error
     pub fn is_not_found(&self) -> bool {
         matches!(self, Self::FileNotFound { .. })
@@ -329,16 +137,6 @@ impl FileOperationError {
                     file_name
                 )
             }
-            Self::DirectoryNotEmpty { path } => {
-                let dir_name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path);
-                format!(
-                    "Cannot delete '{}': Directory is not empty. Delete contents first.",
-                    dir_name
-                )
-            }
             Self::InvalidName { name, reason } => {
                 format!("'{}' is not a valid name: {}", name, reason)
             }
@@ -359,58 +157,13 @@ impl FileOperationError {
                     .unwrap_or(path);
                 format!("{} is not supported on '{}'.", operation, file_name)
             }
-            Self::DiskFull { path } => {
-                format!(
-                    "Not enough disk space to complete the operation. Free up space and try again."
-                )
-            }
-            Self::FileTooLarge { path } => {
-                let file_name = Path::new(path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path);
-                format!("'{}' is too large for this operation.", file_name)
-            }
-            Self::CrossDevice { from, to } => {
-                format!("Cannot move between different file systems. Copy and delete instead.")
+            Self::DiskFull { .. } => {
+                "Not enough disk space to complete the operation. Free up space and try again."
+                    .to_string()
             }
             Self::Io { message } => {
                 format!("File operation failed: {}", message)
             }
-        }
-    }
-
-    /// Get a short title for the error (for dialog titles)
-    pub fn title(&self) -> &'static str {
-        match self {
-            Self::PermissionDenied { .. } => "Permission Denied",
-            Self::FileNotFound { .. } => "File Not Found",
-            Self::DirectoryNotEmpty { .. } => "Directory Not Empty",
-            Self::InvalidName { .. } => "Invalid Name",
-            Self::AlreadyExists { .. } => "Already Exists",
-            Self::InvalidPath { .. } => "Invalid Path",
-            Self::UnsupportedOperation { .. } => "Operation Not Supported",
-            Self::DiskFull { .. } => "Disk Full",
-            Self::FileTooLarge { .. } => "File Too Large",
-            Self::CrossDevice { .. } => "Cross-Device Operation",
-            Self::Io { .. } => "File Error",
-        }
-    }
-
-    /// Check if this error is recoverable (user can retry)
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::PermissionDenied { .. } => false, // Need to fix permissions first
-            Self::FileNotFound { .. } => false,     // File is gone
-            Self::DirectoryNotEmpty { .. } => true, // Can delete contents first
-            Self::InvalidName { .. } => true,       // Can choose different name
-            Self::AlreadyExists { .. } => true,     // Can choose different name
-            Self::InvalidPath { .. } => true,       // Can choose different path
-            Self::UnsupportedOperation { .. } => false, // Operation not possible
-            Self::DiskFull { .. } => true,          // Can free up space
-            Self::FileTooLarge { .. } => false,     // Size won't change
-            Self::CrossDevice { .. } => true,       // Can copy instead of move
-            Self::Io { .. } => true,                // Might be temporary
         }
     }
 }
@@ -514,7 +267,8 @@ pub mod validation {
                 // Try to check if directory is writable by attempting to create a temp file
                 // Use process ID to avoid conflicts with user files
                 let temp_path = parent.join(format!(".ff_perm_test_{}", std::process::id()));
-                if let Err(_) = std::fs::File::create(&temp_path) {
+                let create_result = std::fs::File::create(&temp_path);
+                if create_result.is_err() {
                     return Err(FileOperationError::permission_denied(
                         parent,
                         "Cannot write to parent directory",

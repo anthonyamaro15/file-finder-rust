@@ -295,8 +295,9 @@ mod build_directory_store_tests {
 
     #[test]
     fn test_build_directory_from_store_empty_directory() {
-        let temp_dir = tempdir().expect("Failed to create temp directory");
-        let temp_path = temp_dir.path().to_str().unwrap();
+        let temp_dir = setup_simple_test_directory().expect("Failed to create test directory");
+        let empty_dir = temp_dir.path().join("directory");
+        let temp_path = empty_dir.to_str().unwrap();
 
         let ignore_directories = vec![];
         let store = build_directory_from_store(temp_path, ignore_directories);

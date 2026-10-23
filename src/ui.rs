@@ -283,7 +283,7 @@ impl Ui {
     }
 
     /// Generate list items based on current search state (optimized with pagination)
-    fn generate_list_items(&self, app: &App, settings: &Settings) -> Vec<ListItem> {
+    fn generate_list_items(&self, app: &App, settings: &Settings) -> Vec<ListItem<'_>> {
         let show_file_sizes = settings.show_size_bars;
         let search_term = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
             let term = app.input.trim();

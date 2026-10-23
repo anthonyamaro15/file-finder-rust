@@ -12,7 +12,7 @@ use crate::errors::{AppError, AppResult};
 use ratatui::style::{Color, Modifier, Style};
 
 /// Theme configuration loaded from TOML
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Theme {
     pub palette: Palette,
     #[serde(default)]
@@ -283,19 +283,6 @@ impl Default for StatusBarTheme {
     }
 }
 
-impl Default for Theme {
-    fn default() -> Self {
-        Self {
-            palette: Palette::default(),
-            ui: UiTheme::default(),
-            syntax: SyntaxTheme::default(),
-            icons: IconTheme::default(),
-            markdown: MarkdownTheme::default(),
-            statusbar: StatusBarTheme::default(),
-        }
-    }
-}
-
 /// Processed theme colors ready for UI consumption
 #[derive(Debug, Clone)]
 pub struct ThemeColors {
@@ -430,14 +417,6 @@ impl Theme {
         })?;
 
         Ok(theme)
-    }
-
-    /// Save theme to TOML file by name
-    pub fn save(&self, theme_name: &str) -> AppResult<()> {
-        let themes_dir = get_themes_dir()?;
-        let theme_path = themes_dir.join(format!("{}.toml", theme_name));
-
-        self.save_to_file(&theme_path)
     }
 
     /// Save theme to a specific TOML file path

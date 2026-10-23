@@ -93,7 +93,7 @@ pub fn create_delete_confirmation_popup<'a>(
     } else {
         // For files, we have the size
         let size_str = total_size
-            .map(|s| format_file_size(s))
+            .map(format_file_size)
             .unwrap_or_else(|| "unknown".to_string());
         format!("({})", size_str)
     };
@@ -336,8 +336,10 @@ mod tests {
 
     #[test]
     fn keybinding_help_text_reflects_custom_search_keys() {
-        let mut settings = KeymapSettings::default();
-        settings.leader = ",".to_string();
+        let mut settings = KeymapSettings {
+            leader: ",".to_string(),
+            ..KeymapSettings::default()
+        };
         settings
             .normal
             .insert("f".to_string(), "search.current".to_string());

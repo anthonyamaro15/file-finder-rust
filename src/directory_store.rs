@@ -28,7 +28,7 @@ impl DirectoryStore {
     pub fn search(&self, prefix: &str) -> Vec<String> {
         let mut new_files: Vec<String> = Vec::new();
         for file in self.directories.iter() {
-            if file.contains(&prefix) {
+            if file.contains(prefix) {
                 new_files.push(file.clone());
             }
         }
@@ -175,7 +175,7 @@ pub fn build_directory_from_store_async(
                                     guard.insert(s);
                                 }
                                 let new_count = counter_arc.fetch_add(1, Ordering::Relaxed) + 1;
-                                if new_count % UPDATE_INTERVAL == 0 {
+                                if new_count.is_multiple_of(UPDATE_INTERVAL) {
                                     let _ = tx_progress.send(CacheBuildProgress::Progress {
                                         directories_found: new_count,
                                         current_path: s.to_string(),

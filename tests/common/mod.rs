@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::{Path, PathBuf};
 use tempfile::{tempdir, TempDir};
 
 /// Creates a temporary directory structure for testing
@@ -59,22 +58,4 @@ pub fn setup_simple_test_directory() -> Result<TempDir, Box<dyn std::error::Erro
     fs::create_dir(base_path.join("directory"))?;
 
     Ok(temp_dir)
-}
-
-/// Helper function to get all file paths in a directory recursively
-pub fn get_all_paths_in_dir<P: AsRef<Path>>(
-    dir: P,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut paths = Vec::new();
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let mut sub_paths = get_all_paths_in_dir(&path)?;
-            paths.append(&mut sub_paths);
-        }
-        paths.push(path);
-    }
-    paths.sort();
-    Ok(paths)
 }
