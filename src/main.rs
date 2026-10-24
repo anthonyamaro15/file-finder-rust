@@ -394,6 +394,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &mut loop_state.state,
                                 &mut loop_state.status_bar,
                                 &mut loop_state.index,
+                                &startup_paths.refresh_fallback_path,
                             )?
                         }
 

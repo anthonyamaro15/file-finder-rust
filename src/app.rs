@@ -1318,6 +1318,17 @@ impl App {
         }
     }
 
+    /// The active pane's highlighted item: the right pane's when it is active in dual
+    /// pane, otherwise the left listing's row `selected_index`. Actions on "the selected
+    /// item" use this, so they never reach into the inactive pane.
+    pub fn active_selected_path(&self, selected_index: Option<usize>) -> Option<String> {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            self.right_pane.get_selected_path()
+        } else {
+            self.get_selected_path(selected_index)
+        }
+    }
+
     /// Name of the running background operation, if any; only one runs at a time.
     pub fn busy_operation(&self) -> Option<&'static str> {
         if self.copy_in_progress {
@@ -1406,7 +1417,7 @@ impl App {
 
     /// Freeze the highlighted target for the delete confirmation popup.
     pub fn prepare_delete(&mut self, selected_index: Option<usize>) {
-        let Some(selected) = self.get_selected_path(selected_index) else {
+        let Some(selected) = self.active_selected_path(selected_index) else {
             return;
         };
         let path = Path::new(&selected);

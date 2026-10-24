@@ -69,6 +69,15 @@ pub fn handle_rename_key(
                             let old_path = Path::new(&app.current_path_to_edit)
                                 .join(&app.current_name_to_edit);
                             index.renamed(&old_path, Path::new(&new_path));
+                            // Only the pane it was renamed in moves its highlight to it.
+                            let from_right_pane =
+                                app.view_mode.is_dual_pane() && app.is_right_pane_active();
+                            if app.view_mode.is_dual_pane() {
+                                app.right_pane.refresh_files();
+                                if from_right_pane {
+                                    app.right_pane.select_path(&new_path);
+                                }
+                            }
                             let current_dir = current_refresh_directory(app, fallback_start_path);
                             app.reset_create_edit_values();
                             let file_path_list = get_file_path_data(
@@ -80,7 +89,7 @@ pub fn handle_rename_key(
                             app.refresh_files_after_operation(
                                 file_path_list,
                                 state,
-                                Some(new_path),
+                                (!from_right_pane).then_some(new_path),
                             );
                             status_bar.invalidate_cache();
                             app.input_mode = InputMode::Normal;
@@ -108,6 +117,7 @@ pub fn handle_create_key(
     state: &mut ListState,
     status_bar: &mut StatusBar,
     index: &mut DirectoryIndex,
+    fallback_start_path: &str,
 ) -> anyhow::Result<()> {
     match key.code {
         KeyCode::Char(c) => {
@@ -132,7 +142,7 @@ pub fn handle_create_key(
             // Create inside a highlighted directory, beside a file,
             // or in the browsed directory when no item is selected.
             let new_path = app
-                .get_selected_path(state.selected())
+                .active_selected_path(state.selected())
                 .map(|selected| create_target_directory(Path::new(&selected)))
                 .unwrap_or_else(|| app.current_directory_path())
                 .to_string_lossy()
@@ -145,7 +155,21 @@ pub fn handle_create_key(
                     let created_path =
                         created_item_path(Path::new(&new_path), &app.create_edit_file_name);
                     app.reset_create_edit_values();
-                    refresh_file_list(app, Path::new(&new_path), state, created_path)?;
+                    let from_right_pane =
+                        app.view_mode.is_dual_pane() && app.is_right_pane_active();
+                    if app.view_mode.is_dual_pane() {
+                        app.right_pane.refresh_files();
+                    }
+                    if from_right_pane {
+                        if let Some(created_path) = created_path {
+                            app.right_pane.select_path(&created_path);
+                        }
+                        // The left listing stays in its own folder.
+                        let left_dir = current_refresh_directory(app, fallback_start_path);
+                        refresh_file_list(app, Path::new(&left_dir), state, None)?;
+                    } else {
+                        refresh_file_list(app, Path::new(&new_path), state, created_path)?;
+                    }
                     status_bar.invalidate_cache();
                 }
                 Err(e) => {
@@ -223,6 +247,9 @@ pub fn handle_delete_key(
                         Err(e) => e.is_not_found(),
                     };
                     if is_success {
+                        if app.view_mode.is_dual_pane() {
+                            app.right_pane.refresh_files();
+                        }
                         let current_dir = current_refresh_directory(app, fallback_start_path);
                         let files = get_file_path_data(
                             current_dir,
@@ -316,12 +343,15 @@ pub fn handle_info_key(key: KeyEvent, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{PanePosition, ViewMode};
     use crate::event::{
-        background::{poll_delete, poll_job, tests::memory_index},
+        background::{poll_delete, poll_job, refresh_after_copy, tests::memory_index},
         keymap::KeymapRuntime,
         normal::handle_normal_key,
+        LoopControl,
     };
     use crate::status_bar::NotificationKind;
+    use crate::utils::generate_copy_file_dir_name;
     use crossterm::event::KeyModifiers;
     use ratatui::{layout::Rect, TerminalOptions, Viewport};
     use std::time::{Duration, Instant};
@@ -757,7 +787,16 @@ mod tests {
 
         app.input_mode = InputMode::WatchCreate;
         app.create_edit_file_name = "alpha".into();
-        handle_create_key(enter, &mut app, &mut state, &mut status, &mut index).unwrap();
+        let fallback = root.to_string_lossy().into_owned();
+        handle_create_key(
+            enter,
+            &mut app,
+            &mut state,
+            &mut status,
+            &mut index,
+            &fallback,
+        )
+        .unwrap();
         assert_eq!(index.store.directories, [spelled("alpha")]);
         std::fs::create_dir(root.join("alpha/inner")).unwrap();
         index.changed(&root.join("alpha/inner"));
@@ -766,7 +805,6 @@ mod tests {
         app.current_path_to_edit = root.to_string_lossy().into_owned();
         app.current_name_to_edit = "alpha".into();
         app.create_edit_file_name = "beta".into();
-        let fallback = root.to_string_lossy().into_owned();
         handle_rename_key(
             enter,
             &mut app,
@@ -779,6 +817,304 @@ mod tests {
         assert_eq!(
             index.store.directories,
             [spelled("beta"), spelled("beta/inner")]
+        );
+    }
+
+    fn press(state: &mut LoopState, code: KeyCode) -> LoopControl {
+        let mut keymap = KeymapRuntime::from_settings(&crate::config::KeymapSettings::default());
+        let modifiers = match code {
+            KeyCode::Char(c) if c.is_ascii_uppercase() => KeyModifiers::SHIFT,
+            _ => KeyModifiers::NONE,
+        };
+        handle_normal_key(
+            KeyEvent::new(code, modifiers),
+            state,
+            &mut keymap,
+            &mut test_terminal(),
+            "unused",
+        )
+        .unwrap()
+    }
+
+    /// Dual pane over `root/left` with alpha.txt highlighted and `root/right` with
+    /// delta.txt highlighted, the right pane active. Returns both highlighted paths.
+    fn dual_pane_state(root: &Path) -> (LoopState, String, String) {
+        let folder = |name: &str, files: &[&str]| {
+            let dir = root.join(name);
+            std::fs::create_dir(&dir).unwrap();
+            for file in files {
+                std::fs::write(dir.join(file), file).unwrap();
+            }
+            dir
+        };
+        let left = folder("left", &["alpha.txt", "bravo.txt"]);
+        let right = folder("right", &["charlie.txt", "delta.txt", "echo.txt"]);
+        let spelled = |path: std::path::PathBuf| path.to_string_lossy().into_owned();
+        let left_files =
+            get_file_path_data(spelled(left.clone()), false, SortBy::Name, &SortType::ASC).unwrap();
+        let mut state = removal_state(&left, left_files);
+        state.app.view_mode = ViewMode::DualPane;
+        state.app.right_pane = crate::pane::Pane::new(spelled(right.clone()), Vec::new());
+        state.app.right_pane.refresh_files();
+        let right_item = spelled(right.join("delta.txt"));
+        state.app.right_pane.select_path(&right_item);
+        state.app.active_pane = PanePosition::Right;
+        let left_item = spelled(left.join("alpha.txt"));
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item.clone())
+        );
+        assert_eq!(
+            state.app.right_pane.get_selected_path(),
+            Some(right_item.clone())
+        );
+        (state, left_item, right_item)
+    }
+
+    fn name_of(path: &str) -> String {
+        Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn item_keys_act_on_the_active_panes_highlighted_item() {
+        for (view, active, right_is_target) in [
+            (ViewMode::DualPane, PanePosition::Right, true),
+            (ViewMode::DualPane, PanePosition::Left, false),
+            (ViewMode::Normal, PanePosition::Left, false),
+            // Unreachable by keys (leaving dual pane resets it), but must stay harmless.
+            (ViewMode::Normal, PanePosition::Right, false),
+        ] {
+            let setup = || {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+                state.app.view_mode = view.clone();
+                state.app.active_pane = active.clone();
+                let target = if right_is_target {
+                    right_item
+                } else {
+                    left_item
+                };
+                (dir, state, target)
+            };
+
+            for (key, mode) in [('d', InputMode::WatchTrash), ('D', InputMode::WatchDelete)] {
+                let (_dir, mut state, target) = setup();
+                press(&mut state, KeyCode::Char(key));
+                assert_eq!(state.app.input_mode, mode);
+                assert_eq!(state.app.delete_target_path, Some(target.clone()));
+                assert_eq!(state.app.delete_target_name, name_of(&target));
+                assert!(Path::new(&target).exists());
+            }
+
+            let (_dir, mut state, target) = setup();
+            press(&mut state, KeyCode::Char('r'));
+            assert_eq!(state.app.input_mode, InputMode::WatchRename);
+            assert_eq!(state.app.current_name_to_edit, name_of(&target));
+            assert_eq!(state.app.create_edit_file_name, name_of(&target));
+            assert_eq!(
+                Path::new(&state.app.current_path_to_edit),
+                Path::new(&target).parent().unwrap()
+            );
+
+            let (_dir, mut state, target) = setup();
+            press(&mut state, KeyCode::Char('I'));
+            assert_eq!(state.app.input_mode, InputMode::WatchInfo);
+            assert_eq!(
+                info_row(&state.app, "Name"),
+                Some(name_of(&target).as_str())
+            );
+
+            // Enter hands the item over once the terminal is restored; --print-path
+            // resolves the same `selected_path` before printing it.
+            let (_dir, mut state, target) = setup();
+            assert!(matches!(
+                press(&mut state, KeyCode::Enter),
+                LoopControl::Break
+            ));
+            assert_eq!(state.selected_file, Some(target));
+        }
+    }
+
+    #[test]
+    fn leaving_dual_pane_returns_item_keys_to_the_left_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, _) = dual_pane_state(dir.path());
+        state.app.view_mode = ViewMode::Normal;
+        state.app.active_pane = PanePosition::Left;
+
+        press(&mut state, KeyCode::Char('p'));
+        press(&mut state, KeyCode::Char('p'));
+        assert_eq!(state.app.view_mode, ViewMode::DualPane);
+        press(&mut state, KeyCode::Tab);
+        press(&mut state, KeyCode::Char('j'));
+        let right_item = state.app.right_pane.get_selected_path().unwrap();
+        assert_ne!(right_item, left_item);
+        assert_eq!(
+            state.app.active_selected_path(state.state.selected()),
+            Some(right_item)
+        );
+
+        press(&mut state, KeyCode::Char('p'));
+        assert_eq!(state.app.view_mode, ViewMode::Normal);
+        assert!(!state.app.is_right_pane_active());
+        press(&mut state, KeyCode::Char('D'));
+        assert_eq!(state.app.delete_target_path, Some(left_item));
+    }
+
+    #[test]
+    fn duplicate_copies_the_right_panes_item_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let right_dir = Path::new(&right_item).parent().unwrap().to_path_buf();
+        let copy = generate_copy_file_dir_name(&right_item, &right_dir);
+
+        press(&mut state, KeyCode::Char('c'));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.copy_receiver.is_some() {
+            refresh_after_copy(
+                &mut state.app,
+                &mut state.state,
+                &mut state.status_bar,
+                &mut state.copy_receiver,
+                &mut state.index,
+                "unused",
+            );
+            assert!(Instant::now() < deadline, "copy did not finish");
+            std::thread::yield_now();
+        }
+
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "delta.txt");
+        let left_dir = Path::new(&left_item).parent().unwrap();
+        assert!(!generate_copy_file_dir_name(&left_item, left_dir).exists());
+        assert!(state
+            .app
+            .right_pane
+            .files
+            .contains(&copy.to_string_lossy().into_owned()));
+        assert_eq!(state.app.right_pane.get_selected_path(), Some(right_item));
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item)
+        );
+    }
+
+    #[test]
+    fn removal_from_the_right_pane_refreshes_it_and_keeps_the_left_selection() {
+        for removal in ["trash", "delete file", "delete folder"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+            if removal == "delete folder" {
+                std::fs::remove_file(&right_item).unwrap();
+                std::fs::create_dir(&right_item).unwrap();
+                std::fs::write(Path::new(&right_item).join("inner.txt"), "x").unwrap();
+            }
+            if removal == "trash" {
+                open_removal('d', &mut state);
+                let source = state.app.close_delete_popup().unwrap();
+                assert_eq!(source, right_item);
+                let fake_trash = dir.path().join("fake-trash");
+                start_trash(
+                    &mut state.app,
+                    state.state.selected(),
+                    source,
+                    move |path| std::fs::rename(path, fake_trash).map_err(|e| e.to_string()),
+                )
+                .unwrap();
+            } else {
+                open_removal('D', &mut state);
+                assert_eq!(state.app.delete_target_path, Some(right_item.clone()));
+                confirm_removal(&mut state);
+            }
+            finish_removal(&mut state);
+
+            assert!(!Path::new(&right_item).exists(), "{removal}");
+            let pane = &state.app.right_pane;
+            assert_eq!(pane.files.len(), 2, "{removal}");
+            assert!(!pane.files.contains(&right_item), "{removal}");
+            let highlighted = pane.get_selected_path().unwrap();
+            assert!(Path::new(&highlighted).exists(), "{removal}");
+            assert_eq!(pane.list_state.selected(), pane.selected_index);
+            assert_eq!(
+                state.app.get_selected_path(state.state.selected()),
+                Some(left_item.clone()),
+                "{removal}"
+            );
+            assert_eq!(state.app.files.len(), 2, "{removal}");
+        }
+    }
+
+    #[test]
+    fn rename_from_the_right_pane_refreshes_it_and_highlights_the_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let renamed = Path::new(&right_item)
+            .with_file_name("aardvark.txt")
+            .to_string_lossy()
+            .into_owned();
+
+        press(&mut state, KeyCode::Char('r'));
+        state.app.create_edit_file_name = "aardvark.txt".into();
+        handle_rename_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state.app,
+            &mut state.state,
+            &mut state.status_bar,
+            &mut state.index,
+            "unused",
+        )
+        .unwrap();
+
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert_eq!(std::fs::read_to_string(&renamed).unwrap(), "delta.txt");
+        let pane = &state.app.right_pane;
+        assert!(!pane.files.contains(&right_item));
+        assert_eq!(pane.get_selected_path(), Some(renamed));
+        assert_eq!(pane.list_state.selected(), pane.selected_index);
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item)
+        );
+        assert_eq!(state.app.files.len(), 2);
+    }
+
+    #[test]
+    fn create_from_the_right_pane_lands_there_and_keeps_the_left_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let created = Path::new(&right_item)
+            .with_file_name("new.txt")
+            .to_string_lossy()
+            .into_owned();
+
+        press(&mut state, KeyCode::Char('a'));
+        state.app.create_edit_file_name = "new.txt".into();
+        handle_create_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state.app,
+            &mut state.state,
+            &mut state.status_bar,
+            &mut state.index,
+            "unused",
+        )
+        .unwrap();
+
+        assert!(Path::new(&created).is_file());
+        assert_eq!(state.app.right_pane.get_selected_path(), Some(created));
+        let left_dir = Path::new(&left_item).parent().unwrap();
+        assert!(!left_dir.join("new.txt").exists());
+        assert_eq!(state.app.files.len(), 2);
+        assert!(state
+            .app
+            .files
+            .iter()
+            .all(|file| Path::new(file).parent() == Some(left_dir)));
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item)
         );
     }
 }

@@ -523,6 +523,9 @@ pub fn poll_delete(
                         }
                         status_bar.invalidate_cache();
                     }
+                    if app.view_mode.is_dual_pane() {
+                        app.right_pane.refresh_files();
+                    }
 
                     // Reset delete state
                     app.delete_in_progress = false;

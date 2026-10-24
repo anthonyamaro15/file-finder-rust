@@ -163,7 +163,7 @@ pub fn open_folder_picker(
         status_bar.show_warning(warning, None);
         return;
     }
-    let Some(source) = app.get_selected_path(selected) else {
+    let Some(source) = app.active_selected_path(selected) else {
         return;
     };
     app.reset_create_edit_values();
