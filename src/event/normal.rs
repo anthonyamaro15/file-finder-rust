@@ -21,7 +21,7 @@ use crate::{
     event::{
         file_actions::{containing_directory_or_current, current_refresh_directory, rename_target},
         keymap::KeymapRuntime,
-        navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
+        navigation::{next_index_wrapping, parent_listing_directory, previous_index_wrapping},
         LoopControl, LoopState,
     },
     exit::{may_exit, system_opener, write_result_file},
@@ -101,7 +101,7 @@ pub fn handle_normal_key(
             // In DualPane mode with right pane active, navigate right pane to parent
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 let current_dir = app.right_pane.current_directory.clone();
-                if let Some(parent) = parent_directory(Path::new(&current_dir)) {
+                if let Some(parent) = Path::new(&current_dir).parent() {
                     if let Some(parent_str) = parent.to_str() {
                         if let Err(e) = app.right_pane.navigate_to_directory(parent_str) {
                             status_bar
@@ -112,38 +112,31 @@ pub fn handle_normal_key(
             } else if let Some(selected) = app.get_selected_path(state.selected()) {
                 let selected_path = Path::new(&selected);
 
-                // TODO: refactor this to be more idiomatic
-                if selected_path.components().count() > 4 {
-                    let new_path = parent_directory(selected_path)
-                        .and_then(|path| parent_directory(&path))
-                        .map(|path| path.to_string_lossy().to_string());
+                let new_path = parent_listing_directory(selected_path)
+                    .map(|path| path.to_string_lossy().to_string());
 
-                    if let Some(new_path) = new_path {
-                        match get_file_path_data(
-                            new_path.clone(),
-                            app.show_hidden_files,
-                            app.sort_by.clone(),
-                            &app.sort_type,
-                        ) {
-                            Ok(f_s) => {
-                                let previous_dir = get_curr_path(selected.clone());
-                                // Fall back to the first row if the directory is absent.
-                                app.preserved_selection_index = Some(0);
-                                app.refresh_files_after_operation(f_s, state, Some(previous_dir));
+                if let Some(new_path) = new_path {
+                    match get_file_path_data(
+                        new_path.clone(),
+                        app.show_hidden_files,
+                        app.sort_by.clone(),
+                        &app.sort_type,
+                    ) {
+                        Ok(f_s) => {
+                            let previous_dir = get_curr_path(selected.clone());
+                            // Fall back to the first row if the directory is absent.
+                            app.preserved_selection_index = Some(0);
+                            app.refresh_files_after_operation(f_s, state, Some(previous_dir));
 
-                                // Start watching the new directory
-                                if let Err(e) = app.start_watching_directory(&new_path) {
-                                    debug!(
-                                        "Failed to start watching directory '{}': {}",
-                                        new_path, e
-                                    );
-                                } else {
-                                    debug!("Started watching directory: {}", new_path);
-                                }
+                            // Start watching the new directory
+                            if let Err(e) = app.start_watching_directory(&new_path) {
+                                debug!("Failed to start watching directory '{}': {}", new_path, e);
+                            } else {
+                                debug!("Started watching directory: {}", new_path);
                             }
-                            Err(e) => status_bar
-                                .show_error(format!("Could not open '{new_path}': {e:#}"), None),
                         }
+                        Err(e) => status_bar
+                            .show_error(format!("Could not open '{new_path}': {e:#}"), None),
                     }
                 }
             } else {
