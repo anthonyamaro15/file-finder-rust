@@ -45,7 +45,7 @@ fn default_log_file() -> Option<File> {
 
 // Re-export items used by main.rs
 pub use files::{
-    check_if_exists, generate_copy_file_dir_name, generate_metadata_str_info, get_curr_path,
-    get_file_path_data, get_inner_files_info, is_file, SortBy, SortType,
+    check_if_exists, generate_copy_file_dir_name, get_curr_path, get_file_path_data,
+    get_inner_files_info, is_file, SortBy, SortType,
 };
 pub use format::format_file_size;

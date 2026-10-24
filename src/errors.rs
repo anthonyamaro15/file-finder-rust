@@ -264,18 +264,27 @@ pub mod validation {
                     return Err(FileOperationError::file_not_found(parent));
                 }
 
-                // Try to check if directory is writable by attempting to create a temp file
-                // Use process ID to avoid conflicts with user files
+                // Try to check if directory is writable by attempting to create a temp file.
+                // create_new never opens or follows an existing entry, so if one already
+                // has this name we leave it alone and let the real operation report errors.
                 let temp_path = parent.join(format!(".ff_perm_test_{}", std::process::id()));
-                let create_result = std::fs::File::create(&temp_path);
-                if create_result.is_err() {
-                    return Err(FileOperationError::permission_denied(
-                        parent,
-                        "Cannot write to parent directory",
-                    ));
-                } else {
-                    // Clean up the temp file
-                    let _ = std::fs::remove_file(temp_path);
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temp_path)
+                {
+                    Ok(file) => {
+                        // Only remove the temp file this call created
+                        drop(file);
+                        let _ = std::fs::remove_file(temp_path);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(_) => {
+                        return Err(FileOperationError::permission_denied(
+                            parent,
+                            "Cannot write to parent directory",
+                        ));
+                    }
                 }
             }
         }
@@ -295,5 +304,70 @@ pub mod validation {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validation::validate_permissions;
+    use super::FileOperationError;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn probe_path(dir: &Path) -> PathBuf {
+        dir.join(format!(".ff_perm_test_{}", std::process::id()))
+    }
+
+    #[test]
+    fn permission_probe_leaves_existing_file_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = probe_path(dir.path());
+        fs::write(&probe, b"user data").unwrap();
+
+        assert!(validate_permissions(dir.path().join("new.txt"), "create").is_ok());
+        assert_eq!(fs::read(&probe).unwrap(), b"user data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_probe_does_not_follow_existing_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target.txt");
+        fs::write(&target, b"outside data").unwrap();
+        let probe = probe_path(dir.path());
+        std::os::unix::fs::symlink(&target, &probe).unwrap();
+
+        assert!(validate_permissions(dir.path().join("new.txt"), "create").is_ok());
+        assert_eq!(fs::read(&target).unwrap(), b"outside data");
+        assert_eq!(fs::read_link(&probe).unwrap(), target);
+    }
+
+    #[test]
+    fn permission_probe_cleans_up_after_itself() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(validate_permissions(dir.path().join("new.txt"), "create").is_ok());
+        assert!(fs::symlink_metadata(probe_path(dir.path())).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_probe_rejects_read_only_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root can write anywhere, so the probe cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+        let result = validate_permissions(dir.path().join("new.txt"), "create");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(matches!(
+            result,
+            Err(FileOperationError::PermissionDenied { .. })
+        ));
     }
 }

@@ -789,7 +789,8 @@ pub fn load_preview_async(
                 total_lines += 1;
                 if lines.len() < MAX_PREVIEW_LINES {
                     if let Ok(line) = line_result {
-                        lines.push(line);
+                        // Terminals don't draw tab characters, so expand them
+                        lines.push(line.replace('\t', "    "));
                     }
                 }
             }
@@ -826,7 +827,6 @@ pub struct FileContent<'a> {
     pub curr_asset_path: String,
     pub curr_zip_content: Vec<String>,
     pub curr_selected_path: String,
-    pub curr_csv_content: Vec<String>,
     pub curr_extension_tpe: Option<String>,
     pub syntax_set: SyntaxSet,
     pub theme_set: ThemeSet,
@@ -846,7 +846,6 @@ impl FileContent<'_> {
             curr_asset_path: String::from(""),
             curr_zip_content: Vec::new(),
             curr_selected_path: String::from(""),
-            curr_csv_content: Vec::new(),
             curr_extension_tpe: None,
             syntax_set: ps,
             theme_set: ts,
@@ -1639,5 +1638,31 @@ mod extraction_tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o7777, 0o755);
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    use crate::app::PreviewMessage;
+
+    #[test]
+    fn tsv_preview_expands_tabs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("table.tsv");
+        fs::write(&path, "id\tvalue\n1\tfoo\n").unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        load_preview_async(path.to_string_lossy().to_string(), tx);
+
+        match rx.recv().unwrap() {
+            PreviewMessage::Loaded {
+                content, file_type, ..
+            } => {
+                assert!(matches!(file_type, FileType::CSV));
+                assert_eq!(content, "id    value\n1    foo");
+            }
+            _ => panic!("expected a loaded preview"),
+        }
     }
 }

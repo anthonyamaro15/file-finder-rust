@@ -1138,11 +1138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         f.render_widget(archive_info, inner_layout[1]);
                     }
                     FileType::CSV => {
-                        let block = create_preview_block("CSV Data", &settings);
-                        let csv_list_content = List::new(file_reader_content.curr_csv_content.clone())
-                            .block(block)
+                        let csv_content = Paragraph::new(app.preview_file_content.clone())
+                            .block(create_preview_block("CSV Data", &settings))
                             .style(Style::default().fg(Color::Rgb(92, 99, 112)));
-                        f.render_widget(csv_list_content, inner_layout[1]);
+                        f.render_widget(csv_content, inner_layout[1]);
                     }
                     FileType::PDF => {
                         let pdf_content = Paragraph::new(app.preview_file_content.clone())
