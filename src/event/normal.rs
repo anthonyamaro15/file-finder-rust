@@ -215,7 +215,7 @@ pub fn handle_normal_key(
         }
 
         KeyCode::Char('o') => {
-            if let Some(selected) = app.get_selected_path(state.selected()) {
+            if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Opening leaves ff, so it waits for confirmation during an operation.
                 if !may_exit(app, status_bar, "o", copy_receiver, terminal, quit_error) {
                     return Ok(LoopControl::Continue);
@@ -294,7 +294,7 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('y') => {
-            if let Some(selected) = app.get_selected_path(state.selected()) {
+            if let Some(selected) = app.active_selected_path(state.selected()) {
                 let file_type = file_reader_content.get_file_extension(selected.clone());
                 if let FileType::ZIP = file_type {
                     let name = Path::new(&selected)
@@ -316,7 +316,7 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('r') => {
-            if let Some(selected) = app.get_selected_path(state.selected()) {
+            if let Some(selected) = app.active_selected_path(state.selected()) {
                 if let Some((parent, placeholder_name)) = rename_target(Path::new(&selected)) {
                     app.current_path_to_edit = parent.to_string_lossy().to_string();
                     app.current_name_to_edit = placeholder_name.clone();
@@ -350,7 +350,7 @@ pub fn handle_normal_key(
             // Copy the highlighted item beside its source.
             if let Some(warning) = app.busy_warning() {
                 status_bar.show_warning(warning, None);
-            } else if let Some(selected) = app.get_selected_path(state.selected()) {
+            } else if let Some(selected) = app.active_selected_path(state.selected()) {
                 let src_path = Path::new(&selected);
                 let current_dir = containing_directory_or_current(src_path);
                 let new_src = generate_copy_file_dir_name(src_path, &current_dir);
@@ -373,12 +373,7 @@ pub fn handle_normal_key(
         }
 
         KeyCode::Char('I') => {
-            let selected = if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                app.right_pane.get_selected_path()
-            } else {
-                app.get_selected_path(state.selected())
-            };
-            if let Some(selected) = selected {
+            if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Read-only, so it never waits for (or blocks) a running operation.
                 match ItemInfo::read(Path::new(&selected)) {
                     Ok(info) => {
@@ -393,8 +388,8 @@ pub fn handle_normal_key(
         }
 
         KeyCode::Enter => {
-            // Use helper method to get selected path based on current mode
-            let selected_path = app.get_selected_path(state.selected());
+            // The active pane's item, from search results or the listing
+            let selected_path = app.active_selected_path(state.selected());
 
             if let Some(selected) = selected_path {
                 // Leaving for the shell or editor waits for confirmation during an operation.

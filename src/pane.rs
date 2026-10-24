@@ -202,8 +202,25 @@ impl Pane {
         )
         .unwrap_or_default();
 
+        let selected = self.get_selected_path();
         self.files = new_files;
         self.update_file_references();
+        // Keep the highlight on the same item; a removed one leaves its row, clamped.
+        if let Some(selected) = selected {
+            self.select_path(&selected);
+        }
+    }
+
+    /// Highlight `path` if it is listed; otherwise keep the current row.
+    pub fn select_path(&mut self, path: &str) {
+        if let Some(index) = self
+            .files
+            .iter()
+            .position(|file| Path::new(file) == Path::new(path))
+        {
+            self.selected_index = Some(index);
+            self.list_state.select(Some(index));
+        }
     }
 
     /// Navigate to a new directory
@@ -294,6 +311,26 @@ mod tests {
         assert_eq!(pane.selected_index, Some(0));
         assert_eq!(pane.list_state.selected(), Some(0));
         assert_eq!(pane.read_only_files, pane.files);
+    }
+
+    #[test]
+    fn refresh_keeps_the_highlighted_item_when_its_row_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        let current = dir.path().to_string_lossy().into_owned();
+        let on_disk =
+            get_file_path_data(current.clone(), false, SortBy::Default, &SortType::ASC).unwrap();
+        // A listing whose rows have since swapped: the highlighted first row is now last.
+        let mut pane = Pane::new(current, on_disk.iter().rev().cloned().collect());
+        let highlighted = pane.get_selected_path();
+
+        pane.refresh_files();
+
+        assert_eq!(pane.files, on_disk);
+        assert_eq!(pane.get_selected_path(), highlighted);
+        assert_eq!(pane.list_state.selected(), Some(1));
     }
 
     #[test]
