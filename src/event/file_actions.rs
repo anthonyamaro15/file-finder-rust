@@ -36,7 +36,7 @@ pub fn created_item_path(directory: &Path, name: &str) -> Option<String> {
 }
 
 /// Directory to reload the left listing from; the right pane refreshes itself.
-pub fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
+pub(crate) fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
     let current_directory = app.left_directory_path();
 
     if current_directory == Path::new(".") {

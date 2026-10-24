@@ -38,7 +38,7 @@ impl ImageRenderer {
     }
 
     /// Load an image from a pre-decoded DynamicImage (for async loading)
-    pub fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
+    pub(crate) fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
         self.clear();
 
         let width = decoded_image.width();
@@ -55,13 +55,13 @@ impl ImageRenderer {
     }
 
     /// Set an error message for image loading
-    pub fn set_error(&mut self, message: String) {
+    pub(crate) fn set_error(&mut self, message: String) {
         self.clear();
         self.error_message = Some(message);
     }
 
     /// Clear the current image
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.image_state = None;
         self.has_image = false;
         self.image_info.clear();
@@ -69,17 +69,17 @@ impl ImageRenderer {
     }
 
     /// Check if an image is loaded and ready to render
-    pub fn has_image(&self) -> bool {
+    pub(crate) fn has_image(&self) -> bool {
         self.has_image && self.image_state.is_some()
     }
 
     /// Get the image info string
-    pub fn get_info(&self) -> &str {
+    pub(crate) fn get_info(&self) -> &str {
         &self.image_info
     }
 
     /// Get error message if any
-    pub fn get_error(&self) -> Option<&str> {
+    pub(crate) fn get_error(&self) -> Option<&str> {
         self.error_message.as_deref()
     }
 }

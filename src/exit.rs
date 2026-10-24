@@ -14,7 +14,7 @@ use ratatui::{
 use crate::{app::App, operations::CopyMessage, status_bar::StatusBar};
 
 /// Confirm once, then cancel and wait for cleanup before any exit route proceeds.
-pub fn may_exit<B: Backend>(
+pub(crate) fn may_exit<B: Backend>(
     app: &mut App,
     status_bar: &mut StatusBar,
     key: &'static str,
@@ -83,7 +83,7 @@ pub fn may_exit<B: Backend>(
 }
 
 /// Program that opens a file with the system default application.
-pub fn system_opener() -> &'static str {
+pub(crate) fn system_opener() -> &'static str {
     if cfg!(target_os = "macos") {
         "open"
     } else {
@@ -93,7 +93,7 @@ pub fn system_opener() -> &'static str {
 
 /// Write the selected path to the shell integration's result file.
 /// The file must already exist (the shell function creates it with mktemp).
-pub fn write_result_file(result_file: &Path, selected: &str) -> io::Result<()> {
+pub(crate) fn write_result_file(result_file: &Path, selected: &str) -> io::Result<()> {
     use std::io::Write;
     std::fs::OpenOptions::new()
         .write(true)
