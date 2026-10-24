@@ -11,7 +11,7 @@ pub struct ImageRenderer {
     /// Terminal graphics protocol picker
     picker: Picker,
     /// Current image protocol state for rendering
-    pub image_state: Option<Box<dyn StatefulProtocol>>,
+    pub(crate) image_state: Option<Box<dyn StatefulProtocol>>,
     /// Whether an image is currently loaded
     has_image: bool,
     /// Image metadata info (dimensions, format)
