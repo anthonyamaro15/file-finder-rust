@@ -679,6 +679,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Check for debounced preview updates - use cache or spawn async loader
         if let Some(path) = app.take_ready_preview(PREVIEW_DEBOUNCE_MS) {
+            // Results still loading for the previous selection must not overwrite this one
+            app.cancel_preview_loads();
+
             // Check if this file is cached (for source code files with syntax highlighting)
             let is_file_path = std::path::Path::new(&path).is_file();
             let file_type = file_reader_content::detect_file_type(&path);
@@ -1113,6 +1116,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let image_widget = StatefulImage::new(None);
                                 f.render_stateful_widget(image_widget, image_area, img_state);
                             }
+                        } else if image_error.is_none()
+                            && (app.preview_receiver.is_some() || app.image_receiver.is_some())
+                        {
+                            // Still reading or decoding, which can take seconds for large images
+                            let loading = Paragraph::new("Loading image...")
+                                .block(create_preview_block("Image", &settings));
+                            f.render_widget(loading, inner_layout[1]);
                         } else {
                             // Show error message if image failed to load
                             let error_msg = image_error.unwrap_or_else(|| {

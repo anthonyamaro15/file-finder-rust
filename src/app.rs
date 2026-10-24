@@ -1453,8 +1453,7 @@ impl App {
             None => {
                 self.preview_requested_path = None;
                 self.clear_pending_preview();
-                self.preview_loading = false;
-                self.preview_loading_path = None;
+                self.cancel_preview_loads();
                 self.preview_files.clear();
                 self.preview_file_content.clear();
                 true
@@ -1481,6 +1480,15 @@ impl App {
     pub fn clear_pending_preview(&mut self) {
         self.preview_pending_path = None;
         self.preview_pending_since = None;
+    }
+
+    /// Drop in-flight preview and image loads so their late results
+    /// can't land on whatever is selected next.
+    pub fn cancel_preview_loads(&mut self) {
+        self.preview_receiver = None;
+        self.image_receiver = None;
+        self.preview_loading = false;
+        self.preview_loading_path = None;
     }
 }
 
@@ -2078,5 +2086,34 @@ mod tests {
         assert!(app.sync_preview_with_selection(None));
         assert!(app.preview_files.is_empty());
         assert!(!app.sync_preview_with_selection(None));
+    }
+
+    #[test]
+    fn cancel_preview_loads_drops_results_for_old_selection() {
+        let mut app = App::new(vec!["a.png".into()]);
+        let (preview_tx, preview_rx) = mpsc::channel();
+        let (image_tx, image_rx) = mpsc::channel();
+        app.preview_receiver = Some(preview_rx);
+        app.image_receiver = Some(image_rx);
+        app.preview_loading = true;
+        app.preview_loading_path = Some("a.png".into());
+
+        app.cancel_preview_loads();
+
+        assert!(app.preview_receiver.is_none());
+        assert!(app.image_receiver.is_none());
+        assert!(!app.preview_loading);
+        assert_eq!(app.preview_loading_path, None);
+        // The old loaders' late results go nowhere.
+        let stale_preview = PreviewMessage::Error {
+            path: "a.png".into(),
+            message: String::new(),
+        };
+        assert!(preview_tx.send(stale_preview).is_err());
+        let stale_image = ImageLoadResult {
+            path: "a.png".into(),
+            result: Err(String::new()),
+        };
+        assert!(image_tx.send(stale_image).is_err());
     }
 }
