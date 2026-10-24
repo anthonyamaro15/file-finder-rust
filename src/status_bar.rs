@@ -200,6 +200,7 @@ impl StatusBar {
             InputMode::WatchKeyBinding => ("HELP", theme.fg),
             InputMode::CacheLoading => ("LOADING", theme.yellow),
             InputMode::PickFolder => ("PICK", theme.blue),
+            InputMode::WatchInfo => ("INFO", theme.cyan),
         }
     }
 
@@ -362,6 +363,7 @@ impl StatusBar {
             InputMode::WatchKeyBinding => ("HLP", theme.fg),
             InputMode::CacheLoading => ("...", theme.yellow),
             InputMode::PickFolder => ("PCK", theme.blue),
+            InputMode::WatchInfo => ("INFO", theme.cyan),
         }
     }
 
@@ -433,11 +435,11 @@ impl StatusBar {
             '-'
         };
 
-        let user = Self::format_permission_triplet((mode >> 6) & 0o7);
-        let group = Self::format_permission_triplet((mode >> 3) & 0o7);
-        let other = Self::format_permission_triplet(mode & 0o7);
-
-        format!("{}{}{}{}", file_type, user, group, other)
+        format!(
+            "{}{}",
+            file_type,
+            crate::utils::format::permission_bits(mode)
+        )
     }
 
     #[cfg(not(unix))]
@@ -449,14 +451,6 @@ impl StatusBar {
         } else {
             "-rw-rw-rw-".to_string()
         }
-    }
-
-    #[cfg(unix)]
-    fn format_permission_triplet(mode: u32) -> String {
-        let r = if mode & 0o4 != 0 { 'r' } else { '-' };
-        let w = if mode & 0o2 != 0 { 'w' } else { '-' };
-        let x = if mode & 0o1 != 0 { 'x' } else { '-' };
-        format!("{}{}{}", r, w, x)
     }
 
     /// Show an error message for a specified duration (default: 3 seconds)

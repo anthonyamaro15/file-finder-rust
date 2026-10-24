@@ -214,6 +214,7 @@ The `?` help popup reflects configured search keybindings.
 | `Shift+C` | Copy to… (pick a folder)   |
 | `Shift+M` | Move to… (pick a folder)   |
 | `o`       | Open in file explorer      |
+| `I` (Shift+I) | Get Info: size, dates, permissions, owner |
 | `.`       | Toggle hidden files        |
 
 ### 🖼️ View Modes

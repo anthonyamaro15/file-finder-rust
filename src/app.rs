@@ -56,6 +56,8 @@ pub enum InputMode {
     CacheLoading,
     /// Choosing the folder for "Copy to…" or "Move to…".
     PickFolder,
+    /// The Get Info popup.
+    WatchInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -459,6 +461,8 @@ pub struct App {
     pub job: Option<BackgroundJob>,
     /// The open "Copy to…"/"Move to…" picker.
     pub folder_picker: Option<FolderPicker>,
+    /// The open Get Info popup.
+    pub info: Option<crate::info::ItemInfo>,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(&'static str, Instant)>,
 }
@@ -661,6 +665,7 @@ impl App {
 
             job: None,
             folder_picker: None,
+            info: None,
             quit_warning: None,
         }
     }

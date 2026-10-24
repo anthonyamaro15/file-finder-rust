@@ -348,6 +348,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &startup_paths.refresh_fallback_path,
         );
         loop_state.index.poll_refresh();
+        background::poll_info(&mut loop_state.app);
         background::sync_selection(
             &mut loop_state.app,
             &mut loop_state.state,
@@ -417,6 +418,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         InputMode::WatchKeyBinding => {
                             popups::handle_keybinding_key(key, &mut loop_state.app)
+                        }
+                        InputMode::WatchInfo if key.kind == KeyEventKind::Press => {
+                            popups::handle_info_key(key, &mut loop_state.app)
                         }
                         InputMode::PickFolder if key.kind == KeyEventKind::Press => {
                             handle_folder_picker_key(

@@ -8,6 +8,7 @@ pub mod exit;
 pub mod file_reader_content;
 pub mod highlight;
 pub mod icons;
+pub mod info;
 pub mod operations;
 pub mod pane;
 pub mod render;
