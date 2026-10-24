@@ -7,6 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
 use rayon::prelude::*;
 
 /// Sort order direction.
@@ -118,27 +119,9 @@ pub fn get_inner_files_info(
     show_hidden_files: bool,
     sort_by: SortBy,
     sort_type: &SortType,
-) -> anyhow::Result<Option<Vec<String>>> {
-    let entries = match fs::read_dir(file) {
-        Ok(en) => {
-            let val = en.map(|res| res.map(|e| e.path())).collect();
-            match val {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("Error: {}", e);
-                    return Ok(None);
-                }
-            }
-        }
-        Err(e) => {
-            println!("Error: {}", e);
-            return Ok(None);
-        }
-    };
-
-    let file_strings =
-        convert_file_path_to_string(entries, show_hidden_files, sort_by, sort_type.clone());
-    Ok(Some(file_strings))
+) -> anyhow::Result<Vec<String>> {
+    get_file_path_data(file.clone(), show_hidden_files, sort_by, sort_type)
+        .with_context(|| format!("Could not read directory '{file}'"))
 }
 
 /// Get sorted file paths from a starting directory.
@@ -214,6 +197,45 @@ pub fn get_curr_path(path: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inner_files_reports_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+
+        let error = get_inner_files_info(missing.clone(), false, SortBy::Default, &SortType::ASC)
+            .unwrap_err();
+
+        assert!(error.to_string().contains(&missing));
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inner_files_reports_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let permissions = fs::metadata(dir.path()).unwrap().permissions();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let path = dir.path().to_string_lossy().into_owned();
+        let result = get_inner_files_info(path.clone(), false, SortBy::Default, &SortType::ASC);
+        fs::set_permissions(dir.path(), permissions).unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains(&path));
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn test_is_file_with_directory() {
