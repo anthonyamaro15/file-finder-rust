@@ -679,6 +679,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Check for debounced preview updates - use cache or spawn async loader
         if let Some(path) = app.take_ready_preview(PREVIEW_DEBOUNCE_MS) {
+            // Results still loading for the previous selection must not overwrite this one
+            app.cancel_preview_loads();
+
             // Check if this file is cached (for source code files with syntax highlighting)
             let is_file_path = std::path::Path::new(&path).is_file();
             let file_type = file_reader_content::detect_file_type(&path);
