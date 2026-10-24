@@ -42,7 +42,7 @@ use file_finder::{
     event::{
         file_actions::{
             containing_directory_or_current, create_target_directory, created_item_path,
-            refresh_file_list, rename_target,
+            current_refresh_directory, refresh_file_list, rename_target,
         },
         keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
@@ -89,17 +89,6 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
         watcher_path: start_path.clone(),
         cache_path: start_path.clone(),
         refresh_fallback_path: start_path,
-    }
-}
-
-/// Directory to reload the left listing from; the right pane refreshes itself.
-fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
-    let current_directory = app.left_directory_path();
-
-    if current_directory == Path::new(".") {
-        fallback_start_path.to_string()
-    } else {
-        current_directory.to_string_lossy().to_string()
     }
 }
 
@@ -2653,41 +2642,5 @@ mod tests {
         assert_eq!(paths.watcher_path, "/tmp/ff-cli-start");
         assert_eq!(paths.cache_path, "/tmp/ff-cli-start");
         assert_eq!(paths.refresh_fallback_path, "/tmp/ff-cli-start");
-    }
-
-    #[test]
-    fn refresh_directory_prefers_watched_current_directory_when_list_empty() {
-        let mut app = App::new(Vec::new());
-        app.current_directory = "/tmp/ff-empty-current".to_string();
-
-        assert_eq!(
-            current_refresh_directory(&app, "/tmp/ff-settings-start"),
-            "/tmp/ff-empty-current"
-        );
-    }
-
-    #[test]
-    fn refresh_directory_prefers_tracked_current_directory_when_available() {
-        let mut app = App::new(vec!["/tmp/ff-visible/file.txt".to_string()]);
-        app.current_directory = "/tmp/ff-current".to_string();
-
-        assert_eq!(
-            current_refresh_directory(&app, "/tmp/ff-settings-start"),
-            "/tmp/ff-current"
-        );
-    }
-
-    #[test]
-    fn refresh_directory_stays_on_left_listing_while_right_pane_is_active() {
-        let mut app = App::new(vec!["/tmp/ff-left/file.txt".to_string()]);
-        app.current_directory = "/tmp/ff-left".to_string();
-        app.view_mode = ViewMode::DualPane;
-        app.active_pane = PanePosition::Right;
-        app.right_pane = file_finder::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
-
-        assert_eq!(
-            current_refresh_directory(&app, "/tmp/ff-settings-start"),
-            "/tmp/ff-left"
-        );
     }
 }
