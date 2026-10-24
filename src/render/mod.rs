@@ -1,5 +1,7 @@
 //! Rendering utilities for popups and previews.
 
+pub mod frame;
+pub mod image_renderer;
 pub mod popups;
 pub mod preview;
 pub mod size_bar;

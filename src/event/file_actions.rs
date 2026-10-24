@@ -35,6 +35,17 @@ pub fn created_item_path(directory: &Path, name: &str) -> Option<String> {
         .map(|component| directory.join(component).to_string_lossy().into_owned())
 }
 
+/// Directory to reload the left listing from; the right pane refreshes itself.
+pub(crate) fn current_refresh_directory(app: &App, fallback_start_path: &str) -> String {
+    let current_directory = app.left_directory_path();
+
+    if current_directory == Path::new(".") {
+        fallback_start_path.to_string()
+    } else {
+        current_directory.to_string_lossy().to_string()
+    }
+}
+
 pub fn refresh_file_list(
     app: &mut App,
     directory: &Path,
@@ -58,6 +69,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    use crate::app::{PanePosition, ViewMode};
     use crate::utils::{SortBy, SortType};
 
     #[test]
@@ -183,5 +195,41 @@ mod tests {
 
         assert_eq!(names, vec!["zebra.txt", "apple.txt"]);
         assert_eq!(app.read_only_files, app.files);
+    }
+
+    #[test]
+    fn refresh_directory_prefers_watched_current_directory_when_list_empty() {
+        let mut app = App::new(Vec::new());
+        app.current_directory = "/tmp/ff-empty-current".to_string();
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-empty-current"
+        );
+    }
+
+    #[test]
+    fn refresh_directory_prefers_tracked_current_directory_when_available() {
+        let mut app = App::new(vec!["/tmp/ff-visible/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-current".to_string();
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-current"
+        );
+    }
+
+    #[test]
+    fn refresh_directory_stays_on_left_listing_while_right_pane_is_active() {
+        let mut app = App::new(vec!["/tmp/ff-left/file.txt".to_string()]);
+        app.current_directory = "/tmp/ff-left".to_string();
+        app.view_mode = ViewMode::DualPane;
+        app.active_pane = PanePosition::Right;
+        app.right_pane = crate::pane::Pane::new("/tmp/ff-right".to_string(), Vec::new());
+
+        assert_eq!(
+            current_refresh_directory(&app, "/tmp/ff-settings-start"),
+            "/tmp/ff-left"
+        );
     }
 }
