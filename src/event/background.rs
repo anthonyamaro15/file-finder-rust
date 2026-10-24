@@ -1,0 +1,985 @@
+//! Per-iteration polling of background work: previews, images, copies, moves,
+//! deletes, file system events and the directory cache build.
+
+use std::sync::mpsc;
+
+use log::{debug, warn};
+use ratatui::widgets::ListState;
+
+use crate::{
+    app::{App, InputMode},
+    config::Settings,
+    directory_store::DirectoryStore,
+    event::file_actions::current_refresh_directory,
+    file_reader_content::{self, FileContent, FileType},
+    operations::{CopyMessage, DeleteMessage},
+    render::image_renderer::ImageRenderer,
+    status_bar::StatusBar,
+    utils::{format_file_size, get_file_path_data},
+};
+
+/// Preview debounce delay in milliseconds
+/// Prevents rapid preview updates when scrolling quickly through files
+const PREVIEW_DEBOUNCE_MS: u64 = 50;
+
+/// Check for debounced preview updates - use cache or spawn async loader
+pub fn start_debounced_preview(
+    app: &mut App,
+    file_reader_content: &mut FileContent,
+    image_renderer: &mut ImageRenderer,
+) {
+    if let Some(path) = app.take_ready_preview(PREVIEW_DEBOUNCE_MS) {
+        // Results still loading for the previous selection must not overwrite this one
+        app.cancel_preview_loads();
+
+        // Check if this file is cached (for source code files with syntax highlighting)
+        let is_file_path = std::path::Path::new(&path).is_file();
+        let file_type = file_reader_content::detect_file_type(&path);
+        let is_cacheable = matches!(
+            file_type,
+            FileType::SourceCode
+                | FileType::ConfigFile
+                | FileType::JSON
+                | FileType::Markdown
+                | FileType::TextFile
+        );
+
+        if is_file_path && is_cacheable && file_reader_content.is_cached(&path) {
+            // Cache hit - use cached content directly (instant)
+            file_reader_content.file_type = file_type;
+            if file_reader_content.try_use_cached_preview(&path) {
+                app.preview_file_content.clear();
+                app.preview_files = Vec::new();
+                image_renderer.clear();
+            }
+        } else {
+            // Cache miss - use async loading
+            // Update file type and clear all previous state to avoid showing stale preview
+            file_reader_content.file_type = file_type;
+            file_reader_content.hightlighted_content = None;
+            file_reader_content.curr_selected_path = path.clone();
+            app.preview_loading = true;
+            app.preview_loading_path = Some(path.clone());
+            app.preview_file_content = "Loading...".to_string();
+            app.preview_files = Vec::new();
+            image_renderer.clear();
+
+            // Create channel for async preview result
+            let (tx, rx) = mpsc::channel();
+            app.preview_receiver = Some(rx);
+
+            // Spawn thread to load preview
+            let path_for_thread = path.clone();
+            std::thread::spawn(move || {
+                file_reader_content::load_preview_async(path_for_thread, tx);
+            });
+        }
+    }
+}
+
+/// Check for async preview results
+pub fn poll_preview_result(
+    app: &mut App,
+    file_reader_content: &mut FileContent,
+    image_renderer: &mut ImageRenderer,
+) {
+    if let Some(ref rx) = app.preview_receiver {
+        match rx.try_recv() {
+            Ok(msg) => {
+                use crate::app::PreviewMessage;
+                match msg {
+                    PreviewMessage::Loaded {
+                        path,
+                        content,
+                        file_type,
+                        ..
+                    } => {
+                        // Only update if this is still the file we're waiting for
+                        if app.preview_loading_path.as_ref() == Some(&path) {
+                            app.preview_loading = false;
+                            file_reader_content.file_type = file_type.clone();
+
+                            // For text-based files, apply syntax highlighting or markdown rendering
+                            match file_type {
+                                FileType::SourceCode | FileType::ConfigFile | FileType::JSON => {
+                                    // Set current path BEFORE calling get_highlighted_content (used for cache lookup)
+                                    file_reader_content.curr_selected_path = path.clone();
+                                    let ext_type =
+                                        file_reader_content.get_file_extension_type(path.clone());
+                                    let highlighted = file_reader_content
+                                        .get_highlighted_content(content.clone(), ext_type);
+                                    app.preview_file_content = highlighted;
+                                }
+                                FileType::Markdown => {
+                                    // Render markdown with formatting
+                                    file_reader_content.render_markdown_content(&content, &path);
+                                    app.preview_file_content.clear();
+                                }
+                                FileType::Image => {
+                                    // Spawn async image loading to avoid blocking UI
+                                    file_reader_content.hightlighted_content = None;
+                                    file_reader_content.curr_asset_path = path.clone();
+                                    app.preview_file_content = "Loading image...".to_string();
+
+                                    // Create channel for async image result
+                                    let (img_tx, img_rx) = mpsc::channel();
+                                    app.image_receiver = Some(img_rx);
+
+                                    // Spawn thread to decode image
+                                    let path_for_thread = path;
+                                    std::thread::spawn(move || {
+                                        file_reader_content::load_image_async(
+                                            path_for_thread,
+                                            img_tx,
+                                        );
+                                    });
+                                }
+                                FileType::Binary => {
+                                    file_reader_content.hightlighted_content = None;
+                                    app.preview_file_content =
+                                        file_reader_content.read_binary_hex_view(&path);
+                                }
+                                FileType::ZIP => {
+                                    file_reader_content.hightlighted_content = None;
+                                    file_reader_content.read_zip_content(path);
+                                }
+                                FileType::Archive => {
+                                    file_reader_content.hightlighted_content = None;
+                                    // Determine archive type and read
+                                    let ext = std::path::Path::new(&path)
+                                        .extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or("")
+                                        .to_lowercase();
+                                    let entries = match ext.as_str() {
+                                        "tar" => file_reader_content.read_tar_content(&path),
+                                        "tgz" => file_reader_content.read_tar_gz_content(&path),
+                                        "gz" if path.to_lowercase().ends_with(".tar.gz") => {
+                                            file_reader_content.read_tar_gz_content(&path)
+                                        }
+                                        "bz2" | "tbz2"
+                                            if path.to_lowercase().ends_with(".tar.bz2") =>
+                                        {
+                                            file_reader_content.read_tar_bz2_content(&path)
+                                        }
+                                        "xz" | "txz"
+                                            if path.to_lowercase().ends_with(".tar.xz") =>
+                                        {
+                                            file_reader_content.read_tar_xz_content(&path)
+                                        }
+                                        _ => vec!["Archive preview not supported".to_string()],
+                                    };
+                                    app.preview_file_content = entries.join("\n");
+                                }
+                                FileType::PDF => {
+                                    // PDF content is now loaded asynchronously
+                                    file_reader_content.hightlighted_content = None;
+                                    app.preview_file_content = content;
+                                }
+                                FileType::TextFile => {
+                                    // Plain text - clear any previous highlighted content
+                                    file_reader_content.hightlighted_content = None;
+                                    app.preview_file_content = content;
+                                }
+                                _ => {
+                                    // Other file types - clear highlighted content
+                                    file_reader_content.hightlighted_content = None;
+                                    app.preview_file_content = content;
+                                }
+                            }
+                            app.preview_files = Vec::new();
+                        }
+                    }
+                    PreviewMessage::DirectoryListing { path, entries } => {
+                        if app.preview_loading_path.as_ref() == Some(&path) {
+                            app.preview_loading = false;
+                            app.preview_files = entries;
+                            app.preview_file_content.clear();
+                            file_reader_content.file_type = FileType::NotAvailable;
+                            image_renderer.clear();
+                        }
+                    }
+                    PreviewMessage::Error { path, message } => {
+                        if app.preview_loading_path.as_ref() == Some(&path) {
+                            app.preview_loading = false;
+                            app.preview_file_content = format!("Error: {}", message);
+                            file_reader_content.file_type = FileType::NotAvailable;
+                        }
+                    }
+                }
+                app.preview_receiver = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // Still loading, keep waiting
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // Thread finished unexpectedly
+                app.preview_loading = false;
+                app.preview_receiver = None;
+            }
+        }
+    }
+}
+
+/// Check for async image loading results
+pub fn poll_image_result(
+    app: &mut App,
+    file_reader_content: &FileContent,
+    image_renderer: &mut ImageRenderer,
+) {
+    if let Some(ref rx) = app.image_receiver {
+        match rx.try_recv() {
+            Ok(result) => {
+                // Only update if this is still the file we're waiting for
+                if file_reader_content.curr_asset_path == result.path {
+                    match result.result {
+                        Ok((decoded_image, format)) => {
+                            image_renderer.load_from_decoded(decoded_image, format);
+                            app.preview_file_content.clear();
+                        }
+                        Err(error_msg) => {
+                            image_renderer.set_error(error_msg);
+                            app.preview_file_content.clear();
+                        }
+                    }
+                }
+                app.image_receiver = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                // Still loading, keep waiting
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                // Thread finished unexpectedly
+                app.image_receiver = None;
+            }
+        }
+    }
+}
+
+/// Drain copy updates, report terminal results, and return whether a copy succeeded.
+fn poll_copy_messages(
+    app: &mut App,
+    status_bar: &mut StatusBar,
+    receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+) -> bool {
+    let Some(rx) = receiver.as_ref() else {
+        return false;
+    };
+    // Coalesce status/progress updates, but never discard a terminal result.
+    let mut last_message = None;
+    loop {
+        match rx.try_recv() {
+            Ok(message) => {
+                let finished = matches!(
+                    message,
+                    CopyMessage::Completed { .. } | CopyMessage::Error(_)
+                );
+                last_message = Some(message);
+                if finished {
+                    break;
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => break,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                last_message = Some(CopyMessage::Error(
+                    "Copy stopped unexpectedly before reporting a result".into(),
+                ));
+                break;
+            }
+        }
+    }
+
+    let success = match last_message {
+        None => return false,
+        Some(CopyMessage::Status(message)) => {
+            app.copy_progress_message = message;
+            return false;
+        }
+        Some(CopyMessage::Progress {
+            files_processed,
+            total_files,
+            bytes_copied,
+            total_bytes,
+            current_file,
+        }) => {
+            app.copy_files_processed = files_processed;
+            app.copy_total_files = total_files;
+            let percent = if total_bytes > 0 {
+                (bytes_copied as f64 / total_bytes as f64 * 100.0) as u8
+            } else {
+                0
+            };
+            app.copy_progress_message = format!(
+                "Copying: {} ({}% - {} / {})",
+                current_file,
+                percent,
+                format_file_size(bytes_copied),
+                format_file_size(total_bytes),
+            );
+            return false;
+        }
+        Some(CopyMessage::Completed {
+            success,
+            message,
+            skipped_special_files,
+        }) => {
+            // The engine names the destination, which a cross-pane copy shares with its source.
+            let message = app
+                .copy_to_other_pane
+                .as_deref()
+                .and_then(|name| {
+                    let details = message.strip_prefix(&format!("Copied '{name}' to '{name}'"))?;
+                    Some(format!("Copied '{name}' to other pane{details}"))
+                })
+                .unwrap_or(message);
+            if success {
+                debug!("Copy completed: {}", message);
+                if skipped_special_files > 0 {
+                    status_bar.show_warning(message, None);
+                } else {
+                    status_bar.show_info(message, None);
+                }
+            } else {
+                warn!("Copy failed: {}", message);
+                status_bar.show_error(message, None);
+            }
+            success
+        }
+        Some(CopyMessage::Error(message)) => {
+            warn!("Copy operation failed: {}", message);
+            status_bar.show_error(message, None);
+            false
+        }
+    };
+
+    app.copy_in_progress = false;
+    app.copy_progress_message.clear();
+    app.copy_files_processed = 0;
+    app.copy_total_files = 0;
+    app.copy_to_other_pane = None;
+    app.copy_destination = None;
+    *receiver = None;
+    success
+}
+
+/// Refresh completed copies and select an in-place duplicate when visible.
+pub fn refresh_after_copy(
+    app: &mut App,
+    state: &mut ListState,
+    status_bar: &mut StatusBar,
+    receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+    fallback_start_path: &str,
+) {
+    let destination = app
+        .copy_destination
+        .as_ref()
+        .filter(|_| app.copy_to_other_pane.is_none())
+        .map(|path| path.to_string_lossy().into_owned());
+    if poll_copy_messages(app, status_bar, receiver) {
+        let refresh_dir = current_refresh_directory(app, fallback_start_path);
+        if let Ok(files) = get_file_path_data(
+            refresh_dir,
+            app.show_hidden_files,
+            app.sort_by.clone(),
+            &app.sort_type,
+        ) {
+            app.refresh_files_after_operation(files, state, destination);
+            status_bar.invalidate_cache();
+        }
+        // Shift+C may have copied into the right pane's folder.
+        if app.view_mode.is_dual_pane() {
+            app.right_pane.refresh_files();
+        }
+    }
+}
+
+/// A finished move or extraction may have changed both panes, even if it failed.
+pub fn poll_job(
+    app: &mut App,
+    state: &mut ListState,
+    status_bar: &mut StatusBar,
+    fallback_start_path: &str,
+) {
+    if let Some(result) = app.poll_job() {
+        let refresh_dir = current_refresh_directory(app, fallback_start_path);
+        if let Ok(files) = get_file_path_data(
+            refresh_dir,
+            app.show_hidden_files,
+            app.sort_by.clone(),
+            &app.sort_type,
+        ) {
+            if result.is_ok() {
+                app.refresh_files_after_operation(files, state, None);
+            } else {
+                app.refresh_files_from_watcher(files, state);
+            }
+            status_bar.invalidate_cache();
+        }
+        if app.view_mode.is_dual_pane() {
+            app.right_pane.refresh_files();
+        }
+        match result {
+            Ok(message) => status_bar.show_info(message, None),
+            Err(message) => {
+                warn!("Background operation failed: {}", message);
+                status_bar.show_error(message, None);
+            }
+        }
+    }
+}
+
+/// Handle delete progress messages
+pub fn poll_delete(
+    app: &mut App,
+    state: &mut ListState,
+    status_bar: &mut StatusBar,
+    delete_receiver: &mut Option<mpsc::Receiver<DeleteMessage>>,
+    fallback_start_path: &str,
+) {
+    if let Some(ref rx) = *delete_receiver {
+        let mut last_msg: Option<DeleteMessage> = None;
+        loop {
+            match rx.try_recv() {
+                Ok(msg) => last_msg = Some(msg),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // A worker that dies without a result must not block later operations.
+                    if !matches!(
+                        last_msg,
+                        Some(DeleteMessage::Completed { .. } | DeleteMessage::Error(_))
+                    ) {
+                        last_msg = Some(DeleteMessage::Error(
+                            "Delete stopped unexpectedly before reporting a result".into(),
+                        ));
+                    }
+                    *delete_receiver = None;
+                    break;
+                }
+            }
+        }
+
+        if let Some(msg) = last_msg {
+            match msg {
+                DeleteMessage::Counting { files_counted } => {
+                    app.delete_progress_message = format!("Counting files... {}", files_counted);
+                }
+                DeleteMessage::Progress {
+                    files_deleted,
+                    total_files,
+                    current_file,
+                } => {
+                    let percent = if total_files > 0 {
+                        (files_deleted as f64 / total_files as f64 * 100.0) as u8
+                    } else {
+                        0
+                    };
+                    app.delete_progress_message = format!(
+                        "Deleting: {} ({}% - {}/{})",
+                        current_file, percent, files_deleted, total_files
+                    );
+                }
+                DeleteMessage::Completed { success, message } => {
+                    if success {
+                        debug!("Delete completed: {}", message);
+                    } else {
+                        warn!("Delete failed: {}", message);
+                        status_bar.show_error(message.clone(), None);
+                    }
+
+                    // Refresh the directory being browsed, even for a global search target.
+                    let refresh_dir = current_refresh_directory(app, fallback_start_path);
+                    if let Ok(files) = get_file_path_data(
+                        refresh_dir,
+                        app.show_hidden_files,
+                        app.sort_by.clone(),
+                        &app.sort_type,
+                    ) {
+                        if success {
+                            app.refresh_files_after_operation(files, state, None);
+                        } else {
+                            app.refresh_files_from_watcher(files, state);
+                        }
+                        status_bar.invalidate_cache();
+                    }
+
+                    // Reset delete state
+                    app.delete_in_progress = false;
+                    app.delete_progress_message.clear();
+                    app.preserved_selection_index = None;
+                    *delete_receiver = None;
+                }
+                DeleteMessage::Error(error_msg) => {
+                    warn!("Delete operation failed: {}", error_msg);
+                    status_bar.show_error(error_msg.clone(), None);
+
+                    // Reset delete state
+                    app.delete_in_progress = false;
+                    app.delete_progress_message = format!("Delete failed: {}", error_msg);
+                    app.preserved_selection_index = None;
+                    *delete_receiver = None;
+                }
+            }
+        }
+    }
+}
+
+/// Process file system events
+pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_start_path: &str) {
+    let fs_events = app.process_file_system_events();
+    if !fs_events.is_empty() {
+        // File system changes detected, refresh the CURRENT directory (not the start path)
+        let refresh_dir = current_refresh_directory(app, fallback_start_path);
+
+        if let Ok(file_path_list) = get_file_path_data(
+            refresh_dir,
+            app.show_hidden_files,
+            app.sort_by.clone(),
+            &app.sort_type,
+        ) {
+            app.refresh_files_from_watcher(file_path_list, state);
+
+            // Log the file system events for debugging
+            for event_msg in fs_events {
+                debug!("File system event: {}", event_msg);
+            }
+        }
+    }
+}
+
+/// Process cache loading progress
+pub fn poll_cache_loading(
+    app: &mut App,
+    store: &mut DirectoryStore,
+    settings: &Settings,
+    fallback_start_path: &str,
+) {
+    if app.input_mode == InputMode::CacheLoading && app.process_cache_loading_progress() {
+        // Cache loading is complete, finish setup
+        debug!("Cache loading completed, finalizing...");
+
+        // Use the completed cache if available, otherwise fallback to current directory
+        // Capture the completed cache and persist it; also update the in-memory store used for global search
+        let completed_directories = if let Some(ref cache_store) = app.completed_cache_store {
+            debug!(
+                "Using completed cache with {} directories",
+                cache_store.directories.len()
+            );
+
+            // Update the in-memory store so global search starts working immediately
+            *store = cache_store.clone();
+
+            // Save the cache to file for future use
+            match crate::directory_store::save_directory_to_file(
+                cache_store,
+                &settings.cache_directory,
+            ) {
+                Ok(()) => {
+                    debug!(
+                        "Successfully saved cache to file: {}",
+                        settings.cache_directory
+                    );
+                    if let Some(ms) = app.cache_build_elapsed_ms {
+                        debug!("Directory cache built and saved in {} ms", ms);
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to save cache to file: {}", e);
+                }
+            }
+
+            // We no longer replace the current file list with the entire cache; keep current directory view.
+            // Still return directories for compatibility (ignored by finish_cache_loading).
+            cache_store.directories.clone()
+        } else {
+            debug!("No completed cache available, falling back to current directory");
+            // Fallback to current directory files
+            get_file_path_data(
+                fallback_start_path.to_string(),
+                false,
+                app.sort_by.clone(),
+                &app.sort_type,
+            )
+            .unwrap_or_else(|_| Vec::new())
+        };
+
+        // Finalize cache loading without changing the current directory view
+        app.finish_cache_loading(completed_directories);
+
+        debug!("Cache loading finished, app is now in normal mode");
+    }
+}
+
+/// Apply preserved selection and clamp after all refreshes, before handling a key.
+pub fn sync_selection(
+    app: &mut App,
+    state: &mut ListState,
+    file_reader_content: &mut FileContent,
+    image_renderer: &mut ImageRenderer,
+) {
+    let selected_index = app.preserved_selection_index.take().or(state.selected());
+    let valid_index = app
+        .get_list_length()
+        .checked_sub(1)
+        .map(|last_index| selected_index.unwrap_or(0).min(last_index));
+    state.select(valid_index);
+    app.curr_index = valid_index;
+    // Keep the preview on the selected item, however the selection changed.
+    if app.sync_preview_with_selection(valid_index) {
+        file_reader_content.file_type = FileType::NotAvailable;
+        file_reader_content.hightlighted_content = None;
+        file_reader_content.curr_selected_path.clear();
+        image_renderer.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::ViewMode;
+    use crate::operations::copy_dir_file_with_progress_cancellable;
+    use crate::status_bar::NotificationKind;
+    use crate::utils::{generate_copy_file_dir_name, SortBy, SortType};
+    use std::path::PathBuf;
+
+    fn running_copy_app() -> App {
+        let mut app = App::new(Vec::new());
+        app.start_copy(PathBuf::from("copy_target"), None);
+        app.copy_progress_message = "Copying...".into();
+        app.copy_files_processed = 2;
+        app.copy_total_files = 10;
+        app
+    }
+
+    fn assert_copy_finished(app: &App, receiver: &Option<mpsc::Receiver<CopyMessage>>) {
+        assert!(!app.copy_in_progress);
+        assert!(app.copy_progress_message.is_empty());
+        assert_eq!(app.copy_files_processed, 0);
+        assert_eq!(app.copy_total_files, 0);
+        assert!(app.copy_destination.is_none());
+        assert!(receiver.is_none());
+    }
+
+    fn copy_progress() -> CopyMessage {
+        CopyMessage::Progress {
+            files_processed: 3,
+            total_files: 10,
+            bytes_copied: 30,
+            total_bytes: 100,
+            current_file: "data.txt".into(),
+        }
+    }
+
+    #[test]
+    fn copy_refresh_selects_successful_destination_and_updates_preview_and_metadata() {
+        for fail in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("zulu.txt");
+            std::fs::write(&source, "copy contents").unwrap();
+            std::fs::write(dir.path().join("alpha.txt"), "existing").unwrap();
+            std::fs::write(dir.path().join("middle.txt"), "existing").unwrap();
+            let destination = generate_copy_file_dir_name(&source, dir.path());
+            if fail {
+                std::fs::write(&destination, "existing destination").unwrap();
+            }
+            let directory = dir.path().to_string_lossy().into_owned();
+            let files =
+                get_file_path_data(directory.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+            let mut app = App::new(files);
+            app.current_directory = directory.clone();
+            app.sort_by = SortBy::Name;
+            app.sort_type = SortType::ASC;
+            let mut state = ListState::default();
+            state.select(Some(app.files.len() - 1));
+            app.curr_index = state.selected();
+            app.preserved_selection_index = state.selected();
+            app.sync_preview_with_selection(state.selected());
+            app.start_copy(destination.clone(), None);
+            let mut receiver = Some(copy_dir_file_with_progress_cancellable(
+                &source,
+                &destination,
+                app.copy_cancel.clone(),
+            ));
+            let mut status = StatusBar::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while receiver.is_some() {
+                refresh_after_copy(&mut app, &mut state, &mut status, &mut receiver, &directory);
+                assert!(std::time::Instant::now() < deadline, "copy did not finish");
+                std::thread::yield_now();
+            }
+
+            let expected = if fail { &source } else { &destination }
+                .to_string_lossy()
+                .into_owned();
+            assert_eq!(
+                app.get_selected_path(state.selected()),
+                Some(expected.clone())
+            );
+            assert_eq!(app.curr_index, state.selected());
+            assert_copy_finished(&app, &receiver);
+            assert_eq!(
+                std::fs::read_to_string(&destination).unwrap(),
+                if fail {
+                    "existing destination"
+                } else {
+                    "copy contents"
+                },
+            );
+            // The main loop synchronizes previews after refreshing all operation results.
+            app.sync_preview_with_selection(state.selected());
+            assert_eq!(app.take_ready_preview(0), Some(expected));
+            status.update(&app);
+            assert!(status.selected_item_info.starts_with(if fail {
+                "zulu.txt |"
+            } else {
+                "copy_zulu.txt |"
+            }));
+        }
+    }
+
+    #[test]
+    fn copy_refresh_preserves_selection_after_navigation_or_cross_pane_copy() {
+        for cross_pane in [false, true] {
+            let browsed = tempfile::tempdir().unwrap();
+            let other = tempfile::tempdir().unwrap();
+            for directory in [browsed.path(), other.path()] {
+                for name in ["alpha.txt", "copy_target.txt", "zulu.txt"] {
+                    std::fs::write(directory.join(name), "contents").unwrap();
+                }
+            }
+            let directory = browsed.path().to_string_lossy().into_owned();
+            let files =
+                get_file_path_data(directory.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+            let mut app = App::new(files);
+            app.current_directory = directory.clone();
+            app.sort_by = SortBy::Name;
+            app.sort_type = SortType::ASC;
+            app.view_mode = ViewMode::DualPane;
+            app.right_pane =
+                crate::pane::Pane::new(other.path().to_string_lossy().into_owned(), Vec::new());
+            app.right_pane.list_state.select(Some(2));
+            let mut state = ListState::default();
+            state.select(Some(0));
+            app.preserved_selection_index = state.selected();
+            // A right-to-left Shift+C keeps selection even when its destination is visible.
+            // A local copy finishing after navigation must not select an unrelated namesake.
+            let destination_dir = if cross_pane {
+                browsed.path()
+            } else {
+                other.path()
+            };
+            app.start_copy(
+                destination_dir.join("copy_target.txt"),
+                cross_pane.then(|| "copy_target.txt".into()),
+            );
+            let (tx, rx) = mpsc::channel();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: "Copied".into(),
+                skipped_special_files: 0,
+            })
+            .unwrap();
+            let mut receiver = Some(rx);
+
+            refresh_after_copy(
+                &mut app,
+                &mut state,
+                &mut StatusBar::new(),
+                &mut receiver,
+                &directory,
+            );
+
+            assert_eq!(state.selected(), Some(0));
+            assert_eq!(
+                app.get_selected_path(state.selected()),
+                Some(
+                    browsed
+                        .path()
+                        .join("alpha.txt")
+                        .to_string_lossy()
+                        .into_owned()
+                )
+            );
+            assert_eq!(app.right_pane.list_state.selected(), Some(2));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_completion_notifies_with_severity_from_skipped_count() {
+        for (skipped_special_files, kind) in
+            [(0, NotificationKind::Info), (2, NotificationKind::Warning)]
+        {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(copy_progress()).unwrap();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: "Copied 'data' to 'copy_data'".into(),
+                skipped_special_files,
+            })
+            .unwrap();
+            // Even a late progress update must not hide the final result.
+            tx.send(copy_progress()).unwrap();
+            drop(tx);
+            let mut receiver = Some(rx);
+
+            assert!(poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert!(status.has_error());
+            assert_eq!(status.notification_kind, kind);
+            assert!(status
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("copy_data"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_to_other_pane_names_the_pane_and_keeps_details() {
+        for (skipped_special_files, details) in [
+            (0, ""),
+            (1, " (skipped 1 special file: sockets/pipes/devices)"),
+        ] {
+            let mut app = running_copy_app();
+            app.copy_to_other_pane = Some("data".into());
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(CopyMessage::Completed {
+                success: true,
+                message: format!("Copied 'data' to 'data'{details}"),
+                skipped_special_files,
+            })
+            .unwrap();
+            let mut receiver = Some(rx);
+
+            assert!(poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(
+                status.error_message,
+                Some(format!("Copied 'data' to other pane{details}"))
+            );
+            assert_eq!(app.copy_to_other_pane, None);
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_failures_notify_with_reason_and_clear_progress() {
+        for message in [
+            CopyMessage::Error("permission denied".into()),
+            CopyMessage::Completed {
+                success: false,
+                message: "permission denied".into(),
+                skipped_special_files: 0,
+            },
+        ] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            tx.send(message).unwrap();
+            let mut receiver = Some(rx);
+
+            assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(status.notification_kind, NotificationKind::Error);
+            assert_eq!(status.error_message.as_deref(), Some("permission denied"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_disconnect_without_result_reports_error_even_after_progress() {
+        for send_progress in [false, true] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            if send_progress {
+                tx.send(copy_progress()).unwrap();
+            }
+            drop(tx);
+            let mut receiver = Some(rx);
+
+            assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+            assert_eq!(status.notification_kind, NotificationKind::Error);
+            assert!(status
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("Copy stopped unexpectedly"));
+            assert_copy_finished(&app, &receiver);
+        }
+    }
+
+    #[test]
+    fn copy_progress_and_empty_channel_keep_copy_running() {
+        let mut app = running_copy_app();
+        let mut status = StatusBar::new();
+        let (tx, rx) = mpsc::channel();
+        let mut receiver = Some(rx);
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert!(app.copy_in_progress);
+
+        tx.send(copy_progress()).unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert_eq!(app.copy_files_processed, 3);
+        assert_eq!(app.copy_total_files, 10);
+        assert!(app.copy_progress_message.contains("30%"));
+        assert!(app.copy_in_progress);
+        assert!(receiver.is_some());
+        assert!(!status.has_error());
+    }
+
+    #[test]
+    fn copy_status_keeps_receiver_alive_and_yields_to_progress() {
+        let mut app = running_copy_app();
+        let mut status = StatusBar::new();
+        let (tx, rx) = mpsc::channel();
+        let mut receiver = Some(rx);
+        tx.send(CopyMessage::Status("Cloning 'source'…".into()))
+            .unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert_eq!(app.copy_progress_message, "Cloning 'source'…");
+        assert!(app.copy_in_progress);
+        assert!(receiver.is_some());
+        assert!(!status.has_error());
+
+        tx.send(copy_progress()).unwrap();
+        assert!(!poll_copy_messages(&mut app, &mut status, &mut receiver));
+        assert!(app.copy_progress_message.contains("30%"));
+        assert!(app.copy_in_progress);
+    }
+
+    #[test]
+    fn copy_status_does_not_hide_completion_or_disconnect() {
+        for completed in [false, true] {
+            let mut app = running_copy_app();
+            let mut status = StatusBar::new();
+            let (tx, rx) = mpsc::channel();
+            let mut receiver = Some(rx);
+            tx.send(CopyMessage::Status("Cloning 'source'…".into()))
+                .unwrap();
+            if completed {
+                tx.send(CopyMessage::Completed {
+                    success: true,
+                    message: "Copied 'source' to 'copy_source'".into(),
+                    skipped_special_files: 0,
+                })
+                .unwrap();
+            }
+            drop(tx);
+            assert_eq!(
+                poll_copy_messages(&mut app, &mut status, &mut receiver),
+                completed
+            );
+            assert_copy_finished(&app, &receiver);
+            assert_eq!(
+                status.notification_kind,
+                if completed {
+                    NotificationKind::Info
+                } else {
+                    NotificationKind::Error
+                }
+            );
+        }
+    }
+}
