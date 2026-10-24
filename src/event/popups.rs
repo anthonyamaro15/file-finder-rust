@@ -9,6 +9,7 @@ use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 
 use crate::{
     app::{App, InputMode},
+    directory_store::DirectoryIndex,
     event::{
         file_actions::{
             create_target_directory, created_item_path, current_refresh_directory,
@@ -31,6 +32,7 @@ pub fn handle_rename_key(
     app: &mut App,
     state: &mut ListState,
     status_bar: &mut StatusBar,
+    index: &mut DirectoryIndex,
     fallback_start_path: &str,
 ) -> anyhow::Result<()> {
     match key.code {
@@ -64,6 +66,9 @@ pub fn handle_rename_key(
                 if !check_if_exists(new_path.clone()) {
                     match handle_rename(app) {
                         Ok(_) => {
+                            let old_path = Path::new(&app.current_path_to_edit)
+                                .join(&app.current_name_to_edit);
+                            index.renamed(&old_path, Path::new(&new_path));
                             let current_dir = current_refresh_directory(app, fallback_start_path);
                             app.reset_create_edit_values();
                             let file_path_list = get_file_path_data(
@@ -102,6 +107,7 @@ pub fn handle_create_key(
     app: &mut App,
     state: &mut ListState,
     status_bar: &mut StatusBar,
+    index: &mut DirectoryIndex,
 ) -> anyhow::Result<()> {
     match key.code {
         KeyCode::Char(c) => {
@@ -134,6 +140,7 @@ pub fn handle_create_key(
             match create_item_based_on_type(new_path.clone(), app.create_edit_file_name.clone()) {
                 Ok(_) => {
                     app.input_mode = InputMode::Normal;
+                    index.changed(&Path::new(&new_path).join(&app.create_edit_file_name));
 
                     let created_path =
                         created_item_path(Path::new(&new_path), &app.create_edit_file_name);
@@ -194,6 +201,7 @@ pub fn handle_delete_key(
                         app.delete_progress_message = "Counting files...".to_string();
                         app.preserved_selection_index = state.selected();
                         *delete_receiver = Some(delete_with_progress(&selected));
+                        app.delete_path = Some(selected);
                     }
                 } else {
                     // A file removed externally already satisfies the request.
@@ -283,5 +291,44 @@ mod tests {
         assert_eq!(state.selected(), Some(1));
         assert_eq!(app.get_selected_path(state.selected()), Some(destination));
         assert!(app.create_edit_file_name.is_empty());
+    }
+
+    #[test]
+    fn create_and_rename_update_the_folder_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut index = crate::event::background::tests::memory_index(root);
+        let mut app = App::new(Vec::new());
+        app.current_directory = root.to_string_lossy().into_owned();
+        let mut state = ListState::default();
+        let mut status = StatusBar::new();
+        let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+        let spelled = |name: &str| root.join(name).to_string_lossy().into_owned();
+
+        app.input_mode = InputMode::WatchCreate;
+        app.create_edit_file_name = "alpha".into();
+        handle_create_key(enter, &mut app, &mut state, &mut status, &mut index).unwrap();
+        assert_eq!(index.store.directories, [spelled("alpha")]);
+        std::fs::create_dir(root.join("alpha/inner")).unwrap();
+        index.changed(&root.join("alpha/inner"));
+
+        app.input_mode = InputMode::WatchRename;
+        app.current_path_to_edit = root.to_string_lossy().into_owned();
+        app.current_name_to_edit = "alpha".into();
+        app.create_edit_file_name = "beta".into();
+        let fallback = root.to_string_lossy().into_owned();
+        handle_rename_key(
+            enter,
+            &mut app,
+            &mut state,
+            &mut status,
+            &mut index,
+            &fallback,
+        )
+        .unwrap();
+        assert_eq!(
+            index.store.directories,
+            [spelled("beta"), spelled("beta/inner")]
+        );
     }
 }

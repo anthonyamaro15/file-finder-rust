@@ -65,7 +65,7 @@ pub(crate) fn may_exit<B: Backend>(
         app.copy_progress_message.clear();
         app.copy_files_processed = 0;
         app.copy_total_files = 0;
-        app.copy_to_other_pane = None;
+        app.copy_transfer = None;
         app.copy_destination = None;
         result
     } else if let Some(job) = app.job.take() {

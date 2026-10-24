@@ -22,6 +22,7 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 
 - Vim-style navigation (`h`, `j`, `k`, `l`)
 - Create, delete, rename, and copy files/directories
+- Copy to… / Move to… any folder, picked by name like root search (`Shift+C` / `Shift+M`)
 - Toggle hidden files
 - Sort by name, size, or modified date
 
@@ -203,14 +204,16 @@ The `?` help popup reflects configured search keybindings.
 
 ### 📁 File Operations
 
-| Key | Action                     |
-| --- | -------------------------- |
-| `a` | Create file/directory      |
-| `d` | Delete (with confirmation) |
-| `r` | Rename                     |
-| `c` | Copy                       |
-| `o` | Open in file explorer      |
-| `.` | Toggle hidden files        |
+| Key       | Action                     |
+| --------- | -------------------------- |
+| `a`       | Create file/directory      |
+| `d`       | Delete (with confirmation) |
+| `r`       | Rename                     |
+| `c`       | Copy                       |
+| `Shift+C` | Copy to… (pick a folder)   |
+| `Shift+M` | Move to… (pick a folder)   |
+| `o`       | Open in file explorer      |
+| `.`       | Toggle hidden files        |
 
 ### 🖼️ View Modes
 
@@ -222,6 +225,10 @@ The `?` help popup reflects configured search keybindings.
 | `Shift+M` | Move from active pane to other pane              |
 
 In Dual Pane mode, navigation keys (`j`/`k`/`h`/`l`) work on the active pane.
+
+Outside Dual Pane mode, `Shift+C` / `Shift+M` open a folder picker: type to search
+folders as root search does, or type a path starting with `/` or `~`, then pick one
+with `↑`/`↓` and `Enter` (`Esc` cancels).
 
 ### 🔧 Tools
 
@@ -342,7 +349,9 @@ use_nerd_fonts = "auto"    # Auto-detect (default)
 ## ⚙️ Configuration
 
 - **Config file**: `~/.config/ff/settings.toml`
-- **Cache**: `~/.config/ff/cache_directory.json`
+- **Cache**: `~/.config/ff/cache_directory.json` (folders for root search; ff's own
+  folder changes update it at once, and a cache older than an hour is refreshed in the
+  background at startup)
 - **Themes**: `~/.config/ff/themes/`
 
 `ff` stores active TOML settings under `~/.config/ff/settings.toml`.

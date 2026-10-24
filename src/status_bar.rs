@@ -198,6 +198,7 @@ impl StatusBar {
             InputMode::WatchSort => ("SORT", theme.purple),
             InputMode::WatchKeyBinding => ("HELP", theme.fg),
             InputMode::CacheLoading => ("LOADING", theme.yellow),
+            InputMode::PickFolder => ("PICK", theme.blue),
         }
     }
 
@@ -358,6 +359,7 @@ impl StatusBar {
             InputMode::WatchSort => ("SRT", theme.purple),
             InputMode::WatchKeyBinding => ("HLP", theme.fg),
             InputMode::CacheLoading => ("...", theme.yellow),
+            InputMode::PickFolder => ("PCK", theme.blue),
         }
     }
 

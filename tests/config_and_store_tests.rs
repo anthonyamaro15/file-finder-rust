@@ -192,7 +192,7 @@ mod build_directory_store_tests {
         let root = root.to_str().unwrap();
         let ignored: Vec<String> = ignored.iter().map(|name| name.to_string()).collect();
         let sync_store = build_directory_from_store(root, ignored.clone());
-        let receiver = build_directory_from_store_async(root.to_string(), ignored);
+        let receiver = build_directory_from_store_async(root.to_string(), ignored, 2);
         let async_store = loop {
             match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
                 CacheBuildProgress::Completed { store } => break store,

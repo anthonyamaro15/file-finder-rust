@@ -16,17 +16,18 @@ use log::debug;
 use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{InputMode, PanePosition, SearchScope, ViewMode},
+    app::{InputMode, PanePosition, SearchScope, TransferKind, ViewMode},
     config::Action,
     event::{
         file_actions::{containing_directory_or_current, current_refresh_directory, rename_target},
         keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_listing_directory, previous_index_wrapping},
+        transfer::{open_folder_picker, start_transfer},
         LoopControl, LoopState,
     },
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
-    operations::{self, copy_dir_file_with_progress_cancellable},
+    operations::copy_dir_file_with_progress_cancellable,
     utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
 };
 
@@ -262,46 +263,30 @@ pub fn handle_normal_key(
                 app.toggle_active_pane();
             }
         }
-        KeyCode::Char('C') => {
-            // Shift+C: copy the highlighted item into the other pane's folder.
+        KeyCode::Char(c @ ('C' | 'M')) => {
+            let kind = if c == 'C' {
+                TransferKind::Copy
+            } else {
+                TransferKind::Move
+            };
             if app.view_mode.is_dual_pane() {
-                if let Some(warning) = app.busy_warning() {
-                    status_bar.show_warning(warning, None);
-                } else if let Some((src_path, dest_dir)) = app.other_pane_transfer(state.selected())
-                {
-                    let src = Path::new(&src_path);
-                    if let Some(src_name) = src.file_name() {
-                        let dest = Path::new(&dest_dir).join(src_name);
-                        app.preserved_selection_index = state.selected();
-                        app.start_copy(dest.clone(), Some(src_name.to_string_lossy().to_string()));
-                        *copy_receiver = Some(copy_dir_file_with_progress_cancellable(
-                            src,
-                            &dest,
-                            app.copy_cancel.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-        KeyCode::Char('M') => {
-            // Shift+M: move the highlighted item into the other pane's folder.
-            if app.view_mode.is_dual_pane() {
-                if let Some((src_path, dest_dir)) = app.other_pane_transfer(state.selected()) {
-                    let name = Path::new(&src_path)
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let status = format!("Moving '{name}'…");
-                    let started = app.start_job("move", status, move |cancel| {
-                        operations::move_file_or_dir_cancellable(&src_path, &dest_dir, &cancel)
-                            .map(|()| format!("Moved '{name}' to other pane"))
-                            .map_err(|e| format!("Move failed: {e}"))
-                    });
-                    if let Err(warning) = started {
+                // Shift+C/Shift+M: send the highlighted item to the other pane's folder.
+                if let Some((source, dest_dir)) = app.other_pane_transfer(state.selected()) {
+                    if let Err(warning) = start_transfer(
+                        app,
+                        copy_receiver,
+                        state.selected(),
+                        kind,
+                        source,
+                        dest_dir,
+                        "other pane".to_string(),
+                    ) {
                         status_bar.show_warning(warning, None);
                     }
                 }
+            } else {
+                // Elsewhere they pick the folder by name: "Copy to…"/"Move to…".
+                open_folder_picker(app, status_bar, state.selected(), kind);
             }
         }
         KeyCode::Char('y') => {
@@ -314,7 +299,10 @@ pub fn handle_normal_key(
                         .to_string_lossy()
                         .to_string();
                     let status = format!("Extracting '{name}'…");
-                    let started = app.start_job("extraction", status, move |cancel| {
+                    let changes = FileContent::zip_extraction_dir(Path::new(&selected))
+                        .into_iter()
+                        .collect();
+                    let started = app.start_job("extraction", status, changes, move |cancel| {
                         FileContent::extract_zip_content_cancellable(&selected, &cancel)
                     });
                     if let Err(warning) = started {

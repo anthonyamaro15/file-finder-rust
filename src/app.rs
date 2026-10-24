@@ -53,6 +53,8 @@ pub enum InputMode {
     WatchSort,
     WatchKeyBinding,
     CacheLoading,
+    /// Choosing the folder for "Copy to…" or "Move to…".
+    PickFolder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,34 @@ impl PanePosition {
             PanePosition::Right => PanePosition::Left,
         }
     }
+}
+
+/// Copy or move, for transfers to another folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    Copy,
+    Move,
+}
+
+impl TransferKind {
+    /// "Copy" or "Move", as the picker's title starts.
+    pub fn title(self) -> &'static str {
+        match self {
+            TransferKind::Copy => "Copy",
+            TransferKind::Move => "Move",
+        }
+    }
+}
+
+/// The open "Copy to…"/"Move to…" picker. Its query is edited in
+/// `create_edit_file_name` like the create and rename inputs.
+#[derive(Debug)]
+pub struct FolderPicker {
+    pub kind: TransferKind,
+    /// The item to copy or move.
+    pub source: String,
+    pub results: Vec<SearchResult>,
+    pub selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +309,40 @@ fn global_search_result(
     })
 }
 
+/// Global search over the folder index: the best `max_results` matches for `query`,
+/// with short labels that tell same-named folders apart.
+pub fn global_search_results(
+    store: &DirectoryStore,
+    query: &str,
+    max_results: usize,
+) -> Vec<SearchResult> {
+    if max_results == 0 {
+        return Vec::new();
+    }
+
+    let mut search_results = store
+        .directories
+        .par_iter()
+        .enumerate()
+        .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
+            global_search_result(matcher, index, file_path, query)
+        })
+        .filter_map(|result| result)
+        .fold(Vec::new, |mut search_results, result| {
+            push_bounded_search_result(&mut search_results, result, max_results);
+            search_results
+        })
+        .reduce(Vec::new, |mut left, mut right| {
+            left.append(&mut right);
+            truncate_top_search_results(&mut left, max_results);
+            left
+        });
+
+    truncate_top_unique_search_results(&mut search_results, max_results);
+    apply_short_unique_display_names(&mut search_results);
+    search_results
+}
+
 #[derive(Debug)]
 pub struct App {
     pub input: String,
@@ -331,8 +395,9 @@ pub struct App {
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
-    /// Source name of a running `Shift+C` copy, which keeps its name in the other pane.
-    pub copy_to_other_pane: Option<String>,
+    /// Source name and destination label ("other pane", "'Projects'") of a running
+    /// copy to another folder, which keeps its name there.
+    pub copy_transfer: Option<(String, String)>,
     pub copy_destination: Option<PathBuf>,
 
     // File system watcher for real-time updates
@@ -372,6 +437,8 @@ pub struct App {
     // Delete progress tracking (for async delete)
     pub delete_in_progress: bool,
     pub delete_progress_message: String,
+    /// Folder being deleted in the background.
+    pub delete_path: Option<String>,
 
     // Preview debounce tracking
     pub preview_pending_path: Option<String>,
@@ -389,6 +456,8 @@ pub struct App {
 
     /// Running move or ZIP extraction, if any.
     pub job: Option<BackgroundJob>,
+    /// The open "Copy to…"/"Move to…" picker.
+    pub folder_picker: Option<FolderPicker>,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(&'static str, Instant)>,
 }
@@ -411,6 +480,8 @@ pub struct BackgroundJob {
     pub status: String,
     receiver: mpsc::Receiver<Result<String, String>>,
     pub cancel: Arc<AtomicBool>,
+    /// Paths the job changes, re-read into the folder index when it ends.
+    pub changes: Vec<PathBuf>,
 }
 
 impl BackgroundJob {
@@ -418,6 +489,7 @@ impl BackgroundJob {
     pub fn spawn(
         kind: &'static str,
         status: String,
+        changes: Vec<PathBuf>,
         work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Self {
         let (tx, receiver) = mpsc::channel();
@@ -431,6 +503,7 @@ impl BackgroundJob {
             status,
             receiver,
             cancel,
+            changes,
         }
     }
 
@@ -528,7 +601,7 @@ impl App {
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
-            copy_to_other_pane: None,
+            copy_transfer: None,
             copy_destination: None,
 
             // Initialize file watcher
@@ -570,6 +643,7 @@ impl App {
             // Initialize delete progress tracking
             delete_in_progress: false,
             delete_progress_message: String::new(),
+            delete_path: None,
 
             // Initialize preview debounce tracking
             preview_pending_path: None,
@@ -585,6 +659,7 @@ impl App {
             image_receiver: None,
 
             job: None,
+            folder_picker: None,
             quit_warning: None,
         }
     }
@@ -695,36 +770,8 @@ impl App {
 
     /// Perform global search across directory cache
     pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
-        if self.max_search_results == 0 {
-            self.search_results.clear();
-            self.filtered_indexes.clear();
-            return;
-        }
-
-        let max_results = self.max_search_results;
-        let mut search_results = store
-            .directories
-            .par_iter()
-            .enumerate()
-            .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
-                global_search_result(matcher, index, file_path, query)
-            })
-            .filter_map(|result| result)
-            .fold(Vec::new, |mut search_results, result| {
-                push_bounded_search_result(&mut search_results, result, max_results);
-                search_results
-            })
-            .reduce(Vec::new, |mut left, mut right| {
-                left.append(&mut right);
-                truncate_top_search_results(&mut left, max_results);
-                left
-            });
-
-        truncate_top_unique_search_results(&mut search_results, max_results);
-        apply_short_unique_display_names(&mut search_results);
-
         // For global search, we don't use filtered_indexes since we're showing different files
-        self.search_results = search_results;
+        self.search_results = global_search_results(store, query, self.max_search_results);
         self.filtered_indexes.clear();
     }
 
@@ -1283,25 +1330,28 @@ impl App {
     }
 
     /// Run `work` in the background unless another operation runs (returns its warning).
+    /// `changes` are the paths it changes, for the folder index.
     pub fn start_job(
         &mut self,
         kind: &'static str,
         status: String,
+        changes: Vec<PathBuf>,
         work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Result<(), String> {
         if let Some(warning) = self.busy_warning() {
             return Err(warning);
         }
         self.quit_warning = None;
-        self.job = Some(BackgroundJob::spawn(kind, status, work));
+        self.job = Some(BackgroundJob::spawn(kind, status, changes, work));
         Ok(())
     }
 
-    /// Take the job's result once it finishes, which frees the slot for the next operation.
-    pub fn poll_job(&mut self) -> Option<Result<String, String>> {
+    /// Take the job's result and changed paths once it finishes, which frees the slot
+    /// for the next operation.
+    pub fn poll_job(&mut self) -> Option<(Result<String, String>, Vec<PathBuf>)> {
         let result = self.job.as_ref()?.poll()?;
-        self.job = None;
-        Some(result)
+        let job = self.job.take()?;
+        Some((result, job.changes))
     }
 
     /// Allow leaving `ff` with `key` unless an operation runs. Then the first press
@@ -1323,15 +1373,16 @@ impl App {
         ))
     }
 
-    /// Show a copy as running; its updates arrive on the copy channel.
-    pub fn start_copy(&mut self, destination: PathBuf, to_other_pane: Option<String>) {
+    /// Show a copy as running; its updates arrive on the copy channel. `transfer` is the
+    /// source name and destination label of a copy to another folder.
+    pub fn start_copy(&mut self, destination: PathBuf, transfer: Option<(String, String)>) {
         self.quit_warning = None;
         self.copy_cancel = Arc::new(AtomicBool::new(false));
         self.copy_in_progress = true;
         self.copy_progress_message = String::from("Starting copy...");
         self.copy_files_processed = 0;
         self.copy_total_files = 0;
-        self.copy_to_other_pane = to_other_pane;
+        self.copy_transfer = transfer;
         self.copy_destination = Some(destination);
     }
 
@@ -1930,7 +1981,7 @@ mod tests {
     fn wait_for_job(app: &mut App) -> Result<String, String> {
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if let Some(result) = app.poll_job() {
+            if let Some((result, _)) = app.poll_job() {
                 return result;
             }
             assert!(Instant::now() < deadline, "job never reported a result");
@@ -1945,7 +1996,7 @@ mod tests {
             "delete" => app.delete_in_progress = true,
             _ => {
                 let (release, wait) = mpsc::channel::<()>();
-                app.start_job(kind, format!("Running {kind}"), move |_| {
+                app.start_job(kind, format!("Running {kind}"), Vec::new(), move |_| {
                     wait.recv().map_err(|e| e.to_string())?;
                     Ok(format!("Finished {kind}"))
                 })
@@ -1968,7 +2019,8 @@ mod tests {
 
             // Another operation is refused and leaves the running one in place.
             for other in ["move", "extraction"] {
-                let refused = app.start_job(other, "Second".into(), |_| Ok(String::new()));
+                let refused =
+                    app.start_job(other, "Second".into(), Vec::new(), |_| Ok(String::new()));
                 assert_eq!(refused, Err(warning.clone()));
             }
             assert_eq!(app.busy_operation(), Some(kind));
@@ -1998,9 +2050,12 @@ mod tests {
     #[test]
     fn panicking_background_job_reports_an_error() {
         let mut app = App::new(Vec::new());
-        app.start_job("extraction", "Extracting 'a.zip'…".into(), |_| {
-            panic!("extraction worker crashed")
-        })
+        app.start_job(
+            "extraction",
+            "Extracting 'a.zip'…".into(),
+            Vec::new(),
+            |_| panic!("extraction worker crashed"),
+        )
         .unwrap();
         assert_eq!(
             wait_for_job(&mut app),

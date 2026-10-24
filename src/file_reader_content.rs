@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     fs,
     io::{self},
-    path::Path,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
@@ -1240,6 +1240,11 @@ impl FileContent<'_> {
         Self::extract_zip_content_cancellable(path, &AtomicBool::new(false))
     }
 
+    /// Folder a ZIP is extracted into: beside it, named after it without the extension.
+    pub fn zip_extraction_dir(path: &Path) -> Option<PathBuf> {
+        Some(path.with_file_name(path.file_stem()?))
+    }
+
     /// Stop between entries and remove only the directory reserved by this extraction.
     pub fn extract_zip_content_cancellable(
         path: &str,
@@ -1249,10 +1254,8 @@ impl FileContent<'_> {
         let file = fs::File::open(fname).map_err(|e| format!("Error opening ZIP: {}", e))?;
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| format!("Error reading ZIP archive: {}", e))?;
-        let stem = fname
-            .file_stem()
+        let target_dir = Self::zip_extraction_dir(fname)
             .ok_or_else(|| "ZIP path has no file stem".to_string())?;
-        let target_dir = fname.with_file_name(stem);
         // Atomically reserve a new directory; files and dangling links also block extraction.
         fs::create_dir(&target_dir).map_err(|e| {
             format!(

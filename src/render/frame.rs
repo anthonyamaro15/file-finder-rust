@@ -20,7 +20,8 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, input_popup_cursor_position, split_popup_area_vertical,
+        draw_input_popup, draw_popup, input_popup_cursor_position, render_folder_picker,
+        split_popup_area_vertical,
     },
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
@@ -98,6 +99,10 @@ pub fn draw(
             InputMode::WatchCreate => (vec!["Create Mode".bold()], OneDarkTheme::success()),
             InputMode::WatchRename => (vec!["Rename Mode".bold()], OneDarkTheme::warning()),
             InputMode::WatchSort => (vec!["Sort Mode".bold()], OneDarkTheme::info()),
+            InputMode::PickFolder => (
+                vec!["Pick a folder (Enter to confirm, Esc to cancel)".bold()],
+                OneDarkTheme::info(),
+            ),
             InputMode::CacheLoading => {
                 let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
                 (
@@ -446,6 +451,11 @@ pub fn draw(
                 let keybindings_popup = create_keybindings_popup(&settings.keymap);
                 f.render_widget(Clear, keybinding_chunks[0]);
                 f.render_widget(keybindings_popup, keybinding_chunks[0]);
+            }
+            InputMode::PickFolder => {
+                if let Some(picker) = &app.folder_picker {
+                    render_folder_picker(f, picker, &app.create_edit_file_name, app.char_index);
+                }
             }
             _ => {}
         }
