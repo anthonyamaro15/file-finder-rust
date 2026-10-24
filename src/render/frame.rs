@@ -20,8 +20,8 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, input_popup_cursor_position, render_folder_picker,
-        split_popup_area_vertical,
+        draw_input_popup, draw_popup, input_popup_cursor_position, popups::draw_delete_popup,
+        render_folder_picker, split_popup_area_vertical,
     },
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
@@ -95,7 +95,8 @@ pub fn draw(
                 };
                 (vec![mode_text], OneDarkTheme::search_active())
             },
-            InputMode::WatchDelete => (vec!["Delete Mode".bold()], OneDarkTheme::error()),
+            InputMode::WatchDelete => (vec!["Permanent Delete".bold()], OneDarkTheme::error()),
+            InputMode::WatchTrash => (vec!["Move to Trash".bold()], OneDarkTheme::error()),
             InputMode::WatchCreate => (vec!["Create Mode".bold()], OneDarkTheme::success()),
             InputMode::WatchRename => (vec!["Rename Mode".bold()], OneDarkTheme::warning()),
             InputMode::WatchSort => (vec!["Sort Mode".bold()], OneDarkTheme::info()),
@@ -192,7 +193,7 @@ pub fn draw(
         let input_area = chunks[1];
         match app.input_mode {
             InputMode::Normal => {}
-            InputMode::WatchDelete => {}
+            InputMode::WatchDelete | InputMode::WatchTrash => {}
             InputMode::WatchCreate => {
                 let area = draw_input_popup(f.size());
                 let (x, y) = input_popup_cursor_position(area, app.char_index);
@@ -414,8 +415,9 @@ pub fn draw(
                 app.delete_target_is_dir,
                 app.delete_target_file_count,
                 app.delete_target_total_size,
+                app.input_mode == InputMode::WatchTrash,
             );
-            let area = draw_popup(f.size(), 50, 12);
+            let area = draw_delete_popup(f.size());
             f.render_widget(Clear, area);
             f.render_widget(popup, area);
         }

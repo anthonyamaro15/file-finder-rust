@@ -36,7 +36,7 @@ pub fn handle_normal_key(
     key: KeyEvent,
     loop_state: &mut LoopState,
     keymap_runtime: &mut KeymapRuntime,
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<CrosstermBackend<impl io::Write>>,
     fallback_start_path: &str,
 ) -> io::Result<LoopControl> {
     let LoopState {
@@ -236,6 +236,9 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('d') => {
+            app.prepare_trash(state.selected());
+        }
+        KeyCode::Char('D') => {
             app.prepare_delete(state.selected());
         }
         KeyCode::Char('a') => {

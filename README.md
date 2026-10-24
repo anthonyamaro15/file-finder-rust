@@ -207,7 +207,8 @@ The `?` help popup reflects configured search keybindings.
 | Key       | Action                     |
 | --------- | -------------------------- |
 | `a`       | Create file/directory      |
-| `d`       | Delete (with confirmation) |
+| `d`       | Move to Trash (with confirmation) |
+| `D` (Shift+D) | Permanently delete (with confirmation; cannot be undone) |
 | `r`       | Rename                     |
 | `c`       | Copy                       |
 | `Shift+C` | Copy to… (pick a folder)   |
