@@ -403,7 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &loop_state.index.store,
                             );
                         }
-                        InputMode::WatchDelete => {
+                        InputMode::WatchDelete | InputMode::WatchTrash => {
                             if popups::handle_delete_key(
                                 key,
                                 &mut loop_state,
