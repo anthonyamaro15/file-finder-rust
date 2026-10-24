@@ -1116,6 +1116,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let image_widget = StatefulImage::new(None);
                                 f.render_stateful_widget(image_widget, image_area, img_state);
                             }
+                        } else if image_error.is_none()
+                            && (app.preview_receiver.is_some() || app.image_receiver.is_some())
+                        {
+                            // Still reading or decoding, which can take seconds for large images
+                            let loading = Paragraph::new("Loading image...")
+                                .block(create_preview_block("Image", &settings));
+                            f.render_widget(loading, inner_layout[1]);
                         } else {
                             // Show error message if image failed to load
                             let error_msg = image_error.unwrap_or_else(|| {
