@@ -1,7 +1,7 @@
 //! Key handling for the popup modes: rename, create, delete confirmation, sort and
 //! the keybinding help.
 
-use std::{io, path::Path, sync::mpsc};
+use std::{io, path::Path};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use log::warn;
@@ -15,11 +15,11 @@ use crate::{
             refresh_file_list,
         },
         sort::apply_sort,
+        LoopState,
     },
     exit::may_exit,
     operations::{
-        create_item_based_on_type, delete_with_progress, handle_delete_based_on_type,
-        handle_rename, CopyMessage, DeleteMessage,
+        create_item_based_on_type, delete_with_progress, handle_delete_based_on_type, handle_rename,
     },
     status_bar::StatusBar,
     utils::{check_if_exists, get_file_path_data, SortBy, SortType},
@@ -153,18 +153,21 @@ pub fn handle_create_key(
 }
 
 /// Delete confirmation. Returns true when `q` confirmed quitting, so the loop should end.
-#[allow(clippy::too_many_arguments)]
 pub fn handle_delete_key(
     key: KeyEvent,
-    app: &mut App,
-    state: &mut ListState,
-    status_bar: &mut StatusBar,
-    copy_receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
-    delete_receiver: &mut Option<mpsc::Receiver<DeleteMessage>>,
+    loop_state: &mut LoopState,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    quit_error: &mut Option<String>,
     fallback_start_path: &str,
 ) -> anyhow::Result<bool> {
+    let LoopState {
+        app,
+        state,
+        status_bar,
+        copy_receiver,
+        delete_receiver,
+        quit_error,
+        ..
+    } = loop_state;
     match key.code {
         KeyCode::Char('q') => {
             app.close_delete_popup();

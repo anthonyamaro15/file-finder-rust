@@ -5,7 +5,6 @@ use std::{
     io,
     path::Path,
     process::{Command, Stdio},
-    sync::mpsc,
 };
 
 use crossterm::{
@@ -14,22 +13,20 @@ use crossterm::{
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
 use log::debug;
-use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
+use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::{
-    app::{App, InputMode, PanePosition, SearchScope, ViewMode},
+    app::{InputMode, PanePosition, SearchScope, ViewMode},
     config::Action,
     event::{
         file_actions::{containing_directory_or_current, current_refresh_directory, rename_target},
         keymap::KeymapRuntime,
         navigation::{next_index_wrapping, parent_directory, previous_index_wrapping},
-        LoopControl,
+        LoopControl, LoopState,
     },
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
-    operations::{self, copy_dir_file_with_progress_cancellable, CopyMessage},
-    render::image_renderer::ImageRenderer,
-    status_bar::StatusBar,
+    operations::{self, copy_dir_file_with_progress_cancellable},
     utils::{
         generate_copy_file_dir_name, get_curr_path, get_file_path_data, get_inner_files_info,
         is_file,
@@ -37,21 +34,24 @@ use crate::{
 };
 
 /// Handle a key in Normal mode and tell the main loop how to go on.
-#[allow(clippy::too_many_arguments)]
 pub fn handle_normal_key(
     key: KeyEvent,
-    app: &mut App,
-    state: &mut ListState,
-    file_reader_content: &mut FileContent,
-    image_renderer: &mut ImageRenderer,
+    loop_state: &mut LoopState,
     keymap_runtime: &mut KeymapRuntime,
-    status_bar: &mut StatusBar,
-    copy_receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    quit_error: &mut Option<String>,
-    selected_file: &mut Option<String>,
     fallback_start_path: &str,
 ) -> io::Result<LoopControl> {
+    let LoopState {
+        app,
+        state,
+        file_reader_content,
+        image_renderer,
+        status_bar,
+        copy_receiver,
+        selected_file,
+        quit_error,
+        ..
+    } = loop_state;
     if let Some(action) = keymap_runtime.resolve_normal(key) {
         match action {
             Action::SearchCurrent => {

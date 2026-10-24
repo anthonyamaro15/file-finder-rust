@@ -7,39 +7,41 @@ use ratatui::{
     prelude::*,
     style::{Color, Style},
     symbols::border,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Terminal,
 };
 use ratatui_image::StatefulImage;
 
 use crate::{
-    app::{App, InputMode, ViewMode},
+    app::{InputMode, ViewMode},
     config::Settings,
-    file_reader_content::{FileContent, FileType},
+    event::LoopState,
+    file_reader_content::FileType,
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, image_renderer::ImageRenderer, input_popup_cursor_position,
-        split_popup_area_vertical,
+        draw_input_popup, draw_popup, input_popup_cursor_position, split_popup_area_vertical,
     },
-    status_bar::StatusBar,
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
 };
 
 /// Draw the frame, lending the image and right-pane list states to the widgets.
-#[allow(clippy::too_many_arguments)]
 pub fn draw(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-    state: &mut ListState,
-    file_reader_content: &FileContent,
-    image_renderer: &mut ImageRenderer,
+    loop_state: &mut LoopState,
     settings: &Settings,
-    status_bar: &StatusBar,
     widgets_ui: &Ui,
     find_hint: &str,
 ) -> io::Result<()> {
+    let LoopState {
+        app,
+        state,
+        file_reader_content,
+        image_renderer,
+        status_bar,
+        ..
+    } = loop_state;
     // Extract image state before drawing (needed for mutable access in render_stateful_widget)
     let has_image = image_renderer.has_image();
     let image_info = image_renderer.get_info().to_string();

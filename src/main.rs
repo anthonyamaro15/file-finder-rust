@@ -3,7 +3,7 @@
 // ============================================================
 
 // Standard library imports
-use std::{io, path::Path, sync::mpsc};
+use std::{io, path::Path};
 
 // External crate imports
 use crossterm::{
@@ -25,9 +25,8 @@ use file_finder::{
     cli::{compute_effective_config, CliArgs},
     config::Action,
     directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
-    event::{keymap::KeymapRuntime, search::handle_search_key, LoopControl},
+    event::{keymap::KeymapRuntime, search::handle_search_key, LoopControl, LoopState},
     file_reader_content::FileContent,
-    operations::{CopyMessage, DeleteMessage},
     render::{configured_action_key_labels, image_renderer::ImageRenderer},
     status_bar::StatusBar,
     ui::Ui,
@@ -116,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file_reader_content = FileContent::new(ps, ts);
     // Apply syntax theme from settings
     file_reader_content.set_syntax_theme(&settings.syntax_theme);
-    let mut image_renderer = ImageRenderer::new();
+    let image_renderer = ImageRenderer::new();
     // Setup terminal
 
     // Initial file list uses default sort (will be stored in app.sort_by/sort_type)
@@ -167,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => " find (i)".to_string(),
     };
 
-    let mut store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
+    let store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
         match load_directory_from_file(&settings.cache_directory.to_owned()) {
             Ok(res) => {
                 debug!("Loading directory cache from file");
@@ -234,78 +233,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut read_only_state = ListState::default();
     read_only_state.select(Some(0));
 
-    // Copy progress receiver (for async copy operations)
-    let mut copy_receiver: Option<mpsc::Receiver<CopyMessage>> = None;
-
-    // Delete progress receiver (for async delete operations)
-    let mut delete_receiver: Option<mpsc::Receiver<DeleteMessage>> = None;
-
-    // File chosen with Enter, handled after the terminal is restored
-    let mut selected_file: Option<String> = None;
-    let mut quit_error = None;
+    let mut loop_state = LoopState {
+        app,
+        state,
+        file_reader_content,
+        image_renderer,
+        status_bar,
+        store,
+        copy_receiver: None,
+        delete_receiver: None,
+        selected_file: None,
+        quit_error: None,
+    };
 
     // Main loop
     loop {
         // Update status bar with current app state
-        status_bar.update(&app);
+        loop_state.status_bar.update(&loop_state.app);
 
         background::start_debounced_preview(
-            &mut app,
-            &mut file_reader_content,
-            &mut image_renderer,
+            &mut loop_state.app,
+            &mut loop_state.file_reader_content,
+            &mut loop_state.image_renderer,
         );
-        background::poll_preview_result(&mut app, &mut file_reader_content, &mut image_renderer);
-        background::poll_image_result(&mut app, &file_reader_content, &mut image_renderer);
+        background::poll_preview_result(
+            &mut loop_state.app,
+            &mut loop_state.file_reader_content,
+            &mut loop_state.image_renderer,
+        );
+        background::poll_image_result(
+            &mut loop_state.app,
+            &loop_state.file_reader_content,
+            &mut loop_state.image_renderer,
+        );
 
         render::frame::draw(
             &mut terminal,
-            &mut app,
-            &mut state,
-            &file_reader_content,
-            &mut image_renderer,
+            &mut loop_state,
             &settings,
-            &status_bar,
             &widgets_ui,
             &find_hint,
         )?;
 
         background::refresh_after_copy(
-            &mut app,
-            &mut state,
-            &mut status_bar,
-            &mut copy_receiver,
+            &mut loop_state.app,
+            &mut loop_state.state,
+            &mut loop_state.status_bar,
+            &mut loop_state.copy_receiver,
             &startup_paths.refresh_fallback_path,
         );
 
         background::poll_job(
-            &mut app,
-            &mut state,
-            &mut status_bar,
+            &mut loop_state.app,
+            &mut loop_state.state,
+            &mut loop_state.status_bar,
             &startup_paths.refresh_fallback_path,
         );
         background::poll_delete(
-            &mut app,
-            &mut state,
-            &mut status_bar,
-            &mut delete_receiver,
+            &mut loop_state.app,
+            &mut loop_state.state,
+            &mut loop_state.status_bar,
+            &mut loop_state.delete_receiver,
             &startup_paths.refresh_fallback_path,
         );
         background::poll_file_system_events(
-            &mut app,
-            &mut state,
+            &mut loop_state.app,
+            &mut loop_state.state,
             &startup_paths.refresh_fallback_path,
         );
         background::poll_cache_loading(
-            &mut app,
-            &mut store,
+            &mut loop_state.app,
+            &mut loop_state.store,
             &settings,
             &startup_paths.refresh_fallback_path,
         );
         background::sync_selection(
-            &mut app,
-            &mut state,
-            &mut file_reader_content,
-            &mut image_renderer,
+            &mut loop_state.app,
+            &mut loop_state.state,
+            &mut loop_state.file_reader_content,
+            &mut loop_state.image_renderer,
         );
 
         // Handle input with timeout for dynamic progress updates
@@ -313,19 +319,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(available) = crossterm_event::poll(timeout) {
             if available {
                 if let Event::Key(key) = crossterm_event::read()? {
-                    match app.input_mode {
+                    match loop_state.app.input_mode {
                         InputMode::Normal => match normal::handle_normal_key(
                             key,
-                            &mut app,
-                            &mut state,
-                            &mut file_reader_content,
-                            &mut image_renderer,
+                            &mut loop_state,
                             &mut keymap_runtime,
-                            &mut status_bar,
-                            &mut copy_receiver,
                             &mut terminal,
-                            &mut quit_error,
-                            &mut selected_file,
                             &startup_paths.refresh_fallback_path,
                         )? {
                             LoopControl::Continue => continue,
@@ -336,37 +335,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchRename if key.kind == KeyEventKind::Press => {
                             popups::handle_rename_key(
                                 key,
-                                &mut app,
-                                &mut state,
-                                &mut status_bar,
+                                &mut loop_state.app,
+                                &mut loop_state.state,
+                                &mut loop_state.status_bar,
                                 &startup_paths.refresh_fallback_path,
                             )?
                         }
                         InputMode::WatchCreate if key.kind == KeyEventKind::Press => {
-                            popups::handle_create_key(key, &mut app, &mut state, &mut status_bar)?
+                            popups::handle_create_key(
+                                key,
+                                &mut loop_state.app,
+                                &mut loop_state.state,
+                                &mut loop_state.status_bar,
+                            )?
                         }
 
                         InputMode::Editing if key.kind == KeyEventKind::Press => {
-                            handle_search_key(&mut app, key.code, &store);
+                            handle_search_key(&mut loop_state.app, key.code, &loop_state.store);
                         }
                         InputMode::WatchDelete => {
                             if popups::handle_delete_key(
                                 key,
-                                &mut app,
-                                &mut state,
-                                &mut status_bar,
-                                &mut copy_receiver,
-                                &mut delete_receiver,
+                                &mut loop_state,
                                 &mut terminal,
-                                &mut quit_error,
                                 &startup_paths.refresh_fallback_path,
                             )? {
                                 break;
                             }
                         }
-                        InputMode::WatchSort => popups::handle_sort_key(key, &mut app)?,
+                        InputMode::WatchSort => popups::handle_sort_key(key, &mut loop_state.app)?,
 
-                        InputMode::WatchKeyBinding => popups::handle_keybinding_key(key, &mut app),
+                        InputMode::WatchKeyBinding => {
+                            popups::handle_keybinding_key(key, &mut loop_state.app)
+                        }
                         _ => {}
                     }
                 }
@@ -385,11 +386,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal.show_cursor()?;
     terminal.clear()?;
 
-    if let Some(error) = quit_error {
+    if let Some(error) = loop_state.quit_error {
         eprintln!("ff: {error}");
     }
-    if let Some(file) = selected_file {
-        if let Err(message) = handle_file_selection(&file, app.get_selected_ide()) {
+    if let Some(file) = loop_state.selected_file {
+        if let Err(message) = handle_file_selection(&file, loop_state.app.get_selected_ide()) {
             eprintln!("ff: {}", message);
             std::process::exit(1);
         }
