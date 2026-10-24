@@ -7,9 +7,9 @@ use simplelog::*;
 use std::fs::File;
 
 /// Initialize logging. Never logs to the terminal, since the TUI owns stdout.
-/// By default, warn-level logs go to `~/.config/ff/ff.log`, truncated on each start;
-/// if that file can't be created, no logger is installed.
+/// By default, warn-level logs go to `~/.config/ff/ff.log`, truncated on each start.
 /// Set FF_LOG_TO_FILE=1 to enable debug logging to debug.log.
+/// If the log file can't be created, no logger is installed.
 pub fn init() {
     // Do not create a debug.log file by default.
     // If you want file logging, opt-in with: FF_LOG_TO_FILE=1
@@ -17,18 +17,12 @@ pub fn init() {
 
     if log_to_file {
         // Opt-in file logger (debug level)
-        match File::create("debug.log") {
-            Ok(log_file) => {
-                let _ = CombinedLogger::init(vec![WriteLogger::new(
-                    LevelFilter::Debug,
-                    Config::default(),
-                    log_file,
-                )]);
-            }
-            Err(_) => {
-                // Fallback to console warn-level if file cannot be created
-                let _ = SimpleLogger::init(LevelFilter::Warn, Config::default());
-            }
+        if let Ok(log_file) = File::create("debug.log") {
+            let _ = CombinedLogger::init(vec![WriteLogger::new(
+                LevelFilter::Debug,
+                Config::default(),
+                log_file,
+            )]);
         }
     } else if let Some(log_file) = default_log_file() {
         // Default: warn level to ~/.config/ff/ff.log

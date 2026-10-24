@@ -13,7 +13,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::debug;
+use log::{debug, error};
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
@@ -216,8 +216,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 DisableMouseCapture,
                 crossterm::cursor::Show
             );
+            original_panic_hook(panic_info);
+        } else {
+            error!("Background thread panicked: {panic_info}");
         }
-        original_panic_hook(panic_info);
     }));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
