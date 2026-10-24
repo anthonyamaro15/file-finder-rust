@@ -1049,6 +1049,8 @@ impl App {
 
         // Stop any existing watcher
         self.stop_watching();
+        // Follow the directory even if it can't be watched.
+        self.current_directory = path.to_string_lossy().to_string();
 
         // Create new watcher
         let mut watcher = FileSystemWatcher::new()
@@ -1059,9 +1061,7 @@ impl App {
             .watch_directory(path)
             .map_err(|e| format!("Failed to start watching directory: {}", e))?;
 
-        // Store the watcher and current directory
         self.file_watcher = Some(watcher);
-        self.current_directory = path.to_string_lossy().to_string();
 
         debug!("Started watching directory: {}", path.display());
         Ok(())

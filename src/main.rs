@@ -415,7 +415,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                         }
-                        InputMode::WatchSort => popups::handle_sort_key(key, &mut loop_state.app)?,
+                        InputMode::WatchSort => popups::handle_sort_key(
+                            key,
+                            &mut loop_state.app,
+                            &mut loop_state.status_bar,
+                        )?,
 
                         InputMode::WatchKeyBinding => {
                             popups::handle_keybinding_key(key, &mut loop_state.app)
