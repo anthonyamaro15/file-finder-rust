@@ -2,6 +2,7 @@
 
 pub mod copy;
 pub mod file_ops;
+pub(crate) mod trash;
 
 // Re-export items used by main.rs
 pub use copy::{

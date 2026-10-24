@@ -48,6 +48,7 @@ pub enum InputMode {
     Normal,
     Editing,
     WatchDelete,
+    WatchTrash,
     WatchCreate,
     WatchRename,
     WatchSort,
@@ -454,7 +455,7 @@ pub struct App {
     // Async image loading (separate channel because DynamicImage has different traits)
     pub image_receiver: Option<mpsc::Receiver<ImageLoadResult>>,
 
-    /// Running move or ZIP extraction, if any.
+    /// Running move, trash, or ZIP extraction, if any.
     pub job: Option<BackgroundJob>,
     /// The open "Copy to…"/"Move to…" picker.
     pub folder_picker: Option<FolderPicker>,
@@ -471,7 +472,7 @@ pub struct ImageLoadResult {
     pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
 }
 
-/// One-shot background operation (move, ZIP extraction) that reports a single result.
+/// One-shot background operation (move, trash, ZIP extraction) that reports a single result.
 #[derive(Debug)]
 pub struct BackgroundJob {
     /// Operation name for warnings, e.g. "move".
@@ -1417,6 +1418,14 @@ impl App {
         self.delete_target_path = Some(selected);
         self.render_popup = true;
         self.input_mode = InputMode::WatchDelete;
+    }
+
+    /// Freeze the highlighted target for the Trash confirmation popup.
+    pub fn prepare_trash(&mut self, selected_index: Option<usize>) {
+        self.prepare_delete(selected_index);
+        if self.delete_target_path.is_some() {
+            self.input_mode = InputMode::WatchTrash;
+        }
     }
 
     /// Close a delete popup and consume its target, whether confirmed or cancelled.

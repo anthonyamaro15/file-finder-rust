@@ -36,7 +36,11 @@ pub(crate) fn may_exit<B: Backend>(
     if let Some(job) = &app.job {
         job.cancel.store(true, Ordering::Relaxed);
     }
-    let message = format!("Stopping the {operation} and removing partial files…");
+    let message = if operation == "trash" {
+        "Waiting for the move to Trash to finish…".to_string()
+    } else {
+        format!("Stopping the {operation} and removing partial files…")
+    };
     status_bar.show_info(message.clone(), None);
     // A draw failure must not bypass the wait and leave a worker writing.
     if let Err(error) = terminal.draw(|frame| {
@@ -202,6 +206,73 @@ mod tests {
             assert_eq!(result, (true, false, true, Some(error.into())));
             waiter.join().unwrap();
         }
+    }
+
+    #[test]
+    fn confirmed_quit_waits_for_uncancellable_trash() {
+        use std::{
+            sync::atomic::Ordering,
+            time::{Duration, Instant},
+        };
+        let mut app = App::new(Vec::new());
+        let (release_tx, release_rx) = mpsc::channel();
+        crate::event::popups::start_trash(&mut app, None, "notes.txt".into(), move |_| {
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let cancel = app.job.as_ref().unwrap().cancel.clone();
+        let mut status = StatusBar::new();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 6)).unwrap();
+        let mut receiver = None;
+        let mut quit_error = None;
+        assert!(!may_exit(
+            &mut app,
+            &mut status,
+            "q",
+            &mut receiver,
+            &mut terminal,
+            &mut quit_error
+        ));
+        assert!(!cancel.load(Ordering::Relaxed));
+        let (returned_tx, returned_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let allowed = may_exit(
+                &mut app,
+                &mut status,
+                "q",
+                &mut receiver,
+                &mut terminal,
+                &mut quit_error,
+            );
+            returned_tx
+                .send((allowed, app.job.is_none(), status.error_message, quit_error))
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !cancel.load(Ordering::Relaxed) {
+            assert!(
+                Instant::now() < deadline,
+                "quit never requested cancellation"
+            );
+            std::thread::yield_now();
+        }
+        assert!(matches!(
+            returned_rx.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_tx.send(()).unwrap();
+        let result = returned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        waiter.join().unwrap();
+        assert_eq!(
+            result,
+            (
+                true,
+                true,
+                Some("Waiting for the move to Trash to finish…".into()),
+                None
+            )
+        );
     }
 
     #[test]

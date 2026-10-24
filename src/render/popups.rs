@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -84,12 +84,18 @@ pub fn generate_sort_indicator(sort_by: &SortBy, sort_type: &SortType) -> String
     format!("Current: {} {}", field, direction)
 }
 
-/// Create the delete confirmation popup with file info.
+/// Keep the confirmation and warning visible on a typical 24-row terminal.
+pub fn draw_delete_popup(rect: Rect) -> Rect {
+    draw_fixed_height_popup(rect, 60, 50, 9)
+}
+
+/// Create the Trash or permanent-delete confirmation popup with file info.
 pub fn create_delete_confirmation_popup<'a>(
     name: &str,
     is_dir: bool,
     _file_count: Option<usize>,
     total_size: Option<u64>,
+    to_trash: bool,
 ) -> Paragraph<'a> {
     let info_line = if is_dir {
         // For directories, stats are calculated async, so show placeholder
@@ -105,8 +111,17 @@ pub fn create_delete_confirmation_popup<'a>(
 
     let content = vec![
         Line::from(""),
-        Line::from(format!("Delete \"{}\"?", name)),
+        Line::from(if to_trash {
+            format!("Move '{name}' to Trash?")
+        } else {
+            format!("Permanently delete '{name}'?")
+        }),
         Line::from(info_line),
+        Line::from(if to_trash {
+            ""
+        } else {
+            "This can't be undone."
+        }),
         Line::from(""),
         Line::from("Press 'y' to confirm, 'n' to cancel"),
     ];
@@ -116,9 +131,14 @@ pub fn create_delete_confirmation_popup<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .title("Confirm Delete")
+                .title(if to_trash {
+                    "Move to Trash"
+                } else {
+                    "Permanent Delete"
+                })
                 .style(OneDarkTheme::error()),
         )
+        .wrap(Wrap { trim: true })
         .centered()
 }
 
@@ -296,7 +316,8 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "".to_string(),
         "── File Operations ──".to_string(),
         "  a               Create new file/directory".to_string(),
-        "  d               Delete (with confirmation)".to_string(),
+        "  d               Move to Trash (with confirmation)".to_string(),
+        "  D (Shift+D)     Permanently delete (with confirmation)".to_string(),
         "  r               Rename file/directory".to_string(),
         "  c               Copy file/directory".to_string(),
         "  Shift+C         Copy to… (pick a folder)".to_string(),
@@ -460,6 +481,56 @@ mod tests {
         assert!(screen.contains("Move 'notes.txt' to…"));
         assert!(screen.contains("Projects  /w/Projects"));
         assert!(screen.contains("xEND"));
+    }
+
+    #[test]
+    fn permanent_delete_popup_warns_that_it_cannot_be_undone() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    create_delete_confirmation_popup("notes.txt", false, None, Some(5), false),
+                    draw_delete_popup(frame.size()),
+                );
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Permanently delete 'notes.txt'?"));
+        assert!(screen.contains("This can't be undone."));
+        assert!(screen.contains("'y' to confirm, 'n' to cancel"));
+    }
+
+    #[test]
+    fn trash_popup_offers_trash_without_the_permanent_delete_warning() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    create_delete_confirmation_popup("notes", true, None, None, true),
+                    draw_delete_popup(frame.size()),
+                );
+            })
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Move 'notes' to Trash?"));
+        assert!(screen.contains("(directory)"));
+        assert!(screen.contains("'y' to confirm, 'n' to cancel"));
+        assert!(!screen.contains("can't be undone"));
+        assert!(!screen.contains("Permanently delete"));
     }
 
     #[test]
