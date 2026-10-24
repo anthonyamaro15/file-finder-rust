@@ -633,7 +633,7 @@ pub fn sync_selection(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::ViewMode;
     use crate::operations::copy_dir_file_with_progress_cancellable;
@@ -641,7 +641,7 @@ mod tests {
     use crate::utils::{generate_copy_file_dir_name, SortBy, SortType};
     use std::path::PathBuf;
 
-    fn running_copy_app() -> App {
+    pub(crate) fn running_copy_app() -> App {
         let mut app = App::new(Vec::new());
         app.start_copy(PathBuf::from("copy_target"), None);
         app.copy_progress_message = "Copying...".into();
@@ -650,7 +650,7 @@ mod tests {
         app
     }
 
-    fn assert_copy_finished(app: &App, receiver: &Option<mpsc::Receiver<CopyMessage>>) {
+    pub(crate) fn assert_copy_finished(app: &App, receiver: &Option<mpsc::Receiver<CopyMessage>>) {
         assert!(!app.copy_in_progress);
         assert!(app.copy_progress_message.is_empty());
         assert_eq!(app.copy_files_processed, 0);
@@ -659,7 +659,7 @@ mod tests {
         assert!(receiver.is_none());
     }
 
-    fn copy_progress() -> CopyMessage {
+    pub(crate) fn copy_progress() -> CopyMessage {
         CopyMessage::Progress {
             files_processed: 3,
             total_files: 10,
