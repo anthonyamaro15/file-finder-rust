@@ -8,7 +8,7 @@ use std::path::Path;
 use ratatui::widgets::ListState;
 
 use crate::app::SearchResult;
-use crate::utils::files::{get_inner_files_info, SortBy, SortType};
+use crate::utils::files::{get_file_path_data, SortBy, SortType};
 
 /// Represents a single pane in the file browser.
 /// Each pane has its own directory, file list, and selection state.
@@ -194,14 +194,12 @@ impl Pane {
 
     /// Refresh files from the current directory
     pub fn refresh_files(&mut self) {
-        let new_files = get_inner_files_info(
+        let new_files = get_file_path_data(
             self.current_directory.clone(),
             self.show_hidden_files,
             SortBy::Default,
             &SortType::ASC,
         )
-        .ok()
-        .flatten()
         .unwrap_or_default();
 
         self.files = new_files;
@@ -209,25 +207,94 @@ impl Pane {
     }
 
     /// Navigate to a new directory
-    pub fn navigate_to_directory(&mut self, path: &str) {
+    pub fn navigate_to_directory(&mut self, path: &str) -> anyhow::Result<()> {
+        let files = get_file_path_data(
+            path.to_string(),
+            self.show_hidden_files,
+            SortBy::Default,
+            &SortType::ASC,
+        )?;
+        // Going to the parent selects the directory just left; otherwise use the first row.
+        let selected_index = files
+            .iter()
+            .position(|file| file == &self.current_directory)
+            .or_else(|| (!files.is_empty()).then_some(0));
+
         self.current_directory = path.to_string();
         self.clear_search();
-        self.refresh_files();
+        self.files = files;
+        self.update_file_references();
 
-        // Reset selection to first item
-        if !self.files.is_empty() {
-            self.selected_index = Some(0);
-            self.list_state.select(Some(0));
-        } else {
-            self.selected_index = None;
-            self.list_state.select(None);
-        }
+        self.selected_index = selected_index;
+        self.list_state.select(selected_index);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_failure_preserves_directory_listing_and_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().to_string_lossy().into_owned();
+        let files = vec![dir.path().join("file.txt").to_string_lossy().into_owned()];
+        let mut pane = Pane::new(current.clone(), files.clone());
+        pane.search_input = "file".into();
+
+        let result = pane.navigate_to_directory(dir.path().join("missing").to_str().unwrap());
+
+        assert!(result.is_err());
+        assert_eq!(pane.current_directory, current);
+        assert_eq!(pane.files, files);
+        assert_eq!(pane.read_only_files, files);
+        assert_eq!(pane.selected_index, Some(0));
+        assert_eq!(pane.list_state.selected(), Some(0));
+        assert_eq!(pane.search_input, "file");
+    }
+
+    #[test]
+    fn navigating_to_parent_selects_the_directory_just_left() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("alpha")).unwrap();
+        std::fs::create_dir(dir.path().join("zulu")).unwrap();
+        let parent = dir.path().to_string_lossy().into_owned();
+        let files = crate::utils::files::get_file_path_data(
+            parent.clone(),
+            false,
+            SortBy::Default,
+            &SortType::ASC,
+        )
+        .unwrap();
+        // Choose a directory that isn't the first row, regardless of filesystem order.
+        let previous = files[1].clone();
+        let mut pane = Pane::new(previous.clone(), Vec::new());
+
+        pane.navigate_to_directory(&parent).unwrap();
+
+        assert_eq!(pane.current_directory, parent);
+        assert_eq!(pane.get_selected_path(), Some(previous));
+        assert_eq!(pane.list_state.selected(), pane.selected_index);
+    }
+
+    #[test]
+    fn navigating_into_directory_selects_first_row_or_none_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut pane = Pane::new(dir.path().to_string_lossy().into_owned(), Vec::new());
+
+        pane.navigate_to_directory(child.to_str().unwrap()).unwrap();
+        assert_eq!(pane.selected_index, None);
+        assert_eq!(pane.list_state.selected(), None);
+
+        std::fs::write(child.join("file.txt"), "content").unwrap();
+        pane.navigate_to_directory(child.to_str().unwrap()).unwrap();
+        assert_eq!(pane.selected_index, Some(0));
+        assert_eq!(pane.list_state.selected(), Some(0));
+        assert_eq!(pane.read_only_files, pane.files);
+    }
 
     #[test]
     fn test_pane_new_empty() {

@@ -230,8 +230,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = ListState::default();
     state.select(Some(0)); // Select the first item by default
     debug!("{:?}", state);
-    let mut read_only_state = ListState::default();
-    read_only_state.select(Some(0));
 
     let mut loop_state = LoopState {
         app,

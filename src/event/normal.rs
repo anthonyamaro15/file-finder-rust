@@ -27,10 +27,7 @@ use crate::{
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
     operations::{self, copy_dir_file_with_progress_cancellable},
-    utils::{
-        generate_copy_file_dir_name, get_curr_path, get_file_path_data, get_inner_files_info,
-        is_file,
-    },
+    utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
 };
 
 /// Handle a key in Normal mode and tell the main loop how to go on.
@@ -106,7 +103,10 @@ pub fn handle_normal_key(
                 let current_dir = app.right_pane.current_directory.clone();
                 if let Some(parent) = parent_directory(Path::new(&current_dir)) {
                     if let Some(parent_str) = parent.to_str() {
-                        app.right_pane.navigate_to_directory(parent_str);
+                        if let Err(e) = app.right_pane.navigate_to_directory(parent_str) {
+                            status_bar
+                                .show_error(format!("Could not open '{parent_str}': {e:#}"), None);
+                        }
                     }
                 }
             } else if let Some(selected) = app.get_selected_path(state.selected()) {
@@ -119,44 +119,47 @@ pub fn handle_normal_key(
                         .map(|path| path.to_string_lossy().to_string());
 
                     if let Some(new_path) = new_path {
-                        let files_strings = get_inner_files_info(
+                        match get_file_path_data(
                             new_path.clone(),
                             app.show_hidden_files,
                             app.sort_by.clone(),
                             &app.sort_type,
-                        )
-                        .unwrap();
+                        ) {
+                            Ok(f_s) => {
+                                let previous_dir = get_curr_path(selected.clone());
+                                // Fall back to the first row if the directory is absent.
+                                app.preserved_selection_index = Some(0);
+                                app.refresh_files_after_operation(f_s, state, Some(previous_dir));
 
-                        if let Some(f_s) = files_strings {
-                            app.clear_search();
-                            app.read_only_files = f_s.clone();
-                            app.files = f_s;
-                            app.update_file_references();
-                            state.select(Some(0));
-
-                            // Start watching the new directory
-                            if let Err(e) = app.start_watching_directory(&new_path) {
-                                debug!("Failed to start watching directory '{}': {}", new_path, e);
-                            } else {
-                                debug!("Started watching directory: {}", new_path);
+                                // Start watching the new directory
+                                if let Err(e) = app.start_watching_directory(&new_path) {
+                                    debug!(
+                                        "Failed to start watching directory '{}': {}",
+                                        new_path, e
+                                    );
+                                } else {
+                                    debug!("Started watching directory: {}", new_path);
+                                }
                             }
+                            Err(e) => status_bar
+                                .show_error(format!("Could not open '{new_path}': {e:#}"), None),
                         }
                     }
                 }
             } else {
-                let files_strings = get_inner_files_info(
+                match get_file_path_data(
                     app.prev_dir.clone(),
                     app.show_hidden_files,
                     app.sort_by.clone(),
                     &app.sort_type,
-                )
-                .unwrap();
-
-                if let Some(f_s) = files_strings {
-                    app.read_only_files = f_s.clone();
-                    app.files = f_s;
-                    app.update_file_references();
-                    state.select(Some(0));
+                ) {
+                    Ok(f_s) => {
+                        let previous_dir = current_refresh_directory(app, fallback_start_path);
+                        app.preserved_selection_index = Some(0);
+                        app.refresh_files_after_operation(f_s, state, Some(previous_dir));
+                    }
+                    Err(e) => status_bar
+                        .show_error(format!("Could not open '{}': {e:#}", app.prev_dir), None),
                 }
             }
         }
@@ -165,7 +168,10 @@ pub fn handle_normal_key(
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 if let Some(selected) = app.right_pane.get_selected_path() {
                     if !is_file(selected.clone()) {
-                        app.right_pane.navigate_to_directory(&selected);
+                        if let Err(e) = app.right_pane.navigate_to_directory(&selected) {
+                            status_bar
+                                .show_error(format!("Could not open '{selected}': {e:#}"), None);
+                        }
                     }
                 }
             } else {
@@ -175,36 +181,37 @@ pub fn handle_normal_key(
                 if let Some(selected) = selected_path {
                     app.prev_dir = get_curr_path(selected.to_string());
                     if !is_file(selected.to_string()) {
-                        match get_inner_files_info(
+                        match get_file_path_data(
                             selected.to_string(),
                             app.show_hidden_files,
                             app.sort_by.clone(),
                             &app.sort_type,
                         ) {
-                            Ok(files_strings) => {
-                                if let Some(files_strs) = files_strings {
-                                    // Exit search mode when navigating into a directory
-                                    app.clear_search();
-                                    app.input_mode = InputMode::Normal;
+                            Ok(files_strs) => {
+                                // Exit search mode when navigating into a directory
+                                app.clear_search();
+                                app.input_mode = InputMode::Normal;
 
-                                    app.read_only_files = files_strs.clone();
-                                    app.files = files_strs;
-                                    app.update_file_references();
-                                    state.select(Some(0));
+                                app.read_only_files = files_strs.clone();
+                                app.files = files_strs;
+                                app.update_file_references();
+                                state.select(Some(0));
 
-                                    // Start watching the new directory
-                                    if let Err(e) = app.start_watching_directory(&selected) {
-                                        debug!(
-                                            "Failed to start watching directory '{}': {}",
-                                            selected, e
-                                        );
-                                    } else {
-                                        debug!("Started watching directory: {}", selected);
-                                    }
+                                // Start watching the new directory
+                                if let Err(e) = app.start_watching_directory(&selected) {
+                                    debug!(
+                                        "Failed to start watching directory '{}': {}",
+                                        selected, e
+                                    );
+                                } else {
+                                    debug!("Started watching directory: {}", selected);
                                 }
                             }
                             Err(e) => {
-                                println!("Error: {}", e);
+                                status_bar.show_error(
+                                    format!("Could not open '{selected}': {e:#}"),
+                                    None,
+                                );
                             }
                         }
                     }

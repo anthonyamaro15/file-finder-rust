@@ -112,35 +112,6 @@ pub fn convert_file_path_to_string(
         .collect()
 }
 
-/// Get file list from a directory with filtering and sorting.
-pub fn get_inner_files_info(
-    file: String,
-    show_hidden_files: bool,
-    sort_by: SortBy,
-    sort_type: &SortType,
-) -> anyhow::Result<Option<Vec<String>>> {
-    let entries = match fs::read_dir(file) {
-        Ok(en) => {
-            let val = en.map(|res| res.map(|e| e.path())).collect();
-            match val {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("Error: {}", e);
-                    return Ok(None);
-                }
-            }
-        }
-        Err(e) => {
-            println!("Error: {}", e);
-            return Ok(None);
-        }
-    };
-
-    let file_strings =
-        convert_file_path_to_string(entries, show_hidden_files, sort_by, sort_type.clone());
-    Ok(Some(file_strings))
-}
-
 /// Get sorted file paths from a starting directory.
 pub fn get_file_path_data(
     start_path: String,
@@ -214,6 +185,43 @@ pub fn get_curr_path(path: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_path_data_reports_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+
+        let error = get_file_path_data(missing.clone(), false, SortBy::Default, &SortType::ASC)
+            .unwrap_err();
+
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_path_data_reports_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let permissions = fs::metadata(dir.path()).unwrap().permissions();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o000)).unwrap();
+
+        let path = dir.path().to_string_lossy().into_owned();
+        let result = get_file_path_data(path.clone(), false, SortBy::Default, &SortType::ASC);
+        fs::set_permissions(dir.path(), permissions).unwrap();
+
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn test_is_file_with_directory() {

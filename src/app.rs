@@ -1624,6 +1624,35 @@ mod tests {
     }
 
     #[test]
+    fn parent_listing_selects_previous_directory_or_first_row() {
+        for (previous, files, expected) in [
+            ("parent/zulu", vec!["parent/alpha", "parent/zulu"], Some(1)),
+            (
+                "parent/absent",
+                vec!["parent/alpha", "parent/zulu"],
+                Some(0),
+            ),
+            ("parent/absent", Vec::new(), None),
+        ] {
+            let mut app = App::new(vec![format!("{previous}/child")]);
+            let mut state = ListState::default();
+            state.select(Some(9));
+            app.preserved_selection_index = Some(0);
+
+            app.refresh_files_after_operation(
+                files.into_iter().map(String::from).collect(),
+                &mut state,
+                Some(previous.into()),
+            );
+
+            assert_eq!(state.selected(), expected);
+            assert_eq!(app.curr_index, expected);
+            assert_eq!(app.preserved_selection_index, expected);
+            assert_eq!(app.read_only_files, app.files);
+        }
+    }
+
+    #[test]
     fn operation_refresh_missing_path_keeps_the_clamped_selection() {
         for (preserved, selected, files, expected) in [
             (
