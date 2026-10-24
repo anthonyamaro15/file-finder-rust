@@ -27,10 +27,7 @@ use crate::{
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
     operations::{self, copy_dir_file_with_progress_cancellable},
-    utils::{
-        generate_copy_file_dir_name, get_curr_path, get_file_path_data, get_inner_files_info,
-        is_file,
-    },
+    utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
 };
 
 /// Handle a key in Normal mode and tell the main loop how to go on.
@@ -122,7 +119,7 @@ pub fn handle_normal_key(
                         .map(|path| path.to_string_lossy().to_string());
 
                     if let Some(new_path) = new_path {
-                        match get_inner_files_info(
+                        match get_file_path_data(
                             new_path.clone(),
                             app.show_hidden_files,
                             app.sort_by.clone(),
@@ -150,7 +147,7 @@ pub fn handle_normal_key(
                     }
                 }
             } else {
-                match get_inner_files_info(
+                match get_file_path_data(
                     app.prev_dir.clone(),
                     app.show_hidden_files,
                     app.sort_by.clone(),
@@ -184,7 +181,7 @@ pub fn handle_normal_key(
                 if let Some(selected) = selected_path {
                     app.prev_dir = get_curr_path(selected.to_string());
                     if !is_file(selected.to_string()) {
-                        match get_inner_files_info(
+                        match get_file_path_data(
                             selected.to_string(),
                             app.show_hidden_files,
                             app.sort_by.clone(),

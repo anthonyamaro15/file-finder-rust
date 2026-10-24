@@ -8,7 +8,7 @@ use std::path::Path;
 use ratatui::widgets::ListState;
 
 use crate::app::SearchResult;
-use crate::utils::files::{get_inner_files_info, SortBy, SortType};
+use crate::utils::files::{get_file_path_data, SortBy, SortType};
 
 /// Represents a single pane in the file browser.
 /// Each pane has its own directory, file list, and selection state.
@@ -194,7 +194,7 @@ impl Pane {
 
     /// Refresh files from the current directory
     pub fn refresh_files(&mut self) {
-        let new_files = get_inner_files_info(
+        let new_files = get_file_path_data(
             self.current_directory.clone(),
             self.show_hidden_files,
             SortBy::Default,
@@ -208,7 +208,7 @@ impl Pane {
 
     /// Navigate to a new directory
     pub fn navigate_to_directory(&mut self, path: &str) -> anyhow::Result<()> {
-        let files = get_inner_files_info(
+        let files = get_file_path_data(
             path.to_string(),
             self.show_hidden_files,
             SortBy::Default,
