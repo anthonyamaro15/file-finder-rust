@@ -4,9 +4,10 @@ use std::{
     io::{self},
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
+use log::debug;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::{style::Color, widgets::Paragraph};
@@ -1197,6 +1198,42 @@ impl FileContent<'_> {
         0
     }
 
+    /// Modification time stored for a ZIP entry: the UTC extended timestamp if present,
+    /// otherwise the DOS date/time read as local time, like `unzip`.
+    fn zip_modified_time(file: &zip::read::ZipFile<'_>) -> Option<SystemTime> {
+        for field in file.extra_data_fields() {
+            match field {
+                zip::extra_fields::ExtraField::ExtendedTimestamp(timestamp) => {
+                    if let Some(seconds) = timestamp.mod_time() {
+                        return SystemTime::UNIX_EPOCH
+                            .checked_add(Duration::from_secs(u64::from(seconds)));
+                    }
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            let date = file.last_modified()?;
+            // DOS timestamps have no zone: interpret them as local time, like unzip.
+            // SAFETY: zero initializes all tm fields, including platform-specific fields.
+            let mut local: libc::tm = unsafe { std::mem::zeroed() };
+            local.tm_year = i32::from(date.year()) - 1900;
+            local.tm_mon = i32::from(date.month()) - 1;
+            local.tm_mday = i32::from(date.day());
+            local.tm_hour = i32::from(date.hour());
+            local.tm_min = i32::from(date.minute());
+            local.tm_sec = i32::from(date.second());
+            // Let mktime determine daylight saving time for this date.
+            local.tm_isdst = -1;
+            // SAFETY: mktime receives a valid, initialized tm and retains no pointer.
+            let seconds = unsafe { libc::mktime(&mut local) };
+            SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds.try_into().ok()?))
+        }
+        #[cfg(not(unix))]
+        None
+    }
+
     /// Extract the ZIP at `path` into a new sibling directory named after it.
     /// Returns the success message, or an error message if anything failed.
     pub fn extract_zip_content(path: &str) -> Result<String, String> {
@@ -1228,6 +1265,7 @@ impl FileContent<'_> {
         let mut extracted = 0;
         let mut failed = 0;
         let mut first_error = None;
+        let mut directory_times = Vec::new();
         for i in 0..archive.len() {
             if cancel.load(Ordering::Relaxed) {
                 return Err(crate::operations::copy::remove_partial_copy(
@@ -1276,6 +1314,7 @@ impl FileContent<'_> {
                         Err(e) => return Err(e),
                     }
                 }
+                let modified = Self::zip_modified_time(&file);
                 if !file.is_dir() {
                     // Exclusive creation also refuses duplicate entries and dangling symlinks.
                     let mut outfile = fs::OpenOptions::new()
@@ -1283,6 +1322,17 @@ impl FileContent<'_> {
                         .create_new(true)
                         .open(&outpath)?;
                     io::copy(&mut file, &mut outfile)?;
+                    if let Some(modified) = modified {
+                        if let Err(e) =
+                            outfile.set_times(fs::FileTimes::new().set_modified(modified))
+                        {
+                            debug!(
+                                "Failed to set ZIP modification time for '{}': {}",
+                                outpath.display(),
+                                e
+                            );
+                        }
+                    }
                 }
                 #[cfg(unix)]
                 {
@@ -1290,6 +1340,11 @@ impl FileContent<'_> {
                     if let Some(mode) = file.unix_mode() {
                         // Drop setuid/setgid/sticky bits, like unzip does by default.
                         fs::set_permissions(&outpath, fs::Permissions::from_mode(mode & 0o777))?;
+                    }
+                }
+                if file.is_dir() {
+                    if let Some(modified) = modified {
+                        directory_times.push((outpath, modified));
                     }
                 }
                 Ok(true)
@@ -1301,6 +1356,22 @@ impl FileContent<'_> {
                     failed += 1;
                     first_error.get_or_insert_with(|| format!("entry {}: {}", i, e));
                 }
+            }
+        }
+        // Creating children changes directory mtimes, so restore explicit entries last.
+        directory_times.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+        for (path, modified) in directory_times {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(e) = fs::File::open(&path)
+                .and_then(|file| file.set_times(fs::FileTimes::new().set_modified(modified)))
+            {
+                debug!(
+                    "Failed to set ZIP modification time for '{}': {}",
+                    path.display(),
+                    e
+                );
             }
         }
         if cancel.load(Ordering::Relaxed) {
@@ -1488,6 +1559,90 @@ mod extraction_tests {
 
     fn extract(path: &Path) -> Result<String, String> {
         FileContent::extract_zip_content(path.to_str().unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zip_preserves_local_dos_mtime() {
+        // Winter and summer instants exercise local time and daylight-saving inference.
+        for timestamp in [946_730_096, 962_454_896] {
+            let timestamp: libc::time_t = timestamp;
+            // SAFETY: zero is valid for tm, and both pointers refer to live values.
+            let mut local: libc::tm = unsafe { std::mem::zeroed() };
+            assert!(!unsafe { libc::localtime_r(&timestamp, &mut local) }.is_null());
+            let date = zip::DateTime::from_date_and_time(
+                (local.tm_year + 1900) as u16,
+                (local.tm_mon + 1) as u8,
+                local.tm_mday as u8,
+                local.tm_hour as u8,
+                local.tm_min as u8,
+                local.tm_sec as u8,
+            )
+            .unwrap();
+            let tmp = tempfile::tempdir().unwrap();
+            let archive = tmp.path().join("dated.zip");
+            let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+            writer
+                .start_file(
+                    "file.txt",
+                    SimpleFileOptions::default().last_modified_time(date),
+                )
+                .unwrap();
+            writer.write_all(b"contents").unwrap();
+            writer.finish().unwrap();
+
+            extract(&archive).unwrap();
+
+            assert_eq!(
+                fs::metadata(tmp.path().join("dated/file.txt"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(timestamp as u64)
+            );
+        }
+    }
+
+    #[test]
+    fn zip_prefers_extended_mtime_for_files_and_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive = tmp.path().join("dated.zip");
+        let mut writer = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        let entries = [
+            ("nested/", 1_234_567_891_u32),
+            ("nested/deep/", 1_234_567_893),
+            ("nested/deep/file.txt", 1_234_567_895),
+        ];
+        for (name, timestamp) in entries {
+            let mut options = zip::write::FullFileOptions::default().last_modified_time(
+                zip::DateTime::from_date_and_time(2001, 1, 1, 0, 0, 0).unwrap(),
+            );
+            let mut extra = vec![1]; // The extended timestamp contains an mtime.
+            extra.extend_from_slice(&timestamp.to_le_bytes());
+            options
+                .add_extra_data(0x5455, extra.into_boxed_slice(), false)
+                .unwrap();
+            if name.ends_with('/') {
+                writer.add_directory(name, options).unwrap();
+            } else {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(b"contents").unwrap();
+            }
+        }
+        writer.finish().unwrap();
+
+        extract(&archive).unwrap();
+
+        for (name, timestamp) in entries {
+            assert_eq!(
+                fs::metadata(tmp.path().join("dated").join(name))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(u64::from(timestamp)),
+                "{name}"
+            );
+        }
     }
 
     #[test]
