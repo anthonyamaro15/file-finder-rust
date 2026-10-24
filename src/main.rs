@@ -29,7 +29,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Terminal,
 };
-use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
+use ratatui_image::StatefulImage;
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 // Internal imports
@@ -57,8 +57,8 @@ use file_finder::{
     render::{
         configured_action_key_labels, create_cache_loading_screen, create_create_input_popup,
         create_delete_confirmation_popup, create_keybindings_popup, create_rename_input_popup,
-        create_sort_options_popup, draw_input_popup, draw_popup, input_popup_cursor_position,
-        split_popup_area_vertical,
+        create_sort_options_popup, draw_input_popup, draw_popup, image_renderer::ImageRenderer,
+        input_popup_cursor_position, split_popup_area_vertical,
     },
     status_bar::StatusBar,
     theme::OneDarkTheme,
@@ -68,9 +68,6 @@ use file_finder::{
         get_file_path_data, get_inner_files_info, init, is_file, SortBy, SortType,
     },
 };
-
-/// Default font size for terminal graphics protocol picker (width, height in pixels)
-const DEFAULT_FONT_SIZE: (u16, u16) = (8, 16);
 
 /// Preview debounce delay in milliseconds
 /// Prevents rapid preview updates when scrolling quickly through files
@@ -310,120 +307,6 @@ fn may_exit<B: Backend>(
         }
     }
     true
-}
-
-/// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
-/// with fallback to Unicode halfblocks for unsupported terminals.
-struct ImageRenderer {
-    /// Terminal graphics protocol picker
-    picker: Picker,
-    /// Current image protocol state for rendering
-    image_state: Option<Box<dyn StatefulProtocol>>,
-    /// Whether an image is currently loaded
-    has_image: bool,
-    /// Image metadata info (dimensions, format)
-    image_info: String,
-    /// Error message if image loading failed
-    error_message: Option<String>,
-}
-
-impl ImageRenderer {
-    /// Create a new ImageRenderer with terminal protocol detection
-    pub fn new() -> ImageRenderer {
-        let mut picker = Picker::new(DEFAULT_FONT_SIZE);
-        with_stdin_state_restored(|| picker.guess_protocol());
-
-        ImageRenderer {
-            picker,
-            image_state: None,
-            has_image: false,
-            image_info: String::new(),
-            error_message: None,
-        }
-    }
-
-    /// Load an image from a pre-decoded DynamicImage (for async loading)
-    pub fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
-        self.clear();
-
-        let width = decoded_image.width();
-        let height = decoded_image.height();
-
-        // Store metadata
-        self.image_info = format!("{}x{} {}", width, height, format);
-
-        // Create protocol state for rendering
-        let protocol = self.picker.new_resize_protocol(decoded_image);
-        self.image_state = Some(protocol);
-        self.has_image = true;
-        self.error_message = None;
-    }
-
-    /// Set an error message for image loading
-    pub fn set_error(&mut self, message: String) {
-        self.clear();
-        self.error_message = Some(message);
-    }
-
-    /// Clear the current image
-    pub fn clear(&mut self) {
-        self.image_state = None;
-        self.has_image = false;
-        self.image_info.clear();
-        self.error_message = None;
-    }
-
-    /// Check if an image is loaded and ready to render
-    pub fn has_image(&self) -> bool {
-        self.has_image && self.image_state.is_some()
-    }
-
-    /// Get the image info string
-    pub fn get_info(&self) -> &str {
-        &self.image_info
-    }
-
-    /// Get error message if any
-    pub fn get_error(&self) -> Option<&str> {
-        self.error_message.as_deref()
-    }
-}
-
-/// Run `f`, then restore stdin's fd flags and termios to what they were before.
-/// ratatui-image's graphics query sets O_NONBLOCK and clears ICANON/ECHO on stdin,
-/// and returns early without restoring them when the terminal doesn't reply
-/// (e.g. detached tmux), which breaks crossterm reads with WouldBlock.
-#[cfg(unix)]
-fn with_stdin_state_restored<T>(f: impl FnOnce() -> T) -> T {
-    // SAFETY: isatty only inspects fd 0.
-    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 0 {
-        return f();
-    }
-    // SAFETY: fd 0 is open; termios is a valid out-pointer for tcgetattr.
-    let (flags, termios) = unsafe {
-        let mut termios: libc::termios = std::mem::zeroed();
-        let flags = libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL);
-        let saved = libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == 0;
-        (flags, saved.then_some(termios))
-    };
-
-    let result = f();
-
-    // SAFETY: restores the flags and termios read from fd 0 above.
-    unsafe {
-        if flags != -1 {
-            libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags);
-        }
-        if let Some(termios) = &termios {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, termios);
-        }
-    }
-    result
-}
-
-#[cfg(not(unix))]
-fn with_stdin_state_restored<T>(f: impl FnOnce() -> T) -> T {
-    f()
 }
 
 /// Program that opens a file with the system default application.
