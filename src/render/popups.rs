@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
     Frame,
 };
 
@@ -251,6 +251,70 @@ pub fn render_folder_picker(f: &mut Frame, picker: &FolderPicker, query: &str, c
     f.set_cursor(x, y);
 }
 
+/// Draw Get Info centred and sized to its rows: labels in a column, and each value
+/// wrapped beside its label, so long names and paths are never cut off.
+pub fn render_info_popup(f: &mut Frame, rows: &[(&str, String)]) {
+    // "Permissions: ", then the value; borders and padding take 4 columns.
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.len() + 2)
+        .max()
+        .unwrap_or(0);
+    let widest_value = rows
+        .iter()
+        .map(|(_, value)| Span::raw(value.as_str()).width())
+        .max()
+        .unwrap_or(0);
+    let screen = f.size();
+    let max_value_width = (usize::from(screen.width) * 4 / 5).saturating_sub(label_width + 4);
+    let value_width = widest_value.min(max_value_width).max(10);
+
+    let mut lines = Vec::new();
+    for (label, value) in rows {
+        for (i, part) in wrap_to_width(value, value_width).into_iter().enumerate() {
+            let label = if i == 0 {
+                format!("{label}:")
+            } else {
+                String::new()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label:<label_width$}"), OneDarkTheme::info()),
+                Span::raw(part),
+            ]));
+        }
+    }
+    let width = u16::try_from(label_width + value_width + 4).unwrap_or(u16::MAX);
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let area = draw_fixed_height_popup(screen, 0, width, height);
+    let popup = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .padding(Padding::horizontal(1))
+                .title("Get Info (Esc to close)"),
+        )
+        .style(OneDarkTheme::normal());
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
+}
+
+/// Split `text` into lines at most `width` terminal columns wide.
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    let mut used = 0;
+    for ch in text.chars() {
+        let ch_width = Span::raw(ch.to_string()).width();
+        if used > 0 && used + ch_width > width {
+            lines.push(String::new());
+            used = 0;
+        }
+        lines.last_mut().expect("starts with one line").push(ch);
+        used += ch_width;
+    }
+    lines
+}
+
 /// Create the sort options popup widget.
 pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> Paragraph<'a> {
     let current_indicator = generate_sort_indicator(sort_by, sort_type);
@@ -324,6 +388,7 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "  Shift+M         Move to… (pick a folder)".to_string(),
         "  y               Extract ZIP archive".to_string(),
         "  o               Open with system default".to_string(),
+        "  I (Shift+I)     Get Info (size, dates, permissions)".to_string(),
         "".to_string(),
         "── Search ──".to_string(),
         keybinding_help_row(
@@ -481,6 +546,28 @@ mod tests {
         assert!(screen.contains("Move 'notes.txt' to…"));
         assert!(screen.contains("Projects  /w/Projects"));
         assert!(screen.contains("xEND"));
+    }
+
+    #[test]
+    fn info_popup_wraps_long_values_instead_of_cutting_them_off() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let name = format!("start-{}-end", "x".repeat(150));
+        let rows = [("Name", name), ("Kind", "File".to_string())];
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render_info_popup(f, &rows)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Get Info"));
+        assert!(screen.contains("Name: start-x"));
+        assert!(screen.contains("x-end"));
+        assert_eq!(screen.matches('x').count(), 150);
+        assert!(screen.contains("Kind: File"));
     }
 
     #[test]

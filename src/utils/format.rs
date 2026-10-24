@@ -1,4 +1,71 @@
-//! Formatting utilities for file sizes and paths.
+//! Formatting utilities for file sizes, counts, dates, permissions and paths.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Format a count with thousands separators, e.g. 1234567 -> "1,234,567".
+pub fn format_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Unix permission bits as `rwxr-xr-x`.
+pub fn permission_bits(mode: u32) -> String {
+    (0..9)
+        .rev()
+        .map(|bit| {
+            if mode & (1 << bit) != 0 {
+                ['x', 'w', 'r'][bit % 3]
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Local date and time like "Oct 24, 2026 at 3:41 PM", or `None` when the system
+/// can't convert it.
+pub fn format_local_time(time: SystemTime) -> Option<String> {
+    #[cfg(unix)]
+    {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let seconds = match time.duration_since(UNIX_EPOCH) {
+            Ok(after) => libc::time_t::try_from(after.as_secs()).ok()?,
+            Err(before) => -libc::time_t::try_from(before.duration().as_secs()).ok()?,
+        };
+        // SAFETY: zero is valid for tm, and both pointers refer to live values.
+        let mut local: libc::tm = unsafe { std::mem::zeroed() };
+        if unsafe { libc::localtime_r(&seconds, &mut local) }.is_null() {
+            return None;
+        }
+        let hour = match local.tm_hour % 12 {
+            0 => 12,
+            hour => hour,
+        };
+        Some(format!(
+            "{} {}, {} at {}:{:02} {}",
+            MONTHS.get(usize::try_from(local.tm_mon).ok()?)?,
+            local.tm_mday,
+            local.tm_year + 1900,
+            hour,
+            local.tm_min,
+            if local.tm_hour < 12 { "AM" } else { "PM" }
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (time, UNIX_EPOCH);
+        None
+    }
+}
 
 /// Format a file size in bytes to a human-readable string.
 ///
@@ -192,6 +259,46 @@ fn truncate_end(s: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thousands_separators_group_digits_from_the_right() {
+        for (n, expected) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (56_789, "56,789"),
+            (1_234_567, "1,234,567"),
+            (u64::MAX, "18,446,744,073,709,551,615"),
+        ] {
+            assert_eq!(format_thousands(n), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_time_reads_the_same_in_any_time_zone() {
+        // Noon UTC mid-month is the same local month everywhere, far from DST changes.
+        for (noon_utc, month) in [(1_768_478_400, "Jan"), (1_784_116_800, "Jul")] {
+            let timestamp: libc::time_t = noon_utc;
+            // SAFETY: zero is valid for tm, and both pointers refer to live values.
+            let mut local: libc::tm = unsafe { std::mem::zeroed() };
+            assert!(!unsafe { libc::localtime_r(&timestamp, &mut local) }.is_null());
+            let midnight = timestamp
+                - libc::time_t::from(local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec);
+            for (offset, time) in [
+                (0, "12:00 AM"),
+                (9 * 3600 + 5 * 60, "9:05 AM"),
+                (12 * 3600, "12:00 PM"),
+                (15 * 3600 + 41 * 60, "3:41 PM"),
+            ] {
+                let at = UNIX_EPOCH + std::time::Duration::from_secs((midnight + offset) as u64);
+                assert_eq!(
+                    format_local_time(at).unwrap(),
+                    format!("{month} {}, 2026 at {time}", local.tm_mday)
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_format_file_size_bytes() {

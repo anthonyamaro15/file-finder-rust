@@ -305,6 +305,14 @@ pub fn handle_keybinding_key(key: KeyEvent, app: &mut App) {
     }
 }
 
+/// Get Info: Esc, `q` or `I` closes it, which stops its folder count.
+pub fn handle_info_key(key: KeyEvent, app: &mut App) {
+    if let KeyCode::Esc | KeyCode::Char('q' | 'I') = key.code {
+        app.info = None;
+        app.input_mode = InputMode::Normal;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +613,110 @@ mod tests {
             assert!(state.app.files.is_empty());
             assert_eq!(state.state.selected(), None);
         }
+    }
+
+    fn open_info(state: &mut LoopState) {
+        let mut keymap = KeymapRuntime::from_settings(&crate::config::KeymapSettings::default());
+        handle_normal_key(
+            KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT),
+            state,
+            &mut keymap,
+            &mut test_terminal(),
+            "unused",
+        )
+        .unwrap();
+    }
+
+    fn info_row<'a>(app: &'a App, label: &str) -> Option<&'a str> {
+        let rows = &app.info.as_ref()?.rows;
+        rows.iter()
+            .find(|(row, _)| *row == label)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[test]
+    fn shift_i_opens_get_info_for_the_selection_while_a_copy_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "hello").unwrap();
+        let mut state = removal_state(dir.path(), vec![path.to_string_lossy().into_owned()]);
+        state.app.start_copy(dir.path().join("elsewhere"), None);
+        open_info(&mut state);
+        assert_eq!(state.app.input_mode, InputMode::WatchInfo);
+        assert_eq!(info_row(&state.app, "Name"), Some("notes.txt"));
+        assert_eq!(info_row(&state.app, "Kind"), Some("File"));
+        assert_eq!(info_row(&state.app, "Size"), Some("5 B (5 bytes)"));
+        assert!(state.app.copy_in_progress);
+    }
+
+    #[test]
+    fn get_info_closes_on_esc_q_or_shift_i_and_ignores_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("photos");
+        std::fs::create_dir(&folder).unwrap();
+        for close in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('I')] {
+            let mut state = removal_state(dir.path(), vec![folder.to_string_lossy().into_owned()]);
+            open_info(&mut state);
+            for ignored in ['j', 'd', 'D', 'i', 'r']
+                .map(KeyCode::Char)
+                .into_iter()
+                .chain([KeyCode::Enter, KeyCode::Down])
+            {
+                handle_info_key(KeyEvent::new(ignored, KeyModifiers::NONE), &mut state.app);
+                assert_eq!(state.app.input_mode, InputMode::WatchInfo);
+                assert!(state.app.info.is_some());
+            }
+            handle_info_key(KeyEvent::new(close, KeyModifiers::NONE), &mut state.app);
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+            assert!(state.app.info.is_none());
+            assert!(!state.app.render_popup);
+            assert!(state.app.job.is_none());
+            assert!(folder.is_dir());
+        }
+    }
+
+    #[test]
+    fn get_info_needs_a_selection_and_reports_a_vanished_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = removal_state(dir.path(), Vec::new());
+        state.state.select(None);
+        open_info(&mut state);
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.info.is_none());
+        assert!(!state.status_bar.has_error());
+
+        let gone = dir.path().join("gone.txt");
+        let mut state = removal_state(dir.path(), vec![gone.to_string_lossy().into_owned()]);
+        open_info(&mut state);
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.info.is_none());
+        assert_eq!(state.status_bar.notification_kind, NotificationKind::Error);
+        assert!(state
+            .status_bar
+            .error_message
+            .as_deref()
+            .unwrap()
+            .starts_with("Couldn't get info for"));
+    }
+
+    #[test]
+    fn get_info_shows_the_folder_count_once_it_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("photos");
+        std::fs::create_dir_all(folder.join("2026")).unwrap();
+        std::fs::write(folder.join("a.jpg"), "abc").unwrap();
+        std::fs::write(folder.join("2026/b.jpg"), "hello").unwrap();
+        let mut state = removal_state(dir.path(), vec![folder.to_string_lossy().into_owned()]);
+        open_info(&mut state);
+        assert_eq!(info_row(&state.app, "Kind"), Some("Folder"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.app.info.as_ref().unwrap().folder_count.is_some() {
+            crate::event::background::poll_info(&mut state.app);
+            assert!(Instant::now() < deadline, "folder count did not finish");
+            std::thread::yield_now();
+        }
+        assert_eq!(info_row(&state.app, "Size"), Some("8 B (8 bytes)"));
+        assert_eq!(info_row(&state.app, "Contents"), Some("2 files, 1 folder"));
     }
 
     #[test]

@@ -545,6 +545,37 @@ pub fn poll_delete(
     }
 }
 
+/// Show the latest folder size count in the Get Info popup. It runs beside other
+/// operations rather than as a job, since it changes nothing.
+pub fn poll_info(app: &mut App) {
+    let Some(info) = app.info.as_mut() else {
+        return;
+    };
+    let Some(receiver) = &info.folder_count else {
+        return;
+    };
+    let mut latest = None;
+    let disconnected = loop {
+        match receiver.try_recv() {
+            Ok(count) => latest = Some(count),
+            Err(mpsc::TryRecvError::Empty) => break false,
+            Err(mpsc::TryRecvError::Disconnected) => break true,
+        }
+    };
+    if let Some(count) = latest {
+        info.show_folder_count(&count);
+        if count.finished {
+            info.folder_count = None;
+            return;
+        }
+    }
+    if disconnected {
+        info.folder_count = None;
+        info.set_row("Size", "Couldn't finish calculating the size".into());
+        info.set_row("Contents", "Unknown".into());
+    }
+}
+
 /// Process file system events
 pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_start_path: &str) {
     let fs_events = app.process_file_system_events();

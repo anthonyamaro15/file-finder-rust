@@ -27,6 +27,7 @@ use crate::{
     },
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
+    info::ItemInfo,
     operations::copy_dir_file_with_progress_cancellable,
     utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
 };
@@ -369,6 +370,26 @@ pub fn handle_normal_key(
 
         KeyCode::Char('?') => {
             app.input_mode = InputMode::WatchKeyBinding;
+        }
+
+        KeyCode::Char('I') => {
+            let selected = if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+                app.right_pane.get_selected_path()
+            } else {
+                app.get_selected_path(state.selected())
+            };
+            if let Some(selected) = selected {
+                // Read-only, so it never waits for (or blocks) a running operation.
+                match ItemInfo::read(Path::new(&selected)) {
+                    Ok(info) => {
+                        // Replacing an earlier popup stops its folder count.
+                        app.info = Some(info);
+                        app.input_mode = InputMode::WatchInfo;
+                    }
+                    Err(e) => status_bar
+                        .show_error(format!("Couldn't get info for '{selected}': {e}"), None),
+                }
+            }
         }
 
         KeyCode::Enter => {
