@@ -28,8 +28,33 @@ pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
     #[cfg(not(test))]
     {
         // trash canonicalizes only the parent; NSFileManager/rename moves the link itself.
-        context.delete(path).map_err(|error| error.to_string())
+        context.delete(path).map_err(error_message)
     }
+}
+
+/// The crate's messages are Debug dumps; macOS's reason follows "`trashItemAtURL` failed: ".
+fn error_message(error: trash::Error) -> String {
+    match error {
+        trash::Error::Unknown { description } => {
+            if let Some((_, reason)) = description.split_once("failed: ") {
+                return reason.to_string();
+            }
+            description
+        }
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn error_message_keeps_the_system_reason() {
+    let error = trash::Error::Unknown {
+        description: "While deleting '\"/v/a.txt\"', `trashItemAtURL` failed: “a.txt” couldn’t be moved to the trash because the volume is read only.".into(),
+    };
+    assert_eq!(
+        error_message(error),
+        "“a.txt” couldn’t be moved to the trash because the volume is read only."
+    );
 }
 
 #[cfg(all(test, target_os = "macos"))]

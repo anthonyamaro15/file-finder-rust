@@ -264,6 +264,7 @@ pub(crate) fn start_trash(
         trash(Path::new(&source))
             .map(|()| format!("Moved '{name}' to Trash"))
             .map_err(|error| {
+                let error = error.trim_end_matches('.');
                 format!("Couldn't move '{name}' to Trash: {error}. Press D to delete permanently.")
             })
     })?;
