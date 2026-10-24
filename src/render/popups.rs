@@ -1,14 +1,19 @@
 //! Popup rendering utilities and widget builders.
 
+use std::path::Path;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     symbols::border,
-    text::{Line, Text},
-    widgets::{Block, Borders, Paragraph},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    Frame,
 };
 
+use crate::app::FolderPicker;
 use crate::config::{Action, KeymapSettings};
 use crate::theme::OneDarkTheme;
+use crate::utils::format::replace_home_with_tilde;
 use crate::utils::{format_file_size, SortBy, SortType};
 
 /// Calculate a centered popup area within the given rect.
@@ -163,6 +168,69 @@ pub fn create_rename_input_popup<'a>(input_text: &'a str) -> Paragraph<'a> {
         .style(OneDarkTheme::warning())
 }
 
+/// Draw the "Copy to…"/"Move to…" picker over the list: the query (with the cursor at
+/// `cursor`) above the matching folders, each with its full path.
+pub fn render_folder_picker(f: &mut Frame, picker: &FolderPicker, query: &str, cursor: usize) {
+    let area = draw_popup(f.size(), 70, 60);
+    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
+    let name = Path::new(&picker.source)
+        .file_name()
+        .map_or(picker.source.clone(), |name| {
+            name.to_string_lossy().into_owned()
+        });
+
+    // Scroll a long typed path so the cursor stays inside the box.
+    let scroll = cursor.saturating_sub(chunks[0].width.saturating_sub(3) as usize);
+    let input = Paragraph::new(query).scroll((0, scroll as u16)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .title(format!("{} '{name}' to…", picker.kind.title())),
+    );
+
+    let hint = if query.trim().is_empty() {
+        "Type a folder name, or a path starting with / or ~"
+    } else if picker.results.is_empty() {
+        "No matching folders"
+    } else {
+        "↑/↓ choose · Enter confirm · Esc cancel"
+    };
+    let items: Vec<ListItem> = picker
+        .results
+        .iter()
+        .map(|result| {
+            ListItem::new(Line::from(vec![
+                Span::raw(result.display_name.clone()),
+                Span::styled(
+                    format!("  {}", replace_home_with_tilde(&result.file_path)),
+                    OneDarkTheme::dotfile(),
+                ),
+            ]))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .title(hint),
+        )
+        .highlight_style(OneDarkTheme::selected())
+        .highlight_symbol("❯ ");
+    let mut list_state = ListState::default();
+    list_state.select(picker.selected);
+
+    f.render_widget(Clear, area);
+    f.render_widget(input.style(OneDarkTheme::info()), chunks[0]);
+    f.render_stateful_widget(
+        list.style(OneDarkTheme::normal()),
+        chunks[1],
+        &mut list_state,
+    );
+    let (x, y) = input_popup_cursor_position(chunks[0], cursor - scroll);
+    f.set_cursor(x, y);
+}
+
 /// Create the sort options popup widget.
 pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> Paragraph<'a> {
     let current_indicator = generate_sort_indicator(sort_by, sort_type);
@@ -231,6 +299,8 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "  d               Delete (with confirmation)".to_string(),
         "  r               Rename file/directory".to_string(),
         "  c               Copy file/directory".to_string(),
+        "  Shift+C         Copy to… (pick a folder)".to_string(),
+        "  Shift+M         Move to… (pick a folder)".to_string(),
         "  y               Extract ZIP archive".to_string(),
         "  o               Open with system default".to_string(),
         "".to_string(),
@@ -332,6 +402,8 @@ mod tests {
         assert!(lines.contains(&"  / or i          Search current directory".to_string()));
         assert!(lines.contains(&"  Space + /       Search from root cache".to_string()));
         assert!(lines.contains(&"  j / ↓           Move down".to_string()));
+        assert!(lines.contains(&"  Shift+C         Copy to… (pick a folder)".to_string()));
+        assert!(lines.contains(&"  Shift+C         Copy to other pane".to_string()));
     }
 
     #[test]
@@ -353,6 +425,41 @@ mod tests {
         assert!(lines.contains(&"  / or , + /      Search from root cache".to_string()));
         assert!(!lines.contains(&"  / or i          Search current directory".to_string()));
         assert!(lines.contains(&"  q               Quit / Close popup".to_string()));
+    }
+
+    #[test]
+    fn folder_picker_shows_its_title_rows_and_the_end_of_a_long_query() {
+        use crate::app::{SearchResult, TransferKind};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let picker = FolderPicker {
+            kind: TransferKind::Move,
+            source: "/w/notes.txt".into(),
+            results: vec![SearchResult {
+                file_path: "/w/Projects".into(),
+                display_name: "Projects".into(),
+                score: 1,
+                is_directory: true,
+                original_index: 0,
+            }],
+            selected: Some(0),
+        };
+        let query = format!("/{}END", "x".repeat(200));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| render_folder_picker(f, &picker, &query, query.chars().count()))
+            .unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Move 'notes.txt' to…"));
+        assert!(screen.contains("Projects  /w/Projects"));
+        assert!(screen.contains("xEND"));
     }
 
     #[test]

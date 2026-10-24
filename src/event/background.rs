@@ -322,13 +322,14 @@ fn poll_copy_messages(
             message,
             skipped_special_files,
         }) => {
-            // The engine names the destination, which a cross-pane copy shares with its source.
+            // The engine names the destination, which a copy to another folder shares
+            // with its source, so name the folder instead.
             let message = app
-                .copy_to_other_pane
-                .as_deref()
-                .and_then(|name| {
+                .copy_transfer
+                .as_ref()
+                .and_then(|(name, destination)| {
                     let details = message.strip_prefix(&format!("Copied '{name}' to '{name}'"))?;
-                    Some(format!("Copied '{name}' to other pane{details}"))
+                    Some(format!("Copied '{name}' to {destination}{details}"))
                 })
                 .unwrap_or(message);
             if success {
@@ -355,7 +356,7 @@ fn poll_copy_messages(
     app.copy_progress_message.clear();
     app.copy_files_processed = 0;
     app.copy_total_files = 0;
-    app.copy_to_other_pane = None;
+    app.copy_transfer = None;
     app.copy_destination = None;
     *receiver = None;
     success
@@ -375,7 +376,7 @@ pub fn refresh_after_copy(
     let copied = app.copy_destination.clone();
     let destination = copied
         .as_ref()
-        .filter(|_| app.copy_to_other_pane.is_none())
+        .filter(|_| app.copy_transfer.is_none())
         .map(|path| path.to_string_lossy().into_owned());
     let succeeded = poll_copy_messages(app, status_bar, receiver);
     if let Some(copied) = copied.as_ref().filter(|_| receiver.is_none()) {
@@ -789,7 +790,7 @@ pub(crate) mod tests {
             };
             app.start_copy(
                 destination_dir.join("copy_target.txt"),
-                cross_pane.then(|| "copy_target.txt".into()),
+                cross_pane.then(|| ("copy_target.txt".into(), "other pane".into())),
             );
             let (tx, rx) = mpsc::channel();
             tx.send(CopyMessage::Completed {
@@ -864,7 +865,7 @@ pub(crate) mod tests {
             (1, " (skipped 1 special file: sockets/pipes/devices)"),
         ] {
             let mut app = running_copy_app();
-            app.copy_to_other_pane = Some("data".into());
+            app.copy_transfer = Some(("data".into(), "other pane".into()));
             let mut status = StatusBar::new();
             let (tx, rx) = mpsc::channel();
             tx.send(CopyMessage::Completed {
@@ -880,7 +881,7 @@ pub(crate) mod tests {
                 status.error_message,
                 Some(format!("Copied 'data' to other pane{details}"))
             );
-            assert_eq!(app.copy_to_other_pane, None);
+            assert_eq!(app.copy_transfer, None);
             assert_copy_finished(&app, &receiver);
         }
     }
@@ -1065,7 +1066,10 @@ pub(crate) mod tests {
             index.changed(&dir.path().join("Projects"));
             let before = indexed(&index);
             let mut app = App::new(Vec::new());
-            app.start_copy(destination.clone(), Some("proj".into()));
+            app.start_copy(
+                destination.clone(),
+                Some(("proj".into(), "'Projects'".into())),
+            );
             let mut receiver = Some(copy_dir_file_with_progress_cancellable(
                 &source,
                 &destination,

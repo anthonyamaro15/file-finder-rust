@@ -190,7 +190,7 @@ impl CliArgs {
 }
 
 /// Path normalization utilities
-mod path_utils {
+pub(crate) mod path_utils {
     use super::*;
     use std::io;
     use std::path::Path;
@@ -215,7 +215,7 @@ mod path_utils {
     }
 
     /// Expand ~ to the home directory
-    fn expand_home(path: &Path) -> io::Result<PathBuf> {
+    pub(crate) fn expand_home(path: &Path) -> io::Result<PathBuf> {
         if let Some(path_str) = path.to_str() {
             if let Some(remainder) = path_str.strip_prefix("~/") {
                 if let Some(home) = dirs::home_dir() {

@@ -31,7 +31,10 @@ use file_finder::{
     directory_store::{
         build_directory_from_store_async, DirectoryIndex, DirectoryStore, REFRESH_THREADS,
     },
-    event::{keymap::KeymapRuntime, search::handle_search_key, LoopControl, LoopState},
+    event::{
+        keymap::KeymapRuntime, search::handle_search_key, transfer::handle_folder_picker_key,
+        LoopControl, LoopState,
+    },
     file_reader_content::FileContent,
     render::{configured_action_key_labels, image_renderer::ImageRenderer},
     status_bar::StatusBar,
@@ -414,6 +417,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         InputMode::WatchKeyBinding => {
                             popups::handle_keybinding_key(key, &mut loop_state.app)
+                        }
+                        InputMode::PickFolder if key.kind == KeyEventKind::Press => {
+                            handle_folder_picker_key(
+                                key,
+                                &mut loop_state.app,
+                                loop_state.state.selected(),
+                                &mut loop_state.status_bar,
+                                &loop_state.index.store,
+                                &mut loop_state.copy_receiver,
+                            )
                         }
                         _ => {}
                     }

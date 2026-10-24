@@ -53,6 +53,8 @@ pub enum InputMode {
     WatchSort,
     WatchKeyBinding,
     CacheLoading,
+    /// Choosing the folder for "Copy to…" or "Move to…".
+    PickFolder,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +121,34 @@ impl PanePosition {
             PanePosition::Right => PanePosition::Left,
         }
     }
+}
+
+/// Copy or move, for transfers to another folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferKind {
+    Copy,
+    Move,
+}
+
+impl TransferKind {
+    /// "Copy" or "Move", as the picker's title starts.
+    pub fn title(self) -> &'static str {
+        match self {
+            TransferKind::Copy => "Copy",
+            TransferKind::Move => "Move",
+        }
+    }
+}
+
+/// The open "Copy to…"/"Move to…" picker. Its query is edited in
+/// `create_edit_file_name` like the create and rename inputs.
+#[derive(Debug)]
+pub struct FolderPicker {
+    pub kind: TransferKind,
+    /// The item to copy or move.
+    pub source: String,
+    pub results: Vec<SearchResult>,
+    pub selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +309,40 @@ fn global_search_result(
     })
 }
 
+/// Global search over the folder index: the best `max_results` matches for `query`,
+/// with short labels that tell same-named folders apart.
+pub fn global_search_results(
+    store: &DirectoryStore,
+    query: &str,
+    max_results: usize,
+) -> Vec<SearchResult> {
+    if max_results == 0 {
+        return Vec::new();
+    }
+
+    let mut search_results = store
+        .directories
+        .par_iter()
+        .enumerate()
+        .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
+            global_search_result(matcher, index, file_path, query)
+        })
+        .filter_map(|result| result)
+        .fold(Vec::new, |mut search_results, result| {
+            push_bounded_search_result(&mut search_results, result, max_results);
+            search_results
+        })
+        .reduce(Vec::new, |mut left, mut right| {
+            left.append(&mut right);
+            truncate_top_search_results(&mut left, max_results);
+            left
+        });
+
+    truncate_top_unique_search_results(&mut search_results, max_results);
+    apply_short_unique_display_names(&mut search_results);
+    search_results
+}
+
 #[derive(Debug)]
 pub struct App {
     pub input: String,
@@ -331,8 +395,9 @@ pub struct App {
     pub copy_progress_message: String,
     pub copy_files_processed: usize,
     pub copy_total_files: usize,
-    /// Source name of a running `Shift+C` copy, which keeps its name in the other pane.
-    pub copy_to_other_pane: Option<String>,
+    /// Source name and destination label ("other pane", "'Projects'") of a running
+    /// copy to another folder, which keeps its name there.
+    pub copy_transfer: Option<(String, String)>,
     pub copy_destination: Option<PathBuf>,
 
     // File system watcher for real-time updates
@@ -391,6 +456,8 @@ pub struct App {
 
     /// Running move or ZIP extraction, if any.
     pub job: Option<BackgroundJob>,
+    /// The open "Copy to…"/"Move to…" picker.
+    pub folder_picker: Option<FolderPicker>,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(&'static str, Instant)>,
 }
@@ -534,7 +601,7 @@ impl App {
             copy_progress_message: String::new(),
             copy_files_processed: 0,
             copy_total_files: 0,
-            copy_to_other_pane: None,
+            copy_transfer: None,
             copy_destination: None,
 
             // Initialize file watcher
@@ -592,6 +659,7 @@ impl App {
             image_receiver: None,
 
             job: None,
+            folder_picker: None,
             quit_warning: None,
         }
     }
@@ -702,36 +770,8 @@ impl App {
 
     /// Perform global search across directory cache
     pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
-        if self.max_search_results == 0 {
-            self.search_results.clear();
-            self.filtered_indexes.clear();
-            return;
-        }
-
-        let max_results = self.max_search_results;
-        let mut search_results = store
-            .directories
-            .par_iter()
-            .enumerate()
-            .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
-                global_search_result(matcher, index, file_path, query)
-            })
-            .filter_map(|result| result)
-            .fold(Vec::new, |mut search_results, result| {
-                push_bounded_search_result(&mut search_results, result, max_results);
-                search_results
-            })
-            .reduce(Vec::new, |mut left, mut right| {
-                left.append(&mut right);
-                truncate_top_search_results(&mut left, max_results);
-                left
-            });
-
-        truncate_top_unique_search_results(&mut search_results, max_results);
-        apply_short_unique_display_names(&mut search_results);
-
         // For global search, we don't use filtered_indexes since we're showing different files
-        self.search_results = search_results;
+        self.search_results = global_search_results(store, query, self.max_search_results);
         self.filtered_indexes.clear();
     }
 
@@ -1333,15 +1373,16 @@ impl App {
         ))
     }
 
-    /// Show a copy as running; its updates arrive on the copy channel.
-    pub fn start_copy(&mut self, destination: PathBuf, to_other_pane: Option<String>) {
+    /// Show a copy as running; its updates arrive on the copy channel. `transfer` is the
+    /// source name and destination label of a copy to another folder.
+    pub fn start_copy(&mut self, destination: PathBuf, transfer: Option<(String, String)>) {
         self.quit_warning = None;
         self.copy_cancel = Arc::new(AtomicBool::new(false));
         self.copy_in_progress = true;
         self.copy_progress_message = String::from("Starting copy...");
         self.copy_files_processed = 0;
         self.copy_total_files = 0;
-        self.copy_to_other_pane = to_other_pane;
+        self.copy_transfer = transfer;
         self.copy_destination = Some(destination);
     }
 

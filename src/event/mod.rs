@@ -19,6 +19,7 @@ pub mod normal;
 pub mod popups;
 pub mod search;
 pub mod sort;
+pub mod transfer;
 
 /// The main loop's mutable state, shared by drawing and the key handlers.
 pub struct LoopState {
