@@ -254,6 +254,45 @@ mod build_directory_store_tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_cache_build_continues_past_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return; // Root can read directories regardless of permissions.
+        }
+
+        let temp_dir = tempdir().unwrap();
+        let root = temp_dir.path();
+        let unreadable = root.join("unreadable");
+        fs::create_dir_all(unreadable.join("child")).unwrap();
+        fs::create_dir_all(root.join("readable/nested")).unwrap();
+
+        let permissions = fs::metadata(&unreadable).unwrap().permissions();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let stores = std::panic::catch_unwind(|| {
+            assert_eq!(
+                fs::read_dir(&unreadable).unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            build_stores(root, &[])
+        });
+        // Restore permissions even if a builder panics or times out.
+        fs::set_permissions(&unreadable, permissions).unwrap();
+
+        for store in stores.unwrap() {
+            for relative in ["readable", "readable/nested"] {
+                assert!(store
+                    .directories
+                    .contains(&root.join(relative).display().to_string()));
+            }
+            assert!(!store
+                .directories
+                .contains(&unreadable.join("child").display().to_string()));
+        }
+    }
+
     #[test]
     fn test_build_directory_from_store_basic() {
         let temp_dir = setup_test_directory().expect("Failed to create test directory");

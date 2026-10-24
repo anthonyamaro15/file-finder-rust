@@ -1,4 +1,5 @@
 use ignore::WalkBuilder;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::File;
@@ -78,7 +79,7 @@ pub fn build_directory_from_store_ignore(
                 }
             }
             Err(err) => {
-                eprintln!("Error processing directory entry: {}", err);
+                debug!("Error processing directory entry: {}", err);
             }
         }
     }
@@ -185,7 +186,7 @@ pub fn build_directory_from_store_async(
                         }
                     }
                     Err(e) => {
-                        eprintln!("Error processing directory entry: {}", e);
+                        debug!("Error processing directory entry: {}", e);
                     }
                 }
                 ignore::WalkState::Continue
