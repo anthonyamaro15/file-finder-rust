@@ -342,7 +342,9 @@ use_nerd_fonts = "auto"    # Auto-detect (default)
 ## ⚙️ Configuration
 
 - **Config file**: `~/.config/ff/settings.toml`
-- **Cache**: `~/.config/ff/cache_directory.json`
+- **Cache**: `~/.config/ff/cache_directory.json` (folders for root search; ff's own
+  folder changes update it at once, and a cache older than an hour is refreshed in the
+  background at startup)
 - **Themes**: `~/.config/ff/themes/`
 
 `ff` stores active TOML settings under `~/.config/ff/settings.toml`.

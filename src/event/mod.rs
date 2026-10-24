@@ -4,7 +4,7 @@ use ratatui::widgets::ListState;
 
 use crate::{
     app::App,
-    directory_store::DirectoryStore,
+    directory_store::DirectoryIndex,
     file_reader_content::FileContent,
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
@@ -27,7 +27,7 @@ pub struct LoopState {
     pub file_reader_content: FileContent<'static>,
     pub image_renderer: ImageRenderer,
     pub status_bar: StatusBar,
-    pub store: DirectoryStore,
+    pub index: DirectoryIndex,
     /// Copy progress receiver (for async copy operations)
     pub copy_receiver: Option<mpsc::Receiver<CopyMessage>>,
     /// Delete progress receiver (for async delete operations)

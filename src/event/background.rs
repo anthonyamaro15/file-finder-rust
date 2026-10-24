@@ -1,15 +1,14 @@
 //! Per-iteration polling of background work: previews, images, copies, moves,
 //! deletes, file system events and the directory cache build.
 
-use std::sync::mpsc;
+use std::{path::Path, sync::mpsc};
 
 use log::{debug, warn};
 use ratatui::widgets::ListState;
 
 use crate::{
     app::{App, InputMode},
-    config::Settings,
-    directory_store::DirectoryStore,
+    directory_store::DirectoryIndex,
     event::file_actions::current_refresh_directory,
     file_reader_content::{self, FileContent, FileType},
     operations::{CopyMessage, DeleteMessage},
@@ -362,20 +361,27 @@ fn poll_copy_messages(
     success
 }
 
-/// Refresh completed copies and select an in-place duplicate when visible.
+/// Refresh completed copies and select an in-place duplicate when visible. Any finished
+/// copy re-reads its destination into the folder index: a failed one removes what it
+/// wrote, but a background refresh may have seen it meanwhile.
 pub fn refresh_after_copy(
     app: &mut App,
     state: &mut ListState,
     status_bar: &mut StatusBar,
     receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
+    index: &mut DirectoryIndex,
     fallback_start_path: &str,
 ) {
-    let destination = app
-        .copy_destination
+    let copied = app.copy_destination.clone();
+    let destination = copied
         .as_ref()
         .filter(|_| app.copy_to_other_pane.is_none())
         .map(|path| path.to_string_lossy().into_owned());
-    if poll_copy_messages(app, status_bar, receiver) {
+    let succeeded = poll_copy_messages(app, status_bar, receiver);
+    if let Some(copied) = copied.as_ref().filter(|_| receiver.is_none()) {
+        index.changed(copied);
+    }
+    if succeeded {
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
         if let Ok(files) = get_file_path_data(
             refresh_dir,
@@ -393,14 +399,19 @@ pub fn refresh_after_copy(
     }
 }
 
-/// A finished move or extraction may have changed both panes, even if it failed.
+/// A finished move or extraction may have changed both panes and the folder index,
+/// even if it failed partway.
 pub fn poll_job(
     app: &mut App,
     state: &mut ListState,
     status_bar: &mut StatusBar,
+    index: &mut DirectoryIndex,
     fallback_start_path: &str,
 ) {
-    if let Some(result) = app.poll_job() {
+    if let Some((result, changes)) = app.poll_job() {
+        for path in &changes {
+            index.changed(path);
+        }
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
         if let Ok(files) = get_file_path_data(
             refresh_dir,
@@ -434,6 +445,7 @@ pub fn poll_delete(
     state: &mut ListState,
     status_bar: &mut StatusBar,
     delete_receiver: &mut Option<mpsc::Receiver<DeleteMessage>>,
+    index: &mut DirectoryIndex,
     fallback_start_path: &str,
 ) {
     if let Some(ref rx) = *delete_receiver {
@@ -459,6 +471,15 @@ pub fn poll_delete(
         }
 
         if let Some(msg) = last_msg {
+            // Even a failed delete may have removed some folders.
+            if matches!(
+                msg,
+                DeleteMessage::Completed { .. } | DeleteMessage::Error(_)
+            ) {
+                if let Some(path) = app.delete_path.take() {
+                    index.changed(Path::new(&path));
+                }
+            }
             match msg {
                 DeleteMessage::Counting { files_counted } => {
                     app.delete_progress_message = format!("Counting files... {}", files_counted);
@@ -547,12 +568,7 @@ pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_st
 }
 
 /// Process cache loading progress
-pub fn poll_cache_loading(
-    app: &mut App,
-    store: &mut DirectoryStore,
-    settings: &Settings,
-    fallback_start_path: &str,
-) {
+pub fn poll_cache_loading(app: &mut App, index: &mut DirectoryIndex, fallback_start_path: &str) {
     if app.input_mode == InputMode::CacheLoading && app.process_cache_loading_progress() {
         // Cache loading is complete, finish setup
         debug!("Cache loading completed, finalizing...");
@@ -566,25 +582,12 @@ pub fn poll_cache_loading(
             );
 
             // Update the in-memory store so global search starts working immediately
-            *store = cache_store.clone();
+            index.store = cache_store.clone();
 
             // Save the cache to file for future use
-            match crate::directory_store::save_directory_to_file(
-                cache_store,
-                &settings.cache_directory,
-            ) {
-                Ok(()) => {
-                    debug!(
-                        "Successfully saved cache to file: {}",
-                        settings.cache_directory
-                    );
-                    if let Some(ms) = app.cache_build_elapsed_ms {
-                        debug!("Directory cache built and saved in {} ms", ms);
-                    }
-                }
-                Err(e) => {
-                    debug!("Failed to save cache to file: {}", e);
-                }
+            index.save();
+            if let Some(ms) = app.cache_build_elapsed_ms {
+                debug!("Directory cache built in {} ms", ms);
             }
 
             // We no longer replace the current file list with the entire cache; keep current directory view.
@@ -640,6 +643,16 @@ pub(crate) mod tests {
     use crate::status_bar::NotificationKind;
     use crate::utils::{generate_copy_file_dir_name, SortBy, SortType};
     use std::path::PathBuf;
+
+    /// A folder index over `root` that is never saved.
+    pub(crate) fn memory_index(root: &std::path::Path) -> DirectoryIndex {
+        DirectoryIndex::new(
+            crate::directory_store::DirectoryStore::new(),
+            root.to_path_buf(),
+            Vec::new(),
+            None,
+        )
+    }
 
     pub(crate) fn running_copy_app() -> App {
         let mut app = App::new(Vec::new());
@@ -702,7 +715,14 @@ pub(crate) mod tests {
             let mut status = StatusBar::new();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while receiver.is_some() {
-                refresh_after_copy(&mut app, &mut state, &mut status, &mut receiver, &directory);
+                refresh_after_copy(
+                    &mut app,
+                    &mut state,
+                    &mut status,
+                    &mut receiver,
+                    &mut memory_index(dir.path()),
+                    &directory,
+                );
                 assert!(std::time::Instant::now() < deadline, "copy did not finish");
                 std::thread::yield_now();
             }
@@ -785,6 +805,7 @@ pub(crate) mod tests {
                 &mut state,
                 &mut StatusBar::new(),
                 &mut receiver,
+                &mut memory_index(browsed.path()),
                 &directory,
             );
 
@@ -981,5 +1002,160 @@ pub(crate) mod tests {
                 }
             );
         }
+    }
+
+    fn indexed(index: &DirectoryIndex) -> Vec<String> {
+        let mut dirs = index.store.directories.clone();
+        dirs.sort();
+        dirs
+    }
+
+    fn spelled(path: &std::path::Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn failed_copy_drops_folders_a_refresh_may_have_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("Projects/proj");
+        std::fs::create_dir(dir.path().join("Projects")).unwrap();
+        let mut index = memory_index(dir.path());
+        // What a refresh walking the partial copy would have recorded.
+        for path in [dir.path().join("Projects"), destination.clone()] {
+            index.store.insert(&spelled(&path));
+        }
+        let mut app = running_copy_app();
+        app.copy_destination = Some(destination);
+        let (tx, rx) = mpsc::channel();
+        tx.send(CopyMessage::Error(
+            "Permission denied; partial copy removed".into(),
+        ))
+        .unwrap();
+        let mut receiver = Some(rx);
+
+        refresh_after_copy(
+            &mut app,
+            &mut ListState::default(),
+            &mut StatusBar::new(),
+            &mut receiver,
+            &mut index,
+            &spelled(dir.path()),
+        );
+
+        assert_copy_finished(&app, &receiver);
+        assert_eq!(
+            index.store.directories,
+            [spelled(&dir.path().join("Projects"))]
+        );
+    }
+
+    #[test]
+    fn finished_copy_leaves_the_folder_index_matching_disk() {
+        for exists in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("proj");
+            std::fs::create_dir_all(source.join("sub")).unwrap();
+            let destination = dir.path().join("Projects/proj");
+            std::fs::create_dir_all(&destination).unwrap();
+            if !exists {
+                std::fs::remove_dir(&destination).unwrap();
+            }
+            let mut index = memory_index(dir.path());
+            index.changed(&source);
+            index.changed(&dir.path().join("Projects"));
+            let before = indexed(&index);
+            let mut app = App::new(Vec::new());
+            app.start_copy(destination.clone(), Some("proj".into()));
+            let mut receiver = Some(copy_dir_file_with_progress_cancellable(
+                &source,
+                &destination,
+                app.copy_cancel.clone(),
+            ));
+            let directory = spelled(dir.path());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while receiver.is_some() {
+                refresh_after_copy(
+                    &mut app,
+                    &mut ListState::default(),
+                    &mut StatusBar::new(),
+                    &mut receiver,
+                    &mut index,
+                    &directory,
+                );
+                assert!(std::time::Instant::now() < deadline, "copy did not finish");
+                std::thread::yield_now();
+            }
+
+            if exists {
+                assert_eq!(indexed(&index), before);
+            } else {
+                let mut expected = before.clone();
+                expected.extend([spelled(&destination), spelled(&destination.join("sub"))]);
+                expected.sort();
+                assert_eq!(indexed(&index), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn finished_moves_and_deletes_re_read_their_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("proj/sub")).unwrap();
+        std::fs::create_dir_all(root.join("old/inner")).unwrap();
+        std::fs::create_dir(root.join("Projects")).unwrap();
+        let mut index = memory_index(root);
+        for name in ["proj", "old", "Projects"] {
+            index.changed(&root.join(name));
+        }
+        let directory = spelled(root);
+        let mut app = App::new(Vec::new());
+        app.current_directory = directory.clone();
+        let mut state = ListState::default();
+        let mut status = StatusBar::new();
+
+        let (source, dest_dir) = (spelled(&root.join("proj")), spelled(&root.join("Projects")));
+        app.start_job(
+            "move",
+            "Moving 'proj'…".into(),
+            vec![root.join("proj"), root.join("Projects/proj")],
+            move |cancel| {
+                crate::operations::move_file_or_dir_cancellable(&source, &dest_dir, &cancel)
+                    .map(|()| "Moved".to_string())
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.job.is_some() {
+            poll_job(&mut app, &mut state, &mut status, &mut index, &directory);
+            assert!(std::time::Instant::now() < deadline, "move did not finish");
+            std::thread::yield_now();
+        }
+
+        std::fs::remove_dir_all(root.join("old")).unwrap();
+        app.delete_in_progress = true;
+        app.delete_path = Some(spelled(&root.join("old")));
+        let (tx, rx) = mpsc::channel();
+        tx.send(DeleteMessage::Completed {
+            success: true,
+            message: "Deleted 2 items".into(),
+        })
+        .unwrap();
+        poll_delete(
+            &mut app,
+            &mut state,
+            &mut status,
+            &mut Some(rx),
+            &mut index,
+            &directory,
+        );
+
+        assert_eq!(app.delete_path, None);
+        let expected: Vec<String> = ["Projects", "Projects/proj", "Projects/proj/sub"]
+            .iter()
+            .map(|name| spelled(&root.join(name)))
+            .collect();
+        assert_eq!(indexed(&index), expected);
     }
 }

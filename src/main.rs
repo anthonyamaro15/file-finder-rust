@@ -3,7 +3,11 @@
 // ============================================================
 
 // Standard library imports
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 // External crate imports
 use crossterm::{
@@ -24,7 +28,9 @@ use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
     config::Action,
-    directory_store::{build_directory_from_store_async, load_directory_from_file, DirectoryStore},
+    directory_store::{
+        build_directory_from_store_async, DirectoryIndex, DirectoryStore, REFRESH_THREADS,
+    },
     event::{keymap::KeymapRuntime, search::handle_search_key, LoopControl, LoopState},
     file_reader_content::FileContent,
     render::{configured_action_key_labels, image_renderer::ImageRenderer},
@@ -49,6 +55,14 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
         watcher_path: start_path.clone(),
         cache_path: start_path.clone(),
         refresh_fallback_path: start_path,
+    }
+}
+
+/// Quitting during an operation (confirmed after its warning) can stop it before ff
+/// sees its folder changes, so the next start refreshes the folder index.
+fn mark_index_stale_after_interrupted_quit(loop_state: &mut LoopState) {
+    if loop_state.app.quit_warning.is_some() {
+        loop_state.index.mark_stale();
     }
 }
 
@@ -166,34 +180,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => " find (i)".to_string(),
     };
 
-    let store = if !cli_args.rebuild_cache && Path::new(&settings.cache_directory).exists() {
-        match load_directory_from_file(&settings.cache_directory.to_owned()) {
-            Ok(res) => {
+    let cache_path = PathBuf::from(&settings.cache_directory);
+    let loaded = if !cli_args.rebuild_cache && cache_path.exists() {
+        match DirectoryIndex::load(
+            &cache_path,
+            Path::new(&startup_paths.cache_path),
+            settings.ignore_directories.clone(),
+        ) {
+            Ok(index) => {
                 debug!("Loading directory cache from file");
-                res
+                Some(index)
             }
             Err(e) => {
                 eprintln!("Warning: Could not load cache file ({}), rebuilding...", e);
-                // Fall through to rebuild cache
-                DirectoryStore::new()
+                None
             }
         }
     } else {
-        debug!("Starting asynchronous directory cache build...");
+        None
+    };
+    let index = match loaded {
+        Some(mut index) => {
+            // A cache read a while ago misses folders changed outside ff; re-read
+            // them quietly while ff runs.
+            if index.refresh_if_stale(SystemTime::now(), REFRESH_THREADS) {
+                debug!("Refreshing directory cache in the background");
+            }
+            index
+        }
+        None => {
+            debug!("Starting asynchronous directory cache build...");
 
-        // Start async cache building
-        let start_time = std::time::Instant::now();
-        let rx = build_directory_from_store_async(
-            startup_paths.cache_path.clone(),
-            settings.ignore_directories.clone(),
-        );
+            // Start async cache building
+            let start_time = std::time::Instant::now();
+            let rx = build_directory_from_store_async(
+                startup_paths.cache_path.clone(),
+                settings.ignore_directories.clone(),
+                num_cpus::get(),
+            );
 
-        // Set up the app to display loading progress and record start time
-        app.start_cache_loading(rx, start_time);
+            // Set up the app to display loading progress and record start time
+            app.start_cache_loading(rx, start_time);
 
-        // Return empty store for now - it will be populated when cache building completes
-        file_finder::directory_store::DirectoryStore {
-            directories: Vec::new(),
+            // Empty for now - it will be populated when cache building completes
+            DirectoryIndex::new(
+                DirectoryStore::new(),
+                PathBuf::from(&startup_paths.cache_path),
+                settings.ignore_directories.clone(),
+                Some(cache_path),
+            )
         }
     };
 
@@ -239,7 +274,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_reader_content,
         image_renderer,
         status_bar,
-        store,
+        index,
         copy_receiver: None,
         delete_receiver: None,
         selected_file: None,
@@ -280,6 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state.state,
             &mut loop_state.status_bar,
             &mut loop_state.copy_receiver,
+            &mut loop_state.index,
             &startup_paths.refresh_fallback_path,
         );
 
@@ -287,6 +323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state.app,
             &mut loop_state.state,
             &mut loop_state.status_bar,
+            &mut loop_state.index,
             &startup_paths.refresh_fallback_path,
         );
         background::poll_delete(
@@ -294,6 +331,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state.state,
             &mut loop_state.status_bar,
             &mut loop_state.delete_receiver,
+            &mut loop_state.index,
             &startup_paths.refresh_fallback_path,
         );
         background::poll_file_system_events(
@@ -303,10 +341,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         background::poll_cache_loading(
             &mut loop_state.app,
-            &mut loop_state.store,
-            &settings,
+            &mut loop_state.index,
             &startup_paths.refresh_fallback_path,
         );
+        loop_state.index.poll_refresh();
         background::sync_selection(
             &mut loop_state.app,
             &mut loop_state.state,
@@ -329,7 +367,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )? {
                             LoopControl::Continue => continue,
                             LoopControl::Break => break,
-                            LoopControl::Return => return Ok(()),
+                            LoopControl::Return => {
+                                mark_index_stale_after_interrupted_quit(&mut loop_state);
+                                return Ok(());
+                            }
                         },
 
                         InputMode::WatchRename if key.kind == KeyEventKind::Press => {
@@ -338,6 +379,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &mut loop_state.app,
                                 &mut loop_state.state,
                                 &mut loop_state.status_bar,
+                                &mut loop_state.index,
                                 &startup_paths.refresh_fallback_path,
                             )?
                         }
@@ -347,11 +389,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &mut loop_state.app,
                                 &mut loop_state.state,
                                 &mut loop_state.status_bar,
+                                &mut loop_state.index,
                             )?
                         }
 
                         InputMode::Editing if key.kind == KeyEventKind::Press => {
-                            handle_search_key(&mut loop_state.app, key.code, &loop_state.store);
+                            handle_search_key(
+                                &mut loop_state.app,
+                                key.code,
+                                &loop_state.index.store,
+                            );
                         }
                         InputMode::WatchDelete => {
                             if popups::handle_delete_key(
@@ -374,6 +421,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    mark_index_stale_after_interrupted_quit(&mut loop_state);
 
     // Restore terminal
     disable_raw_mode()?;

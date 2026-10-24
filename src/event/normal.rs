@@ -293,7 +293,11 @@ pub fn handle_normal_key(
                         .to_string_lossy()
                         .to_string();
                     let status = format!("Moving '{name}'…");
-                    let started = app.start_job("move", status, move |cancel| {
+                    let changes = vec![
+                        Path::new(&src_path).to_path_buf(),
+                        Path::new(&dest_dir).join(&name),
+                    ];
+                    let started = app.start_job("move", status, changes, move |cancel| {
                         operations::move_file_or_dir_cancellable(&src_path, &dest_dir, &cancel)
                             .map(|()| format!("Moved '{name}' to other pane"))
                             .map_err(|e| format!("Move failed: {e}"))
@@ -314,7 +318,10 @@ pub fn handle_normal_key(
                         .to_string_lossy()
                         .to_string();
                     let status = format!("Extracting '{name}'…");
-                    let started = app.start_job("extraction", status, move |cancel| {
+                    let changes = FileContent::zip_extraction_dir(Path::new(&selected))
+                        .into_iter()
+                        .collect();
+                    let started = app.start_job("extraction", status, changes, move |cancel| {
                         FileContent::extract_zip_content_cancellable(&selected, &cancel)
                     });
                     if let Err(warning) = started {

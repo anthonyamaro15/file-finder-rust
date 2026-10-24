@@ -372,6 +372,8 @@ pub struct App {
     // Delete progress tracking (for async delete)
     pub delete_in_progress: bool,
     pub delete_progress_message: String,
+    /// Folder being deleted in the background.
+    pub delete_path: Option<String>,
 
     // Preview debounce tracking
     pub preview_pending_path: Option<String>,
@@ -411,6 +413,8 @@ pub struct BackgroundJob {
     pub status: String,
     receiver: mpsc::Receiver<Result<String, String>>,
     pub cancel: Arc<AtomicBool>,
+    /// Paths the job changes, re-read into the folder index when it ends.
+    pub changes: Vec<PathBuf>,
 }
 
 impl BackgroundJob {
@@ -418,6 +422,7 @@ impl BackgroundJob {
     pub fn spawn(
         kind: &'static str,
         status: String,
+        changes: Vec<PathBuf>,
         work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Self {
         let (tx, receiver) = mpsc::channel();
@@ -431,6 +436,7 @@ impl BackgroundJob {
             status,
             receiver,
             cancel,
+            changes,
         }
     }
 
@@ -570,6 +576,7 @@ impl App {
             // Initialize delete progress tracking
             delete_in_progress: false,
             delete_progress_message: String::new(),
+            delete_path: None,
 
             // Initialize preview debounce tracking
             preview_pending_path: None,
@@ -1283,25 +1290,28 @@ impl App {
     }
 
     /// Run `work` in the background unless another operation runs (returns its warning).
+    /// `changes` are the paths it changes, for the folder index.
     pub fn start_job(
         &mut self,
         kind: &'static str,
         status: String,
+        changes: Vec<PathBuf>,
         work: impl FnOnce(Arc<AtomicBool>) -> Result<String, String> + Send + 'static,
     ) -> Result<(), String> {
         if let Some(warning) = self.busy_warning() {
             return Err(warning);
         }
         self.quit_warning = None;
-        self.job = Some(BackgroundJob::spawn(kind, status, work));
+        self.job = Some(BackgroundJob::spawn(kind, status, changes, work));
         Ok(())
     }
 
-    /// Take the job's result once it finishes, which frees the slot for the next operation.
-    pub fn poll_job(&mut self) -> Option<Result<String, String>> {
+    /// Take the job's result and changed paths once it finishes, which frees the slot
+    /// for the next operation.
+    pub fn poll_job(&mut self) -> Option<(Result<String, String>, Vec<PathBuf>)> {
         let result = self.job.as_ref()?.poll()?;
-        self.job = None;
-        Some(result)
+        let job = self.job.take()?;
+        Some((result, job.changes))
     }
 
     /// Allow leaving `ff` with `key` unless an operation runs. Then the first press
@@ -1930,7 +1940,7 @@ mod tests {
     fn wait_for_job(app: &mut App) -> Result<String, String> {
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if let Some(result) = app.poll_job() {
+            if let Some((result, _)) = app.poll_job() {
                 return result;
             }
             assert!(Instant::now() < deadline, "job never reported a result");
@@ -1945,7 +1955,7 @@ mod tests {
             "delete" => app.delete_in_progress = true,
             _ => {
                 let (release, wait) = mpsc::channel::<()>();
-                app.start_job(kind, format!("Running {kind}"), move |_| {
+                app.start_job(kind, format!("Running {kind}"), Vec::new(), move |_| {
                     wait.recv().map_err(|e| e.to_string())?;
                     Ok(format!("Finished {kind}"))
                 })
@@ -1968,7 +1978,8 @@ mod tests {
 
             // Another operation is refused and leaves the running one in place.
             for other in ["move", "extraction"] {
-                let refused = app.start_job(other, "Second".into(), |_| Ok(String::new()));
+                let refused =
+                    app.start_job(other, "Second".into(), Vec::new(), |_| Ok(String::new()));
                 assert_eq!(refused, Err(warning.clone()));
             }
             assert_eq!(app.busy_operation(), Some(kind));
@@ -1998,9 +2009,12 @@ mod tests {
     #[test]
     fn panicking_background_job_reports_an_error() {
         let mut app = App::new(Vec::new());
-        app.start_job("extraction", "Extracting 'a.zip'…".into(), |_| {
-            panic!("extraction worker crashed")
-        })
+        app.start_job(
+            "extraction",
+            "Extracting 'a.zip'…".into(),
+            Vec::new(),
+            |_| panic!("extraction worker crashed"),
+        )
         .unwrap();
         assert_eq!(
             wait_for_job(&mut app),
