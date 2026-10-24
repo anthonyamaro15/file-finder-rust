@@ -186,6 +186,36 @@ pub fn get_curr_path(path: String) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn file_path_data_lists_root() {
+        for show_hidden in [false, true] {
+            for sort_by in [
+                SortBy::Default,
+                SortBy::Name,
+                SortBy::Size,
+                SortBy::DateAdded,
+            ] {
+                let files =
+                    get_file_path_data("/".into(), show_hidden, sort_by, &SortType::ASC).unwrap();
+                assert!(!files.is_empty());
+                for file in files {
+                    let path = Path::new(&file);
+                    assert_eq!(path.parent(), Some(Path::new("/")));
+                    assert!(
+                        show_hidden
+                            || path.is_dir()
+                            || !path
+                                .file_name()
+                                .unwrap()
+                                .as_encoded_bytes()
+                                .starts_with(b".")
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn file_path_data_reports_missing_directory() {
         let dir = tempfile::tempdir().unwrap();

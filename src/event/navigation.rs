@@ -6,6 +6,15 @@ pub fn parent_directory(path: &Path) -> Option<PathBuf> {
         .or_else(|| path.has_root().then(|| PathBuf::from("/")))
 }
 
+/// Parent of the directory containing the selected entry.
+pub fn parent_listing_directory(selected: &Path) -> Option<PathBuf> {
+    selected
+        .parent()?
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+}
+
 pub fn next_index(current: Option<usize>, len: usize) -> Option<usize> {
     if len == 0 {
         None
@@ -72,6 +81,35 @@ mod tests {
     #[test]
     fn parent_directory_of_root_stays_root() {
         assert_eq!(parent_directory(Path::new("/")), Some(PathBuf::from("/")));
+    }
+
+    #[test]
+    fn parent_listing_directory_reaches_shallow_parents() {
+        for (selected, expected) in [
+            ("/Users/name/file.txt", "/Users"),
+            ("/Users/name", "/"),
+            ("/a/b/file.txt", "/a"),
+            ("/a/file.txt", "/"),
+            ("relative/dir/file.txt", "relative"),
+        ] {
+            assert_eq!(
+                parent_listing_directory(Path::new(selected)),
+                Some(PathBuf::from(expected))
+            );
+        }
+    }
+
+    #[test]
+    fn parent_listing_directory_stops_at_root_and_empty_relative_parent() {
+        for selected in [
+            "/",
+            "/Users",
+            "/.VolumeIcon.icns",
+            "file.txt",
+            "dir/file.txt",
+        ] {
+            assert_eq!(parent_listing_directory(Path::new(selected)), None);
+        }
     }
 
     #[test]
