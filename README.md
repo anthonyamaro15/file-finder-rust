@@ -206,7 +206,7 @@ The `?` help popup shows the live keybindings, custom ones included.
 
 | Key       | Action                     |
 | --------- | -------------------------- |
-| `a`       | Create file/directory      |
+| `a`       | Create file (end with / for a folder) |
 | `d`       | Move to Trash (with confirmation) |
 | `D` (Shift+D) | Permanently delete (with confirmation; cannot be undone) |
 | `r`       | Rename                     |
@@ -281,7 +281,7 @@ included, with each action's name.
 | `nav.parent`     | `h`, `<Left>`       | Parent directory                          |
 | `nav.enter`      | `l`, `<Right>`      | Enter directory                           |
 | `nav.choose`     | `<Enter>`           | Open in the editor, or copy/print the path |
-| `file.create`    | `a`                 | Create file/directory                     |
+| `file.create`    | `a`                 | Create file (end with / for a folder)     |
 | `file.rename`    | `r`                 | Rename                                    |
 | `file.duplicate` | `c`                 | Copy beside the item                      |
 | `file.copy_to`   | `C`                 | Copy to… (the other pane in Dual Pane)    |

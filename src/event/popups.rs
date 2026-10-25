@@ -144,9 +144,10 @@ pub fn handle_create_key(
                 .to_string_lossy()
                 .to_string();
             match create_item_based_on_type(new_path.clone(), app.create_edit_file_name.clone()) {
-                Ok(_) => {
+                Ok(top_created) => {
                     app.input_mode = InputMode::Normal;
-                    index.changed(&Path::new(&new_path).join(&app.create_edit_file_name));
+                    // Indexes every folder it made, nested ones included.
+                    index.changed(&top_created);
 
                     let created_path =
                         created_item_path(Path::new(&new_path), &app.create_edit_file_name);
@@ -809,7 +810,7 @@ mod tests {
         let spelled = |name: &str| root.join(name).to_string_lossy().into_owned();
 
         app.input_mode = InputMode::WatchCreate;
-        app.create_edit_file_name = "alpha".into();
+        app.create_edit_file_name = "alpha/inner/".into();
         let fallback = root.to_string_lossy().into_owned();
         handle_create_key(
             enter,
@@ -820,9 +821,10 @@ mod tests {
             &fallback,
         )
         .unwrap();
-        assert_eq!(index.store.directories, [spelled("alpha")]);
-        std::fs::create_dir(root.join("alpha/inner")).unwrap();
-        index.changed(&root.join("alpha/inner"));
+        assert_eq!(
+            index.store.directories,
+            [spelled("alpha"), spelled("alpha/inner")]
+        );
 
         app.input_mode = InputMode::WatchRename;
         app.current_path_to_edit = root.to_string_lossy().into_owned();

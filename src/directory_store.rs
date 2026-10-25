@@ -552,6 +552,36 @@ mod tests {
     }
 
     #[test]
+    fn changed_with_what_a_nested_create_returns_indexes_every_new_folder() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("existing")).unwrap();
+        let mut index = index_over(root, &[]);
+
+        for name in ["a/b/c/", "docs/todo.md", "existing/new/deeper/"] {
+            let created = crate::operations::create_item_based_on_type(
+                root.to_string_lossy().into_owned(),
+                name.to_string(),
+            )
+            .unwrap();
+            index.changed(&created);
+        }
+
+        assert_eq!(
+            listed(&index),
+            [
+                "/a",
+                "/a/b",
+                "/a/b/c",
+                "/docs",
+                "/existing",
+                "/existing/new",
+                "/existing/new/deeper"
+            ]
+        );
+    }
+
+    #[test]
     fn changed_skips_what_a_full_walk_would_skip() {
         let dir = tempdir().unwrap();
         let root = dir.path();

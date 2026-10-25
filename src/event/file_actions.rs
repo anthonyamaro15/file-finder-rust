@@ -136,7 +136,13 @@ mod tests {
 
     #[test]
     fn create_refresh_selects_the_new_file_or_folder() {
-        for name in ["zulu.txt", "zulu"] {
+        // A nested name highlights its first folder, the entry visible here.
+        for (name, visible) in [
+            ("zulu.txt", "zulu.txt"),
+            ("zulu", "zulu"),
+            ("zulu/", "zulu"),
+            ("zulu/todo.md", "zulu"),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             fs::write(dir.path().join("alpha.txt"), "existing").unwrap();
             let mut app = App::new(Vec::new());
@@ -161,7 +167,7 @@ mod tests {
             assert_eq!(state.selected(), Some(1));
             assert_eq!(
                 app.get_selected_path(state.selected()),
-                Some(dir.path().join(name).to_string_lossy().into_owned())
+                Some(dir.path().join(visible).to_string_lossy().into_owned())
             );
         }
     }
