@@ -6,6 +6,11 @@ use crate::{
 };
 
 fn refresh_root_search(app: &mut App, store: &DirectoryStore) {
+    if app.searching_right_pane() {
+        app.right_pane
+            .search(&app.input, store, app.max_search_results);
+        return;
+    }
     let query = app.input.trim().to_string();
     if query.is_empty() {
         app.search_results.clear();
@@ -53,6 +58,11 @@ pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStor
             app.move_cursor_right();
         }
         KeyCode::Esc => {
+            // The right pane keeps its query, so the box doesn't keep it for the left.
+            if app.searching_right_pane() {
+                app.input.clear();
+                app.reset_cursor();
+            }
             app.input_mode = InputMode::Normal;
         }
         _ => {}

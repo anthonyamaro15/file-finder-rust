@@ -204,6 +204,7 @@ pub fn handle_normal_key(
             // Reset active pane to left when leaving DualPane mode
             if app.view_mode == ViewMode::DualPane && new_mode != ViewMode::DualPane {
                 app.active_pane = PanePosition::Left;
+                app.right_pane.watcher = None;
             }
 
             app.view_mode = new_mode;
@@ -275,6 +276,10 @@ pub fn handle_normal_key(
         }
         KeyCode::Char('.') => {
             app.show_hidden_files = !app.show_hidden_files;
+            app.right_pane.show_hidden_files = app.show_hidden_files;
+            if app.view_mode.is_dual_pane() {
+                app.right_pane.refresh_files();
+            }
             // Refresh the browsed directory (even when it's empty or a
             // global result is highlighted), keeping any search filter.
             let refresh_dir = current_refresh_directory(app, fallback_start_path);

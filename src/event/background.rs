@@ -581,6 +581,8 @@ pub fn poll_info(app: &mut App) {
 
 /// Process file system events
 pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_start_path: &str) {
+    // The right pane watches its own folder, even when it's the same as the left's.
+    app.right_pane.poll_watcher();
     let fs_events = app.process_file_system_events();
     if !fs_events.is_empty() {
         // File system changes detected, refresh the CURRENT directory (not the start path)
@@ -811,6 +813,7 @@ pub(crate) mod tests {
             app.view_mode = ViewMode::DualPane;
             app.right_pane =
                 crate::pane::Pane::new(other.path().to_string_lossy().into_owned(), Vec::new());
+            app.right_pane.selected_index = Some(2);
             app.right_pane.list_state.select(Some(2));
             let mut state = ListState::default();
             state.select(Some(0));
@@ -1195,5 +1198,38 @@ pub(crate) mod tests {
             .map(|name| spelled(&root.join(name)))
             .collect();
         assert_eq!(indexed(&index), expected);
+    }
+
+    #[test]
+    fn watcher_events_refresh_both_panes_showing_the_same_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let directory = dir.path().to_string_lossy().into_owned();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let files =
+            get_file_path_data(directory.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+        let mut app = App::new(files);
+        app.sort_by = SortBy::Name;
+        app.start_watching_directory(&directory).unwrap();
+        app.view_mode = ViewMode::DualPane;
+        app.init_right_pane();
+        let mut state = ListState::default().with_selected(Some(0));
+        let highlighted = app.right_pane.get_selected_path();
+        // Give the poll watchers a moment to read the folder first.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let created = dir.path().join("a.txt").to_string_lossy().into_owned();
+        std::fs::write(&created, "a").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !(app.files.contains(&created) && app.right_pane.files.contains(&created))
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            poll_file_system_events(&mut app, &mut state, &directory);
+        }
+
+        assert!(app.files.contains(&created));
+        assert!(app.right_pane.files.contains(&created));
+        assert_eq!(app.right_pane.get_selected_path(), highlighted);
+        assert_eq!(app.current_directory, directory);
     }
 }

@@ -315,6 +315,7 @@ pub(crate) fn start_trash(
 pub fn handle_sort_key(
     key: KeyEvent,
     app: &mut App,
+    state: &mut ListState,
     status_bar: &mut StatusBar,
 ) -> anyhow::Result<()> {
     match key.code {
@@ -322,13 +323,13 @@ pub fn handle_sort_key(
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Char('n') => {
-            apply_sort(app, SortBy::Name, status_bar);
+            apply_sort(app, state, SortBy::Name, status_bar);
         }
         KeyCode::Char('s') => {
-            apply_sort(app, SortBy::Size, status_bar);
+            apply_sort(app, state, SortBy::Size, status_bar);
         }
         KeyCode::Char('t') => {
-            apply_sort(app, SortBy::DateAdded, status_bar);
+            apply_sort(app, state, SortBy::DateAdded, status_bar);
         }
         KeyCode::Char('a') => {
             app.sort_type = SortType::ASC;
@@ -965,6 +966,7 @@ mod tests {
         press(&mut state, KeyCode::Char('p'));
         press(&mut state, KeyCode::Char('p'));
         assert_eq!(state.app.view_mode, ViewMode::DualPane);
+        assert!(state.app.right_pane.watcher.is_some());
         press(&mut state, KeyCode::Tab);
         press(&mut state, KeyCode::Char('j'));
         let right_item = state.app.right_pane.get_selected_path().unwrap();
@@ -977,6 +979,7 @@ mod tests {
         press(&mut state, KeyCode::Char('p'));
         assert_eq!(state.app.view_mode, ViewMode::Normal);
         assert!(!state.app.is_right_pane_active());
+        assert!(state.app.right_pane.watcher.is_none());
         press(&mut state, KeyCode::Char('D'));
         assert_eq!(state.app.delete_target_path, Some(left_item));
     }
@@ -1303,6 +1306,7 @@ mod tests {
                     handle_sort_key(
                         KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
                         &mut state.app,
+                        &mut state.state,
                         &mut state.status_bar,
                     )
                     .unwrap();
@@ -1398,5 +1402,175 @@ mod tests {
         assert!(state.status_bar.has_error());
         assert_eq!(Path::new(&state.app.current_directory), root);
         assert_eq!(state.app.files, files);
+    }
+
+    fn sort_key(state: &mut LoopState, c: char) {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        handle_sort_key(key, &mut state.app, &mut state.state, &mut state.status_bar).unwrap();
+    }
+
+    #[test]
+    fn sort_applies_to_both_panes_and_the_right_pane_keeps_it_when_navigating() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let right = Path::new(&right_item).parent().unwrap().to_path_buf();
+        let charlie = spelled(&right.join("charlie.txt"));
+        state.app.right_pane.select_path(&charlie);
+
+        press(&mut state, KeyCode::Char('s'));
+        sort_key(&mut state, 'd');
+        sort_key(&mut state, 'n');
+
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        let names = |files: &[String]| files.iter().map(|f| name_of(f)).collect::<Vec<_>>();
+        assert_eq!(names(&state.app.files), ["bravo.txt", "alpha.txt"]);
+        assert_eq!(selected(&state), Some(left_item));
+        let pane = &state.app.right_pane;
+        assert_eq!(names(&pane.files), ["echo.txt", "delta.txt", "charlie.txt"]);
+        assert_eq!(pane.get_selected_path(), Some(charlie));
+        assert_eq!(pane.list_state.selected(), Some(2));
+
+        press(&mut state, KeyCode::Char('h'));
+        assert_eq!(names(&state.app.right_pane.files), ["right", "left"]);
+        press(&mut state, KeyCode::Char('l'));
+        assert_eq!(Path::new(&state.app.right_pane.current_directory), right);
+        std::fs::write(right.join("foxtrot.txt"), "f").unwrap();
+        state.app.right_pane.refresh_files();
+        assert_eq!(
+            names(&state.app.right_pane.files),
+            ["foxtrot.txt", "echo.txt", "delta.txt", "charlie.txt"]
+        );
+    }
+
+    #[test]
+    fn sort_works_and_closes_its_popup_in_an_empty_left_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = removal_state(dir.path(), Vec::new());
+
+        press(&mut state, KeyCode::Char('s'));
+        sort_key(&mut state, 's');
+
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert_eq!(state.app.sort_by, SortBy::Size);
+        assert!(!state.status_bar.has_error());
+    }
+
+    #[test]
+    fn hidden_files_toggle_also_refreshes_the_right_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, _, right_item) = dual_pane_state(dir.path());
+        let hidden = spelled(&Path::new(&right_item).with_file_name(".hidden"));
+        std::fs::write(&hidden, "hidden").unwrap();
+        state.app.right_pane.refresh_files();
+        assert!(!state.app.right_pane.files.contains(&hidden));
+
+        press(&mut state, KeyCode::Char('.'));
+        let pane = &state.app.right_pane;
+        assert!(pane.show_hidden_files);
+        assert!(pane.files.contains(&hidden));
+        assert_eq!(pane.get_selected_path(), Some(right_item));
+
+        // Hiding the highlighted item leaves a valid, clamped row.
+        state.app.right_pane.select_path(&hidden);
+        press(&mut state, KeyCode::Char('.'));
+        let pane = &state.app.right_pane;
+        assert!(!pane.show_hidden_files);
+        assert!(!pane.files.contains(&hidden));
+        assert!(pane
+            .selected_index
+            .is_some_and(|row| row < pane.files.len()));
+        assert_eq!(pane.list_state.selected(), pane.selected_index);
+    }
+
+    fn type_search(state: &mut LoopState, text: &str) {
+        for c in text.chars() {
+            crate::event::search::handle_search_key(
+                &mut state.app,
+                KeyCode::Char(c),
+                &state.index.store,
+            );
+        }
+    }
+
+    fn search_key(state: &mut LoopState, code: KeyCode) {
+        crate::event::search::handle_search_key(&mut state.app, code, &state.index.store);
+    }
+
+    #[test]
+    fn local_search_in_the_right_pane_filters_it_and_leaves_the_left_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let right = Path::new(&right_item).parent().unwrap().to_path_buf();
+        std::fs::create_dir(right.join("photos")).unwrap();
+        state.app.right_pane.refresh_files();
+        let left_files = state.app.files.clone();
+        let photos = spelled(&right.join("photos"));
+
+        press(&mut state, KeyCode::Char('i'));
+        type_search(&mut state, "pho");
+
+        // The top match is highlighted; others may match the temp folder's path.
+        let pane = &state.app.right_pane;
+        assert!(pane.get_list_length() < pane.files.len());
+        assert_eq!(pane.search_results[0].file_path, photos);
+        assert_eq!(pane.get_selected_path(), Some(photos.clone()));
+        assert_eq!(state.app.files, left_files);
+        assert!(state.app.search_results.is_empty());
+        assert_eq!(state.app.filtered_indexes, [0, 1]);
+        assert_eq!(selected(&state), Some(left_item.clone()));
+        assert_eq!(crate::ui::highlight_term(&state.app, true), "pho");
+        assert_eq!(crate::ui::highlight_term(&state.app, false), "");
+
+        // Esc keeps the filter in the right pane, as it does in the left listing.
+        search_key(&mut state, KeyCode::Esc);
+        assert_eq!(state.app.search_box(), ("pho", false));
+        press(&mut state, KeyCode::Char('j'));
+        press(&mut state, KeyCode::Char('k'));
+        assert_eq!(
+            state.app.active_selected_path(state.state.selected()),
+            Some(photos.clone())
+        );
+        press(&mut state, KeyCode::Char('l'));
+        let pane = &state.app.right_pane;
+        assert_eq!(pane.current_directory, photos);
+        assert!(!pane.is_searching());
+        assert_eq!(state.app.search_box(), ("", false));
+
+        // Clearing the query shows the whole listing again, on the same item.
+        press(&mut state, KeyCode::Char('h'));
+        press(&mut state, KeyCode::Char('i'));
+        type_search(&mut state, "ech");
+        let echo = spelled(&right.join("echo.txt"));
+        assert_eq!(state.app.right_pane.get_selected_path(), Some(echo.clone()));
+        for _ in 0..3 {
+            search_key(&mut state, KeyCode::Backspace);
+        }
+        let pane = &state.app.right_pane;
+        assert!(!pane.is_searching());
+        assert_eq!(pane.get_list_length(), pane.files.len());
+        assert_eq!(pane.get_selected_path(), Some(echo));
+        assert_eq!(selected(&state), Some(left_item));
+    }
+
+    #[test]
+    fn global_search_in_the_right_pane_shows_and_opens_results_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, _) = dual_pane_state(dir.path());
+        let target = dir.path().join("left");
+        state.index.store.insert(&spelled(&target));
+
+        press(&mut state, KeyCode::Char('i'));
+        type_search(&mut state, "/lef");
+        let pane = &state.app.right_pane;
+        assert!(pane.global_search_mode);
+        assert_eq!(pane.get_selected_path(), Some(spelled(&target)));
+        assert!(!state.app.global_search_mode);
+        assert!(state.app.search_results.is_empty());
+
+        search_key(&mut state, KeyCode::Esc);
+        assert_eq!(state.app.search_box(), ("lef", true));
+        press(&mut state, KeyCode::Char('l'));
+        assert_eq!(Path::new(&state.app.right_pane.current_directory), target);
+        assert_eq!(selected(&state), Some(left_item));
     }
 }
