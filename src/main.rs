@@ -370,6 +370,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &startup_paths.refresh_fallback_path,
         );
         loop_state.index.poll_refresh();
+        if let Some(message) = loop_state.app.sync_visual(&mut loop_state.state) {
+            loop_state.status_bar.show_warning(message, None);
+        }
         background::poll_info(&mut loop_state.app);
         background::sync_selection(
             &mut loop_state.app,
@@ -405,6 +408,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         },
 
+                        InputMode::Visual => {
+                            normal::handle_visual_key(key, &mut loop_state, &mut keymap_runtime)
+                        }
                         InputMode::WatchRename if key.kind == KeyEventKind::Press => {
                             popups::handle_rename_key(
                                 key,

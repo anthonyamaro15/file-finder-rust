@@ -20,8 +20,10 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_rename_input_popup, create_sort_options_popup, draw_input_popup, draw_popup,
-        input_popup_cursor_position, popups::draw_delete_popup, render_folder_picker,
-        render_info_popup, render_keybindings_popup, split_popup_area_vertical,
+        input_popup_cursor_position,
+        popups::{draw_delete_popup, render_batch_confirmation_popup},
+        render_folder_picker, render_info_popup, render_keybindings_popup,
+        split_popup_area_vertical,
     },
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
@@ -99,6 +101,10 @@ pub fn draw(
                 };
                 (vec![mode_text], OneDarkTheme::search_active())
             },
+            InputMode::Visual => (
+                vec!["Visual Select (o swaps the ends, Esc to cancel)".bold()],
+                OneDarkTheme::info(),
+            ),
             InputMode::WatchDelete => (vec!["Permanent Delete".bold()], OneDarkTheme::error()),
             InputMode::WatchTrash => (vec!["Move to Trash".bold()], OneDarkTheme::error()),
             InputMode::WatchCreate => (vec!["Create Mode".bold()], OneDarkTheme::success()),
@@ -371,6 +377,12 @@ pub fn draw(
                     .collect()
             };
 
+            let right_items = if is_right_active {
+                crate::ui::style_visual_rows(right_items, app)
+            } else {
+                right_items
+            };
+
             // Create title with directory info and active indicator
             let dir_name = std::path::Path::new(&right_pane.current_directory)
                 .file_name()
@@ -432,7 +444,13 @@ pub fn draw(
         }
         // FullList mode: no second pane to render (100% width file list)
 
-        if app.render_popup {
+        if app.render_popup && !app.batch_targets.is_empty() {
+            render_batch_confirmation_popup(
+                f,
+                &app.batch_targets,
+                app.input_mode == InputMode::WatchTrash,
+            );
+        } else if app.render_popup {
             let popup = create_delete_confirmation_popup(
                 &app.delete_target_name,
                 app.delete_target_is_dir,

@@ -1,7 +1,11 @@
 //! Key handling for the popup modes: rename, create, delete confirmation, sort and
 //! the keybinding help.
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use log::warn;
@@ -234,7 +238,29 @@ pub fn handle_delete_key(
         }
         KeyCode::Char('y') => {
             let to_trash = app.input_mode == InputMode::WatchTrash;
-            if let Some(selected) = app.close_delete_popup() {
+            let targets = std::mem::take(&mut app.batch_targets);
+            let selected = app.close_delete_popup();
+            if !targets.is_empty() {
+                let started = if to_trash {
+                    start_batch_removal(
+                        app,
+                        state,
+                        targets,
+                        true,
+                        crate::operations::trash::move_to_trash,
+                    )
+                } else {
+                    start_batch_removal(app, state, targets, false, |path| {
+                        handle_delete_based_on_type(&path.to_string_lossy())
+                            .map_err(|e| e.user_message())
+                    })
+                };
+                if let Err(warning) = started {
+                    status_bar.show_warning(warning, None);
+                }
+                return Ok(false);
+            }
+            if let Some(selected) = selected {
                 if to_trash {
                     if let Err(warning) = start_trash(
                         app,
@@ -316,6 +342,108 @@ pub(crate) fn start_trash(
     Ok(())
 }
 
+/// Trash (`to_trash`) or permanently delete a selection's frozen `targets` in the
+/// background, each on its own: a failure doesn't stop the rest, an item already gone
+/// counts as done, and quitting stops after the current item. `remove` does one item
+/// (folders recursively); it's injected so tests never touch the system Trash. Once
+/// started, visual mode ends with the highlight on the selection's first row.
+pub(crate) fn start_batch_removal(
+    app: &mut App,
+    state: &mut ListState,
+    targets: Vec<String>,
+    to_trash: bool,
+    remove: impl Fn(&Path) -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let name = |path: &str| {
+        Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let total = targets.len();
+    let items = if total == 1 {
+        format!("'{}'", name(&targets[0]))
+    } else {
+        format!("{total} items")
+    };
+    let (kind, status, done_verb, verb, place) = if to_trash {
+        (
+            "trash",
+            format!("Moving {items} to Trash…"),
+            "Moved",
+            "move",
+            " to Trash",
+        )
+    } else {
+        (
+            "deletion",
+            format!("Deleting {items}…"),
+            "Deleted",
+            "delete",
+            "",
+        )
+    };
+    let changes = targets.iter().map(PathBuf::from).collect();
+    let first_row = app.visual_rows().map(|rows| *rows.start());
+    app.start_job(kind, status, changes, move |cancel| {
+        let mut done = 0;
+        let mut failures = Vec::new();
+        for target in &targets {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let path = Path::new(target);
+            let Err(error) = remove(path) else {
+                done += 1;
+                continue;
+            };
+            let gone = path
+                .symlink_metadata()
+                .is_err_and(|e| e.kind() == io::ErrorKind::NotFound);
+            if gone {
+                done += 1;
+            } else {
+                let error = error.trim_end_matches('.').to_string();
+                warn!("Couldn't {verb} '{target}'{place}: {error}");
+                failures.push((name(target), error));
+            }
+        }
+        let failed = failures.len();
+        let stopped = total - done - failed;
+        let Some((first_name, first_error)) = failures.first() else {
+            return if stopped == 0 {
+                Ok(format!("{done_verb} {items}{place}"))
+            } else {
+                let done_verb = done_verb.to_lowercase();
+                Err(format!(
+                    "Stopped: {done_verb} {done} of {total} items{place}"
+                ))
+            };
+        };
+        let mut message = if total == 1 {
+            format!("Couldn't {verb} {items}{place}: {first_error}")
+        } else {
+            format!(
+                "Couldn't {verb} {failed} of {total} items{place}: '{first_name}': {first_error}"
+            )
+        };
+        if failed > 1 {
+            message.push_str(&format!(" (and {} more; see ff.log)", failed - 1));
+        }
+        if stopped > 0 {
+            message.push_str(&format!("; stopped before the last {stopped}"));
+        }
+        Err(message)
+    })?;
+    if let Some(row) = first_row {
+        app.select_active_row(state, row);
+    }
+    app.preserved_selection_index = state.selected();
+    app.end_visual();
+    Ok(())
+}
+
 /// Sort mode: pick the sort field or direction.
 pub fn handle_sort_key(
     key: KeyEvent,
@@ -375,7 +503,7 @@ mod tests {
     use crate::event::{
         background::{poll_delete, poll_job, refresh_after_copy, tests::memory_index},
         keymap::KeymapRuntime,
-        normal::handle_normal_key,
+        normal::{handle_normal_key, handle_visual_key},
         LoopControl,
     };
     use crate::status_bar::NotificationKind;
@@ -1688,6 +1816,12 @@ mod tests {
                     .unwrap()
             }
             InputMode::WatchKeyBinding => handle_keybinding_key(key, &mut state.app),
+            InputMode::Visual => handle_visual_key(key, state, keymap),
+            InputMode::WatchTrash | InputMode::WatchDelete => {
+                if handle_delete_key(key, state, &mut test_terminal(), "unused").unwrap() {
+                    return LoopControl::Break;
+                }
+            }
             InputMode::Editing => search_key(state, key.code),
             InputMode::PickFolder => {
                 let selected = state.state.selected();
@@ -1720,6 +1854,7 @@ mod tests {
             InputMode::WatchKeyBinding,
             InputMode::WatchInfo,
             InputMode::PickFolder,
+            InputMode::Visual,
         ] {
             state.app.input_mode = mode;
             let control = dispatch(&mut state, chord('c', KeyModifiers::CONTROL));
@@ -1939,5 +2074,519 @@ mod tests {
             dispatch(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             assert_eq!(state.app.input_mode, InputMode::Normal);
         }
+    }
+
+    /// `root` listing `names` by name (a trailing `/` makes a folder holding a nested
+    /// folder and file), with `highlight` highlighted.
+    fn named_listing(root: &Path, names: &[&str], highlight: &str) -> LoopState {
+        for name in names {
+            match name.strip_suffix('/') {
+                Some(folder) => {
+                    let inner = root.join(folder).join("inner");
+                    std::fs::create_dir_all(&inner).unwrap();
+                    std::fs::write(inner.join("file.txt"), "x").unwrap();
+                }
+                None => std::fs::write(root.join(name), name).unwrap(),
+            }
+        }
+        let files = get_file_path_data(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
+        let mut state = removal_state(root, files);
+        let highlighted = spelled(&root.join(highlight));
+        state
+            .state
+            .select(state.app.files.iter().position(|f| *f == highlighted));
+        state
+    }
+
+    /// Type `keys` as the main loop would, with one keymap so sequences carry over.
+    fn type_keys(state: &mut LoopState, keymap: &mut KeymapRuntime, keys: &str) -> LoopControl {
+        let mut control = LoopControl::Continue;
+        for c in keys.chars() {
+            let modifiers = if c.is_ascii_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            control = dispatch_with(state, chord(c, modifiers), keymap);
+        }
+        control
+    }
+
+    fn default_keymap() -> KeymapRuntime {
+        KeymapRuntime::from_settings(&crate::config::KeymapSettings::default())
+    }
+
+    /// Names of the selected items, in listing order.
+    fn selection(state: &LoopState) -> Vec<String> {
+        state.app.visual.as_ref().map_or_else(Vec::new, |visual| {
+            visual.paths.iter().map(|path| name_of(path)).collect()
+        })
+    }
+
+    /// Name of the active pane's highlighted item.
+    fn highlighted(state: &LoopState) -> Option<String> {
+        let path = state.app.active_selected_path(state.state.selected())?;
+        Some(name_of(&path))
+    }
+
+    /// Re-read the left folder as the watcher does, then check the selection as the
+    /// main loop does.
+    fn watcher_refresh(state: &mut LoopState) -> Option<String> {
+        let directory = state.app.current_directory.clone();
+        let files = get_file_path_data(directory, false, SortBy::Name, &SortType::ASC).unwrap();
+        state
+            .app
+            .refresh_files_from_watcher(files, &mut state.state);
+        state.app.sync_visual(&mut state.state)
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// `dual_pane_state` with the right pane sorted by name too.
+    fn sorted_dual_pane_state(root: &Path) -> (LoopState, String) {
+        let (mut state, left_item, _) = dual_pane_state(root);
+        state.app.right_pane.sort_by = SortBy::Name;
+        state.app.right_pane.refresh_files();
+        (state, left_item)
+    }
+
+    #[test]
+    fn gg_and_shift_g_jump_to_the_first_and_last_item_in_either_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, _) = sorted_dual_pane_state(dir.path());
+        let mut keymap = default_keymap();
+        for pane in [PanePosition::Right, PanePosition::Left] {
+            state.app.active_pane = pane;
+            let (first, last) = if state.app.is_right_pane_active() {
+                ("charlie.txt", "echo.txt")
+            } else {
+                ("alpha.txt", "bravo.txt")
+            };
+            type_keys(&mut state, &mut keymap, "G");
+            assert_eq!(highlighted(&state).as_deref(), Some(last));
+            type_keys(&mut state, &mut keymap, "gg");
+            assert_eq!(highlighted(&state).as_deref(), Some(first));
+            // A key that doesn't finish `gg` is dropped.
+            type_keys(&mut state, &mut keymap, "gj");
+            assert_eq!(highlighted(&state).as_deref(), Some(first));
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+        }
+        assert_eq!(state.app.right_pane.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn visual_motions_stretch_the_selection_and_o_swaps_its_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["a", "b", "c", "d", "e", "f"];
+        let mut state = named_listing(dir.path(), &names, "c");
+        let mut keymap = default_keymap();
+
+        type_keys(&mut state, &mut keymap, "V");
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+        assert_eq!(selection(&state), ["c"]);
+        for (keys, selected, cursor) in [
+            ("jj", &["c", "d", "e"][..], "e"),
+            ("o", &["c", "d", "e"], "c"),
+            ("k", &["b", "c", "d", "e"], "b"),
+            ("G", &["e", "f"], "f"),
+            // No wrapping around while selecting.
+            ("j", &["e", "f"], "f"),
+            ("gg", &["a", "b", "c", "d", "e"], "a"),
+            ("k", &["a", "b", "c", "d", "e"], "a"),
+            ("o", &["a", "b", "c", "d", "e"], "e"),
+            ("kkkk", &["a"], "a"),
+        ] {
+            type_keys(&mut state, &mut keymap, keys);
+            assert_eq!(selection(&state), selected, "{keys}");
+            assert_eq!(highlighted(&state).as_deref(), Some(cursor), "{keys}");
+            assert_eq!(state.app.input_mode, InputMode::Visual);
+        }
+        // The rebindable arrow keys stretch it too.
+        dispatch_with(
+            &mut state,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut keymap,
+        );
+        assert_eq!(selection(&state), ["a", "b"]);
+        assert_eq!(state.app.visual_rows(), Some(0..=1));
+    }
+
+    #[test]
+    fn visual_mode_ignores_other_keys_and_esc_or_the_visual_key_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b", "photos/"], "a");
+        let mut keymap = default_keymap();
+        let before = names_in(dir.path());
+
+        type_keys(&mut state, &mut keymap, "Vj");
+        assert_eq!(selection(&state), ["a", "b"]);
+        type_keys(&mut state, &mut keymap, "jhlarcCMyzIsp.?/iq ");
+        for code in [KeyCode::Enter, KeyCode::Tab, KeyCode::Left, KeyCode::Right] {
+            dispatch_with(
+                &mut state,
+                KeyEvent::new(code, KeyModifiers::NONE),
+                &mut keymap,
+            );
+        }
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+        assert_eq!(selection(&state), ["a", "b", "photos"]);
+        assert_eq!(Path::new(&state.app.current_directory), dir.path());
+        assert!(state.app.job.is_none() && state.copy_receiver.is_none());
+        assert!(!state.app.render_popup);
+        assert_eq!(names_in(dir.path()), before);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Only d and Shift+D can act on a selection · Esc to cancel")
+        );
+
+        // After `g`, Esc only cancels the sequence; the next Esc ends visual mode.
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        type_keys(&mut state, &mut keymap, "g");
+        dispatch_with(&mut state, esc, &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+        dispatch_with(&mut state, esc, &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.visual.is_none());
+        assert_eq!(highlighted(&state).as_deref(), Some("photos"));
+
+        for key in ["V", "v"] {
+            type_keys(&mut state, &mut keymap, key);
+            assert_eq!(state.app.input_mode, InputMode::Visual);
+            type_keys(&mut state, &mut keymap, key);
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+            assert!(state.app.visual.is_none());
+        }
+        assert_eq!(names_in(dir.path()), before);
+    }
+
+    #[test]
+    fn the_selection_stays_on_its_items_when_the_listing_refreshes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut state = named_listing(root, &["b", "c", "d", "e"], "c");
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "Vjj");
+        assert_eq!(selection(&state), ["c", "d", "e"]);
+
+        // A new item before the selection shifts its rows, not its items.
+        std::fs::write(root.join("a"), "a").unwrap();
+        assert_eq!(watcher_refresh(&mut state), None);
+        assert_eq!(selection(&state), ["c", "d", "e"]);
+        assert_eq!(state.app.visual_rows(), Some(2..=4));
+        assert_eq!(highlighted(&state).as_deref(), Some("e"));
+        // A refresh that keeps the highlighted row, not its item, is put right.
+        std::fs::write(root.join("0"), "0").unwrap();
+        let files = get_file_path_data(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
+        state
+            .app
+            .refresh_files_after_operation(files, &mut state.state, None);
+        assert_eq!(highlighted(&state).as_deref(), Some("d"));
+        assert_eq!(state.app.sync_visual(&mut state.state), None);
+        assert_eq!(highlighted(&state).as_deref(), Some("e"));
+        assert_eq!(selection(&state), ["c", "d", "e"]);
+
+        // An item gone from inside the range just leaves it.
+        std::fs::remove_file(root.join("d")).unwrap();
+        assert_eq!(watcher_refresh(&mut state), None);
+        assert_eq!(selection(&state), ["c", "e"]);
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+
+        // A new item inside the range ends visual mode instead of joining it.
+        std::fs::write(root.join("cc"), "cc").unwrap();
+        assert_eq!(
+            watcher_refresh(&mut state).as_deref(),
+            Some("Selection cancelled: a new item appeared inside it")
+        );
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.visual.is_none());
+
+        // So does losing either end.
+        for (gone, keys) in [("c", "Vjj"), ("e", "Vjj"), ("c", "V")] {
+            type_keys(&mut state, &mut keymap, "gg");
+            while highlighted(&state).as_deref() != Some("c") {
+                type_keys(&mut state, &mut keymap, "j");
+            }
+            type_keys(&mut state, &mut keymap, keys);
+            assert_eq!(state.app.input_mode, InputMode::Visual);
+            std::fs::remove_file(root.join(gone)).unwrap();
+            assert_eq!(
+                watcher_refresh(&mut state).as_deref(),
+                Some("Selection cancelled: an item at its end is gone"),
+                "{gone}"
+            );
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+            std::fs::write(root.join(gone), gone).unwrap();
+            watcher_refresh(&mut state);
+        }
+    }
+
+    #[test]
+    fn the_prompt_cancels_back_to_the_unchanged_selection_and_q_quits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b", "c"], "a");
+        let mut keymap = default_keymap();
+        let before = names_in(dir.path());
+        type_keys(&mut state, &mut keymap, "Vj");
+        for (key, mode) in [("d", InputMode::WatchTrash), ("D", InputMode::WatchDelete)] {
+            for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+                type_keys(&mut state, &mut keymap, key);
+                assert_eq!(state.app.input_mode, mode);
+                assert!(state.app.render_popup);
+                assert_eq!(state.app.batch_targets.len(), 2);
+                dispatch_with(
+                    &mut state,
+                    KeyEvent::new(cancel, KeyModifiers::NONE),
+                    &mut keymap,
+                );
+                assert_eq!(state.app.input_mode, InputMode::Visual);
+                assert!(!state.app.render_popup);
+                assert!(state.app.batch_targets.is_empty());
+                assert_eq!(selection(&state), ["a", "b"]);
+                assert_eq!(highlighted(&state).as_deref(), Some("b"));
+                assert!(state.app.job.is_none());
+            }
+        }
+        type_keys(&mut state, &mut keymap, "D");
+        assert!(matches!(
+            type_keys(&mut state, &mut keymap, "q"),
+            LoopControl::Break
+        ));
+        assert!(state.app.job.is_none());
+        assert_eq!(names_in(dir.path()), before);
+    }
+
+    #[test]
+    fn d_then_y_permanently_deletes_exactly_the_items_named_in_the_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let names = ["a.txt", "b/", "c.txt", "d.txt", "e.txt"];
+        let mut state = named_listing(root, &names, "b");
+        state.index.changed(&root.join("b"));
+        assert!(!state.index.store.directories.is_empty());
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "VjjD");
+        assert_eq!(state.app.input_mode, InputMode::WatchDelete);
+        let named: Vec<String> = state.app.batch_targets.iter().map(|p| name_of(p)).collect();
+        assert_eq!(named, ["b", "c.txt", "d.txt"]);
+
+        // The folder changes while the prompt is open: a new item inside the range
+        // stays, and an item already gone counts as done.
+        std::fs::write(root.join("bb.txt"), "new").unwrap();
+        std::fs::remove_file(root.join("c.txt")).unwrap();
+        assert_eq!(watcher_refresh(&mut state), None);
+        type_keys(&mut state, &mut keymap, "y");
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.visual.is_none());
+        assert_eq!(state.app.job.as_ref().unwrap().kind, "deletion");
+        finish_removal(&mut state);
+
+        assert_eq!(names_in(root), ["a.txt", "bb.txt", "e.txt"]);
+        assert!(state.index.store.directories.is_empty());
+        assert_eq!(state.status_bar.notification_kind, NotificationKind::Info);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Deleted 3 items")
+        );
+        // The highlight is where the range started: the item now at that row.
+        assert_eq!(highlighted(&state).as_deref(), Some("bb.txt"));
+    }
+
+    #[test]
+    fn after_a_selection_at_the_end_is_deleted_the_highlight_is_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b", "c"], "b");
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "VGDy");
+        finish_removal(&mut state);
+        assert_eq!(names_in(dir.path()), ["a"]);
+        assert_eq!(highlighted(&state).as_deref(), Some("a"));
+
+        // A one-item selection is a batch of one.
+        type_keys(&mut state, &mut keymap, "VDy");
+        finish_removal(&mut state);
+        assert!(names_in(dir.path()).is_empty());
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Deleted 'a'")
+        );
+        assert_eq!(state.state.selected(), None);
+    }
+
+    #[test]
+    fn a_selection_trash_moves_each_item_and_reports_the_ones_that_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let listing = dir.path().join("listing");
+        let fake_trash = dir.path().join("fake-trash");
+        std::fs::create_dir_all(&listing).unwrap();
+        std::fs::create_dir(&fake_trash).unwrap();
+        let names = ["a.txt", "b.txt", "c/", "d.txt", "e.txt", "f.txt"];
+        let mut state = named_listing(&listing, &names, "b.txt");
+        state.index.changed(&listing.join("c"));
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "Vjjjd");
+        assert_eq!(state.app.input_mode, InputMode::WatchTrash);
+
+        // Confirm as `y` does, with a stand-in for the system Trash.
+        let targets = std::mem::take(&mut state.app.batch_targets);
+        state.app.close_delete_popup();
+        let original_thread = std::thread::current().id();
+        let trash = fake_trash.clone();
+        start_batch_removal(
+            &mut state.app,
+            &mut state.state,
+            targets,
+            true,
+            move |path| {
+                assert_ne!(std::thread::current().id(), original_thread);
+                let name = path.file_name().unwrap();
+                if name == "c" || name == "d.txt" {
+                    return Err(format!("“{}” is locked.", name.to_string_lossy()));
+                }
+                std::fs::rename(path, trash.join(name)).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            state.app.job.as_ref().unwrap().status,
+            "Moving 4 items to Trash…"
+        );
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        finish_removal(&mut state);
+
+        assert_eq!(names_in(&fake_trash), ["b.txt", "e.txt"]);
+        assert_eq!(names_in(&listing), ["a.txt", "c", "d.txt", "f.txt"]);
+        assert!(!state.index.store.directories.is_empty());
+        assert_eq!(state.status_bar.notification_kind, NotificationKind::Error);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some(
+                "Couldn't move 2 of 4 items to Trash: 'c': “c” is locked (and 1 more; see ff.log)"
+            )
+        );
+        assert_eq!(highlighted(&state).as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn d_then_y_uses_the_system_trash_backend_and_never_deletes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b/"], "a");
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "Vjdy");
+        assert_eq!(state.app.job.as_ref().unwrap().kind, "trash");
+        finish_removal(&mut state);
+        assert_eq!(names_in(dir.path()), ["a", "b"]);
+        assert!(dir.path().join("b/inner/file.txt").exists());
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Couldn't move 2 of 2 items to Trash: 'a': system Trash is disabled in unit tests (and 1 more; see ff.log)")
+        );
+    }
+
+    #[test]
+    fn quitting_stops_a_selection_removal_after_the_current_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b", "c"], "a");
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "VG");
+        let targets = state.app.visual.as_ref().unwrap().paths.clone();
+        let (started, wait_started) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel::<()>();
+        start_batch_removal(
+            &mut state.app,
+            &mut state.state,
+            targets,
+            false,
+            move |path| {
+                started.send(()).unwrap();
+                wait_release.recv().unwrap();
+                std::fs::remove_file(path).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+        wait_started.recv().unwrap();
+        let job = state.app.job.take().unwrap();
+        job.cancel.store(true, Ordering::Relaxed);
+        release.send(()).unwrap();
+        assert_eq!(job.wait(), Err("Stopped: deleted 1 of 3 items".to_string()));
+        assert_eq!(names_in(dir.path()), ["b", "c"]);
+    }
+
+    #[test]
+    fn a_busy_app_keeps_the_selection_and_removes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = named_listing(dir.path(), &["a", "b"], "a");
+        let mut keymap = default_keymap();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        state
+            .app
+            .start_job("move", "Moving…".into(), Vec::new(), move |_| {
+                wait.recv().map_err(|e| e.to_string())?;
+                Ok("Moved".into())
+            })
+            .unwrap();
+        type_keys(&mut state, &mut keymap, "VjDy");
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Wait for the current move to finish")
+        );
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+        assert_eq!(selection(&state), ["a", "b"]);
+        release.send(()).unwrap();
+        state.app.job.take().unwrap().wait().unwrap();
+        assert_eq!(names_in(dir.path()), ["a", "b"]);
+    }
+
+    #[test]
+    fn visual_mode_works_in_the_right_pane_and_leaves_the_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item) = sorted_dual_pane_state(dir.path());
+        let mut keymap = default_keymap();
+        type_keys(&mut state, &mut keymap, "Vj");
+        assert_eq!(selection(&state), ["delta.txt", "echo.txt"]);
+        assert_eq!(state.app.right_pane.selected_index, Some(2));
+        type_keys(&mut state, &mut keymap, "o");
+        assert_eq!(state.app.right_pane.selected_index, Some(1));
+        type_keys(&mut state, &mut keymap, "Dy");
+        finish_removal(&mut state);
+        assert_eq!(names_in(&dir.path().join("right")), ["charlie.txt"]);
+        assert_eq!(
+            names_in(&dir.path().join("left")),
+            ["alpha.txt", "bravo.txt"]
+        );
+        assert_eq!(highlighted(&state).as_deref(), Some("charlie.txt"));
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item)
+        );
+    }
+
+    #[test]
+    fn v_does_nothing_but_explain_while_search_results_show() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, ..) = dual_pane_state(dir.path());
+        let mut keymap = default_keymap();
+        state.app.right_pane.search_input = "ü".into();
+        state.app.active_pane = PanePosition::Right;
+        type_keys(&mut state, &mut keymap, "V");
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.visual.is_none());
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Visual select works in a folder listing, not in search results")
+        );
+
+        state.app.active_pane = PanePosition::Left;
+        state.app.perform_local_search("alpha");
+        assert!(!state.app.search_results.is_empty());
+        type_keys(&mut state, &mut keymap, "V");
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.visual.is_none());
     }
 }

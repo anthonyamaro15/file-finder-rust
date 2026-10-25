@@ -53,7 +53,8 @@ pub enum LoopControl {
 
 /// Runs before every mode's handler. Ctrl-C quits like `q`; any other Ctrl or Alt
 /// character is swallowed so it never acts as, or types, the plain character, except
-/// a Ctrl chord the keymap binds, which goes on to Normal mode (never to a popup).
+/// a Ctrl chord the keymap binds, which goes on to Normal or visual mode (never to a
+/// popup).
 /// Shift passes through. Returns `None` for keys the current mode should handle.
 pub fn handle_modifier_key<B: Backend>(
     key: KeyEvent,
@@ -89,7 +90,7 @@ pub fn handle_modifier_key<B: Backend>(
     {
         return Some(LoopControl::Break);
     }
-    if app.input_mode == InputMode::Normal
+    if matches!(app.input_mode, InputMode::Normal | InputMode::Visual)
         && !key.modifiers.contains(KeyModifiers::ALT)
         && keymap.binds(key)
     {

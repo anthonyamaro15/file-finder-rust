@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicBool, mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -58,6 +59,8 @@ pub enum InputMode {
     PickFolder,
     /// The Get Info popup.
     WatchInfo,
+    /// Selecting a run of adjacent items (see `App::visual`).
+    Visual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +144,17 @@ impl TransferKind {
             TransferKind::Move => "Move",
         }
     }
+}
+
+/// Visual mode's selection: the items from where `V` was pressed (the anchor) to the
+/// highlighted one (the cursor). Both ends are kept by path, so a refreshed listing
+/// can't shift the range onto other items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VisualSelection {
+    pub anchor: String,
+    pub cursor: String,
+    /// The items from anchor to cursor, in listing order, as last checked.
+    pub paths: Vec<String>,
 }
 
 /// The open "Copy to…"/"Move to…" picker. Its query is edited in
@@ -483,6 +497,11 @@ pub struct App {
     pub delete_target_is_dir: bool,
     pub delete_target_file_count: Option<usize>,
     pub delete_target_total_size: Option<u64>,
+    /// The items a selection's Trash or delete prompt names, frozen when it opens;
+    /// empty for a single item's prompt.
+    pub batch_targets: Vec<String>,
+    /// The selection while in visual mode, and while its prompt is open.
+    pub visual: Option<VisualSelection>,
 
     // Delete progress tracking (for async delete)
     pub delete_in_progress: bool,
@@ -698,6 +717,8 @@ impl App {
             delete_target_is_dir: false,
             delete_target_file_count: None,
             delete_target_total_size: None,
+            batch_targets: Vec::new(),
+            visual: None,
 
             // Initialize delete progress tracking
             delete_in_progress: false,
@@ -1500,11 +1521,155 @@ impl App {
         }
     }
 
-    /// Close a delete popup and consume its target, whether confirmed or cancelled.
+    /// Close a delete popup and consume its target, whether confirmed or cancelled. A
+    /// selection's prompt goes back to the selection.
     pub fn close_delete_popup(&mut self) -> Option<String> {
         self.render_popup = false;
-        self.input_mode = InputMode::Normal;
+        self.batch_targets.clear();
+        self.input_mode = if self.visual.is_some() {
+            InputMode::Visual
+        } else {
+            InputMode::Normal
+        };
         self.delete_target_path.take()
+    }
+
+    /// Start selecting at the active pane's highlighted item. Search results can't be
+    /// selected from, so that returns why.
+    pub fn start_visual(&mut self, selected_index: Option<usize>) -> Result<(), &'static str> {
+        let searching = if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            self.right_pane.is_searching()
+        } else {
+            !self.search_results.is_empty()
+        };
+        if searching {
+            return Err("Visual select works in a folder listing, not in search results");
+        }
+        if let Some(path) = self.active_selected_path(selected_index) {
+            self.visual = Some(VisualSelection {
+                anchor: path.clone(),
+                cursor: path.clone(),
+                paths: vec![path],
+            });
+            self.input_mode = InputMode::Visual;
+        }
+        Ok(())
+    }
+
+    /// Leave visual mode, changing nothing else.
+    pub fn end_visual(&mut self) {
+        self.visual = None;
+        if self.input_mode == InputMode::Visual {
+            self.input_mode = InputMode::Normal;
+        }
+    }
+
+    /// The active pane's folder listing, which visual mode selects from.
+    fn visual_listing(&self) -> &[String] {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            &self.right_pane.files
+        } else {
+            &self.files
+        }
+    }
+
+    /// The selection's rows in the active pane's listing, if both ends are listed.
+    pub fn visual_rows(&self) -> Option<RangeInclusive<usize>> {
+        let visual = self.visual.as_ref()?;
+        let listing = self.visual_listing();
+        let anchor = listing.iter().position(|path| *path == visual.anchor)?;
+        let cursor = listing.iter().position(|path| *path == visual.cursor)?;
+        Some(anchor.min(cursor)..=anchor.max(cursor))
+    }
+
+    /// Highlight `row` of the active pane's list.
+    pub fn select_active_row(&mut self, state: &mut ListState, row: usize) {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            self.right_pane.selected_index = Some(row);
+            self.right_pane.list_state.select(Some(row));
+        } else {
+            state.select(Some(row));
+            self.curr_index = Some(row);
+        }
+    }
+
+    /// After a motion, the highlighted item is the selection's cursor end.
+    pub fn move_visual_cursor(&mut self, selected_index: Option<usize>) {
+        let Some(path) = self.active_selected_path(selected_index) else {
+            return;
+        };
+        if let Some(visual) = self.visual.as_mut() {
+            visual.cursor = path;
+        }
+        if let Some(rows) = self.visual_rows() {
+            let paths = self.visual_listing()[rows].to_vec();
+            if let Some(visual) = self.visual.as_mut() {
+                visual.paths = paths;
+            }
+        }
+    }
+
+    /// Swap the selection's ends, moving the highlight to the new cursor (`o`).
+    pub fn swap_visual_ends(&mut self, state: &mut ListState) {
+        let Some(visual) = self.visual.as_mut() else {
+            return;
+        };
+        std::mem::swap(&mut visual.anchor, &mut visual.cursor);
+        let cursor = visual.cursor.clone();
+        if let Some(row) = self
+            .visual_listing()
+            .iter()
+            .position(|path| *path == cursor)
+        {
+            self.select_active_row(state, row);
+        }
+    }
+
+    /// Re-find the selection after the listing may have changed: the highlight goes
+    /// back to the cursor's item. If an end is gone, or an item appeared inside the
+    /// range, visual mode ends and this says why, so the range never silently covers
+    /// other items. Items gone from inside the range just leave it.
+    pub fn sync_visual(&mut self, state: &mut ListState) -> Option<String> {
+        if self.input_mode != InputMode::Visual {
+            return None;
+        }
+        let visual = self.visual.as_ref()?;
+        let Some(rows) = self.visual_rows() else {
+            self.end_visual();
+            return Some("Selection cancelled: an item at its end is gone".to_string());
+        };
+        let listing = self.visual_listing();
+        let paths = &listing[rows];
+        if paths != visual.paths {
+            let known: HashSet<&String> = visual.paths.iter().collect();
+            if paths.iter().any(|path| !known.contains(path)) {
+                self.end_visual();
+                return Some("Selection cancelled: a new item appeared inside it".to_string());
+            }
+        }
+        let paths = paths.to_vec();
+        let cursor = visual.cursor.clone();
+        if let Some(row) = listing.iter().position(|path| *path == cursor) {
+            self.select_active_row(state, row);
+        }
+        if let Some(visual) = self.visual.as_mut() {
+            visual.paths = paths;
+        }
+        None
+    }
+
+    /// Freeze the selection for its Trash (`to_trash`) or permanent-delete prompt.
+    pub fn prepare_batch_removal(&mut self, to_trash: bool) {
+        let Some(visual) = &self.visual else {
+            return;
+        };
+        self.batch_targets = visual.paths.clone();
+        self.render_popup = true;
+        self.input_mode = if to_trash {
+            InputMode::WatchTrash
+        } else {
+            InputMode::WatchDelete
+        };
     }
 
     /// Get the active current directory as a path.

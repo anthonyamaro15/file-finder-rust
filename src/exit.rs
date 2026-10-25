@@ -36,10 +36,11 @@ pub(crate) fn may_exit<B: Backend>(
     if let Some(job) = &app.job {
         job.cancel.store(true, Ordering::Relaxed);
     }
-    let message = if operation == "trash" {
-        "Waiting for the move to Trash to finish…".to_string()
-    } else {
-        format!("Stopping the {operation} and removing partial files…")
+    let message = match operation {
+        "trash" => "Waiting for the move to Trash to finish…".to_string(),
+        // A selection's deletion stops after the item it's deleting.
+        "deletion" => "Waiting for the item being deleted…".to_string(),
+        _ => format!("Stopping the {operation} and removing partial files…"),
     };
     status_bar.show_info(message.clone(), None);
     // A draw failure must not bypass the wait and leave a worker writing.
