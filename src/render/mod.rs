@@ -14,4 +14,4 @@ pub use popups::{
     split_popup_area_vertical,
 };
 pub use preview::create_cache_loading_screen;
-pub use size_bar::{create_size_text, get_file_size};
+pub use size_bar::create_size_text;

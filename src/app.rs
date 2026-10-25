@@ -16,7 +16,7 @@ use crate::file_reader_content::FileType;
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 use crate::config::{Settings, Theme, ThemeColors};
-use crate::utils::files::{SortBy, SortType};
+use crate::utils::files::{EntryInfo, Listing, SortBy, SortType};
 
 extern crate copypasta;
 
@@ -186,7 +186,8 @@ pub struct SearchResult {
     pub file_path: String,
     pub display_name: String,
     pub score: i64,
-    pub is_directory: bool,
+    /// The listing's record for a local result; read once when a global one is found.
+    pub info: EntryInfo,
     pub original_index: usize,
 }
 
@@ -334,7 +335,7 @@ fn global_search_result(
         file_path: file_path.to_string(),
         display_name: file_name.to_string(),
         score,
-        is_directory: path.is_dir(),
+        info: EntryInfo::default(),
         original_index: index,
     })
 }
@@ -370,15 +371,24 @@ pub fn global_search_results(
 
     truncate_top_unique_search_results(&mut search_results, max_results);
     apply_short_unique_display_names(&mut search_results);
+    // Only the results kept are read, once, rather than every match.
+    search_results
+        .par_iter_mut()
+        .for_each(|result| result.info = EntryInfo::read(Path::new(&result.file_path)));
     search_results
 }
 
-/// Fuzzy search of a folder listing with scoring, best match first.
-pub fn local_search_results(files: &[String], query: &str) -> Vec<SearchResult> {
+/// Fuzzy search of a folder listing (paths beside their records) with scoring, best
+/// match first.
+pub fn local_search_results(
+    files: &[String],
+    info: &[EntryInfo],
+    query: &str,
+) -> Vec<SearchResult> {
     let matcher = SkimMatcherV2::default();
     let mut search_results: Vec<SearchResult> = Vec::new();
 
-    for (index, file_path) in files.iter().enumerate() {
+    for (index, (file_path, info)) in files.iter().zip(info).enumerate() {
         let path = Path::new(file_path);
         let file_name = path
             .file_name()
@@ -393,16 +403,14 @@ pub fn local_search_results(files: &[String], query: &str) -> Vec<SearchResult> 
 
         // Use the best score
         if let Some(score) = filename_score.or(path_score) {
-            let is_directory = path.is_dir();
-
             // Boost directory scores slightly for better organization
-            let adjusted_score = if is_directory { score + 10 } else { score };
+            let adjusted_score = if info.is_dir() { score + 10 } else { score };
 
             search_results.push(SearchResult {
                 file_path: file_path.clone(),
                 display_name: file_name.to_string(),
                 score: adjusted_score,
-                is_directory,
+                info: *info,
                 original_index: index,
             });
         }
@@ -432,6 +440,8 @@ pub struct App {
     pub right_pane: crate::pane::Pane,
     pub message: Vec<String>,
     pub files: Vec<String>,
+    /// Each of `files`' details, read with the listing; drawing uses these, not the disk.
+    pub file_info: Vec<EntryInfo>,
     pub read_only_files: Vec<String>,
     pub selected_id: Option<IDE>,
     /// Print path to stdout instead of copying to clipboard (for shell integration)
@@ -632,7 +642,16 @@ fn sentence_case(word: &str) -> String {
 }
 
 impl App {
+    /// An app listing `files`, each read from disk for its details.
     pub fn new(files: Vec<String>) -> Self {
+        Self::with_listing(files.into())
+    }
+
+    pub fn with_listing(listing: Listing) -> Self {
+        let Listing {
+            files,
+            info: file_info,
+        } = listing;
         let files_clone = files.clone();
         let mut all_indexes: Vec<usize> = Vec::new();
         let mut file_labels: Vec<String> = Vec::new();
@@ -660,6 +679,7 @@ impl App {
             right_pane: crate::pane::Pane::default(),
             message: Vec::new(),
             files,
+            file_info,
             read_only_files: files_clone,
             character_index: 0,
             selected_id: None,
@@ -850,7 +870,7 @@ impl App {
 
     /// Perform fuzzy search in current directory with scoring
     pub fn perform_local_search(&mut self, query: &str) {
-        let search_results = local_search_results(&self.files, query);
+        let search_results = local_search_results(&self.files, &self.file_info, query);
 
         // Update filtered indexes based on search results
         self.filtered_indexes = search_results
@@ -1000,7 +1020,7 @@ impl App {
     /// Refresh directory files after a watcher event, preserving the visible selection.
     /// An active local search is re-run on the new files so the visible list,
     /// `search_results` and `filtered_indexes` stay consistent.
-    pub fn refresh_files_from_watcher(&mut self, files: Vec<String>, state: &mut ListState) {
+    pub fn refresh_files_from_watcher(&mut self, listing: Listing, state: &mut ListState) {
         let selected_path = self.get_selected_path(state.selected());
         // A query typed for the right pane isn't the left listing's.
         let local_query = (!self.global_search_mode
@@ -1014,8 +1034,7 @@ impl App {
         }
 
         self.curr_index = state.selected();
-        self.files = files.clone();
-        self.read_only_files = files;
+        self.set_listing(listing);
         self.update_file_references_with_selection_preservation(selected_path.clone());
 
         if let Some(query) = local_query {
@@ -1045,14 +1064,13 @@ impl App {
     /// Show the refreshed directory after a successful file operation.
     pub fn refresh_files_after_operation(
         &mut self,
-        files: Vec<String>,
+        listing: Listing,
         state: &mut ListState,
         select_path: Option<String>,
     ) {
         self.curr_index = self.preserved_selection_index.take().or(state.selected());
         self.clear_search();
-        self.files = files.clone();
-        self.read_only_files = files;
+        self.set_listing(listing);
         // Match directory aliases (e.g. /tmp and /private/tmp), but keep symlink names distinct.
         let select_path = select_path.and_then(|path| {
             let path = Path::new(&path);
@@ -1073,6 +1091,31 @@ impl App {
         self.update_file_references_with_selection_preservation(select_path);
         state.select(self.curr_index);
         self.preserved_selection_index = self.curr_index;
+    }
+
+    /// Show `listing` in the left listing, each path beside its record.
+    fn set_listing(&mut self, listing: Listing) {
+        self.read_only_files = listing.files.clone();
+        self.files = listing.files;
+        self.file_info = listing.info;
+    }
+
+    /// Re-read the records of `paths`, which the watcher saw change, wherever they're
+    /// shown: a file being written keeps showing its current size.
+    fn refresh_info(&mut self, paths: &[PathBuf]) {
+        for path in paths {
+            let info = EntryInfo::read(path);
+            for (file, file_info) in self.files.iter().zip(&mut self.file_info) {
+                if Path::new(file) == path {
+                    *file_info = info;
+                }
+            }
+            for result in &mut self.search_results {
+                if Path::new(&result.file_path) == path {
+                    result.info = info;
+                }
+            }
+        }
     }
 
     /// Update file references with optional selection preservation
@@ -1201,6 +1244,7 @@ impl App {
                         self.refresh_file_list();
                     }
                     WatcherEvent::FilesModified(paths) => {
+                        self.refresh_info(&paths);
                         // Only show modification messages for single files to avoid spam
                         if paths.len() == 1 {
                             if let Some(path) = paths.first() {
@@ -1405,6 +1449,36 @@ impl App {
             // Normal mode - get path from files list
             self.files.get(index).cloned()
         }
+    }
+
+    /// The record of the item at `selected_index`, like `get_selected_path`.
+    fn get_selected_info(&self, selected_index: Option<usize>) -> Option<EntryInfo> {
+        let index = selected_index?;
+        if !self.search_results.is_empty() {
+            self.search_results.get(index).map(|result| result.info)
+        } else {
+            self.file_info.get(index).copied()
+        }
+    }
+
+    /// The record of the active pane's highlighted item, like `active_selected_path`.
+    pub fn active_selected_info(&self, selected_index: Option<usize>) -> Option<EntryInfo> {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            self.right_pane.get_selected_info()
+        } else {
+            self.get_selected_info(selected_index)
+        }
+    }
+
+    /// The record of `path` in the active pane's folder listing, if it's listed there.
+    pub fn listed_info(&self, path: &str) -> Option<EntryInfo> {
+        let (files, info) = if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            (&self.right_pane.files, &self.right_pane.file_info)
+        } else {
+            (&self.files, &self.file_info)
+        };
+        let index = files.iter().position(|file| file == path)?;
+        info.get(index).copied()
     }
 
     /// The active pane's highlighted item: the right pane's when it is active in dual
@@ -1737,8 +1811,13 @@ impl App {
     /// Called when entering dual-pane mode
     pub fn init_right_pane(&mut self) {
         // Clone current directory and files to right pane
-        self.right_pane =
-            crate::pane::Pane::new(self.current_directory.clone(), self.files.clone());
+        self.right_pane = crate::pane::Pane::with_listing(
+            self.current_directory.clone(),
+            Listing {
+                files: self.files.clone(),
+                info: self.file_info.clone(),
+            },
+        );
         self.right_pane.show_hidden_files = self.show_hidden_files;
         self.right_pane.sort_by = self.sort_by.clone();
         self.right_pane.sort_type = self.sort_type.clone();
@@ -1919,11 +1998,11 @@ mod tests {
         state.select(Some(0));
 
         app.refresh_files_after_operation(
-            vec![
+            Listing::from(vec![
                 "cwd/alpha.txt".into(),
                 "cwd/bravo.txt".into(),
                 "cwd/zulu.txt".into(),
-            ],
+            ]),
             &mut state,
             Some("cwd/zulu.txt".into()),
         );
@@ -1956,7 +2035,7 @@ mod tests {
             app.preserved_selection_index = Some(0);
 
             app.refresh_files_after_operation(
-                files.into_iter().map(String::from).collect(),
+                Listing::from(files.into_iter().map(String::from).collect::<Vec<_>>()),
                 &mut state,
                 Some(previous.into()),
             );
@@ -1993,7 +2072,7 @@ mod tests {
             state.select(selected);
 
             app.refresh_files_after_operation(
-                files.into_iter().map(String::from).collect(),
+                Listing::from(files.into_iter().map(String::from).collect::<Vec<_>>()),
                 &mut state,
                 Some("elsewhere/alpha".into()),
             );
@@ -2026,7 +2105,7 @@ mod tests {
         state.select(Some(0));
 
         app.refresh_files_after_operation(
-            files,
+            files.into(),
             &mut state,
             Some(alias.join("zulu.txt").to_string_lossy().into_owned()),
         );
@@ -2055,7 +2134,7 @@ mod tests {
             let mut state = ListState::default();
             state.select(Some(0));
 
-            app.refresh_files_after_operation(files.clone(), &mut state, None);
+            app.refresh_files_after_operation(files.clone().into(), &mut state, None);
 
             assert_eq!(app.current_directory, "cwd");
             assert!(app.search_results.is_empty());
@@ -2079,12 +2158,12 @@ mod tests {
         app.preserved_selection_index = Some(2);
 
         app.refresh_files_from_watcher(
-            vec![
+            Listing::from(vec![
                 "a_foo.rs".into(),
                 "b.rs".into(),
                 "c_foo.rs".into(),
                 "d.rs".into(),
-            ],
+            ]),
             &mut state,
         );
 
@@ -2108,7 +2187,7 @@ mod tests {
         select_path(&app, &mut state, "a_foo.rs");
 
         app.refresh_files_from_watcher(
-            vec!["0_foo.rs".into(), "a_foo.rs".into(), "b.rs".into()],
+            Listing::from(vec!["0_foo.rs".into(), "a_foo.rs".into(), "b.rs".into()]),
             &mut state,
         );
 
@@ -2134,7 +2213,10 @@ mod tests {
         let mut state = ListState::default();
         select_path(&app, &mut state, "c_foo.rs");
 
-        app.refresh_files_from_watcher(vec!["a_foo.rs".into(), "b.rs".into()], &mut state);
+        app.refresh_files_from_watcher(
+            Listing::from(vec!["a_foo.rs".into(), "b.rs".into()]),
+            &mut state,
+        );
 
         assert_eq!(app.input, "foo");
         assert_eq!(state.selected(), Some(0));
@@ -2145,7 +2227,7 @@ mod tests {
         );
         assert_local_search_consistent(&app);
 
-        app.refresh_files_from_watcher(vec!["b.rs".into()], &mut state);
+        app.refresh_files_from_watcher(Listing::from(vec!["b.rs".into()]), &mut state);
 
         assert!(app.search_results.is_empty());
         assert_eq!(state.selected(), None);
@@ -2162,7 +2244,7 @@ mod tests {
                 file_path: format!("elsewhere/result_{index}"),
                 display_name: format!("result_{index}"),
                 score: 100,
-                is_directory: false,
+                info: EntryInfo::default(),
                 original_index: index,
             })
             .collect();
@@ -2170,7 +2252,7 @@ mod tests {
         state.select(Some(30));
 
         for files in [vec!["cwd/b".into()], Vec::new()] {
-            app.refresh_files_from_watcher(files, &mut state);
+            app.refresh_files_from_watcher(Listing::from(files), &mut state);
 
             assert_eq!(state.selected(), Some(30));
             assert_eq!(app.curr_index, Some(30));
@@ -2190,7 +2272,7 @@ mod tests {
             let mut state = ListState::default();
             state.select(Some(2));
 
-            app.refresh_files_from_watcher(files, &mut state);
+            app.refresh_files_from_watcher(Listing::from(files), &mut state);
 
             assert_eq!(state.selected(), expected);
             assert_eq!(app.curr_index, expected);
@@ -2240,6 +2322,50 @@ mod tests {
         app.update_file_references();
 
         assert_eq!(app.curr_index, Some(0));
+    }
+
+    #[test]
+    fn watcher_modify_events_refresh_the_changed_records() {
+        use crate::utils::{read_listing, SortBy, SortType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        for path in [&a, &b] {
+            std::fs::write(path, "a").unwrap();
+            // Written a while ago, so the watcher (whole-second times) sees the next write.
+            let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(earlier)
+                .unwrap();
+        }
+        let start = dir.path().to_string_lossy().into_owned();
+        let mut app = App::with_listing(
+            read_listing(start.clone(), false, SortBy::Name, &SortType::ASC).unwrap(),
+        );
+        app.start_watching_directory(&start).unwrap();
+        // Give the poll watcher a moment to read the folder first.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Both at once, which the watcher may report together, without a refresh.
+        std::fs::write(&a, "aaa").unwrap();
+        std::fs::write(&b, "bbbbb").unwrap();
+        let sizes = |app: &App| {
+            app.file_info
+                .iter()
+                .map(|info| info.size)
+                .collect::<Vec<_>>()
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while sizes(&app) != [3, 5] && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            app.process_file_system_events();
+        }
+
+        assert_eq!(sizes(&app), [3, 5]);
+        crate::utils::files::tests::assert_records_match(&app.files, &app.file_info);
     }
 
     /// Spin until the app's job reports, failing instead of hanging if it never does.

@@ -25,33 +25,136 @@ pub enum SortBy {
     Default,
 }
 
-/// Sort file entries by the specified criteria and direction.
+/// What a listed item is, following a symlink to what it points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    File,
+    Folder,
+    Other,
+}
+
+/// A listed item's details, read from disk once with its listing so that drawing never
+/// has to read the disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryInfo {
+    /// None when it couldn't be read: it's gone, or a link to nothing.
+    pub kind: Option<EntryKind>,
+    /// The item itself is a symlink; the other fields describe what it points at.
+    pub is_symlink: bool,
+    /// Length in bytes; a folder's is that of its own entry, not its contents.
+    pub size: u64,
+    pub modified: Option<SystemTime>,
+    pub created: Option<SystemTime>,
+    /// Permission bits.
+    pub mode: u32,
+}
+
+impl EntryInfo {
+    /// Read `path` with one `symlink_metadata`, plus a `metadata` to follow a link.
+    pub fn read(path: &Path) -> Self {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return Self::default();
+        };
+        let is_symlink = metadata.file_type().is_symlink();
+        let metadata = if is_symlink {
+            fs::metadata(path)
+        } else {
+            Ok(metadata)
+        };
+        let Ok(metadata) = metadata else {
+            return Self {
+                is_symlink,
+                ..Self::default()
+            };
+        };
+        let kind = if metadata.is_file() {
+            EntryKind::File
+        } else if metadata.is_dir() {
+            EntryKind::Folder
+        } else {
+            EntryKind::Other
+        };
+        #[cfg(unix)]
+        let mode = std::os::unix::fs::PermissionsExt::mode(&metadata.permissions());
+        #[cfg(not(unix))]
+        let mode = if metadata.permissions().readonly() {
+            0o444
+        } else {
+            0o666
+        };
+        Self {
+            kind: Some(kind),
+            is_symlink,
+            size: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            mode,
+        }
+    }
+
+    pub fn is_dir(&self) -> bool {
+        self.kind == Some(EntryKind::Folder)
+    }
+
+    pub fn is_file(&self) -> bool {
+        self.kind == Some(EntryKind::File)
+    }
+
+    /// A file's size; 0 for anything else.
+    pub fn file_size(&self) -> u64 {
+        if self.is_file() {
+            self.size
+        } else {
+            0
+        }
+    }
+}
+
+/// A folder's items in display order, each beside its details.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub files: Vec<String>,
+    pub info: Vec<EntryInfo>,
+}
+
+impl From<Vec<String>> for Listing {
+    /// Read the details of paths that didn't come from `read_listing`.
+    fn from(files: Vec<String>) -> Self {
+        let info = files
+            .iter()
+            .map(|file| EntryInfo::read(Path::new(file)))
+            .collect();
+        Self { files, info }
+    }
+}
+
+/// Sort entries by the specified criteria and direction, using their details.
 pub fn sort_entries_by_type(
     sort_by: SortBy,
     sort_type: SortType,
-    mut entries: Vec<PathBuf>,
-) -> Vec<PathBuf> {
+    mut entries: Vec<(PathBuf, EntryInfo)>,
+) -> Vec<(PathBuf, EntryInfo)> {
     match sort_type {
         SortType::ASC => match sort_by {
-            SortBy::Name => entries.sort_by(|a, b| {
+            SortBy::Name => entries.sort_by(|(a, _), (b, _)| {
                 a.file_name()
                     .unwrap()
                     .to_ascii_lowercase()
                     .cmp(&b.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by_cached_key(|path| size_key(path)),
-            SortBy::DateAdded => entries.sort_by_cached_key(|path| date_added_key(path)),
+            SortBy::Size => entries.sort_by_key(|(_, info)| info.size),
+            SortBy::DateAdded => entries.sort_by_key(|(_, info)| date_added_key(info)),
             SortBy::Default => {}
         },
         SortType::DESC => match sort_by {
-            SortBy::Name => entries.sort_by(|a, b| {
+            SortBy::Name => entries.sort_by(|(a, _), (b, _)| {
                 b.file_name()
                     .unwrap()
                     .to_ascii_lowercase()
                     .cmp(&a.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by_cached_key(|path| Reverse(size_key(path))),
-            SortBy::DateAdded => entries.sort_by_cached_key(|path| Reverse(date_added_key(path))),
+            SortBy::Size => entries.sort_by_key(|(_, info)| Reverse(info.size)),
+            SortBy::DateAdded => entries.sort_by_key(|(_, info)| Reverse(date_added_key(info))),
             SortBy::Default => {}
         },
     }
@@ -59,57 +162,64 @@ pub fn sort_entries_by_type(
     entries
 }
 
-/// Size sort key; unreadable entries sort as empty.
-fn size_key(path: &Path) -> u64 {
-    path.metadata().map(|meta| meta.len()).unwrap_or(0)
+/// Date sort key: creation time, then modification time, then a fixed epoch for an
+/// unreadable entry.
+fn date_added_key(info: &EntryInfo) -> SystemTime {
+    info.created.or(info.modified).unwrap_or(UNIX_EPOCH)
 }
 
-/// Date sort key: creation time, then modification time, then a fixed epoch so
-/// the key never changes between lookups.
-fn date_added_key(path: &Path) -> SystemTime {
-    path.metadata()
-        .ok()
-        .and_then(|meta| meta.created().or_else(|_| meta.modified()).ok())
-        .unwrap_or(UNIX_EPOCH)
-}
-
-/// Convert PathBuf entries to strings with filtering and sorting.
-/// Uses parallel processing via rayon for efficiency.
+/// Read each entry's details, then filter and sort them: one read per entry, in parallel,
+/// that sorting, filtering and drawing all use.
 pub fn convert_file_path_to_string(
     entries: Vec<PathBuf>,
     show_hidden: bool,
     sort_by: SortBy,
     sort_type: SortType,
-) -> Vec<String> {
-    let sort_entries = sort_entries_by_type(sort_by, sort_type, entries);
-
-    // Filter and process files in parallel
-    let filtered_entries: Vec<PathBuf> = sort_entries
+) -> Listing {
+    // Folders always show, files unless hidden, anything else never.
+    let entries: Vec<(PathBuf, EntryInfo)> = entries
         .into_par_iter()
-        .filter(|value| {
-            if value.is_dir() {
-                true
-            } else if value.is_file() {
-                if !show_hidden {
-                    value
+        .map(|path| {
+            let info = EntryInfo::read(&path);
+            (path, info)
+        })
+        .filter(|(path, info)| match info.kind {
+            Some(EntryKind::Folder) => true,
+            Some(EntryKind::File) => {
+                show_hidden
+                    || path
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .map(|name| !name.starts_with('.'))
-                        .unwrap_or(false)
-                } else {
-                    true
-                }
-            } else {
-                false
+                        .is_some_and(|name| !name.starts_with('.'))
             }
+            _ => false,
         })
         .collect();
 
-    // Convert to strings in parallel
-    filtered_entries
-        .into_par_iter()
-        .filter_map(|entry| entry.to_str().map(|s| s.to_string()))
-        .collect()
+    let (files, info) = sort_entries_by_type(sort_by, sort_type, entries)
+        .into_iter()
+        .filter_map(|(path, info)| Some((path.into_os_string().into_string().ok()?, info)))
+        .unzip();
+    Listing { files, info }
+}
+
+/// Read a folder's items, filtered and sorted, each beside its details.
+pub fn read_listing(
+    start_path: String,
+    show_hidden: bool,
+    sort_by: SortBy,
+    sort_type: &SortType,
+) -> anyhow::Result<Listing> {
+    let entries = fs::read_dir(start_path)?
+        .map(|res| res.map(|e| e.path()))
+        .collect::<Result<Vec<_>, io::Error>>()?;
+
+    Ok(convert_file_path_to_string(
+        entries,
+        show_hidden,
+        sort_by,
+        sort_type.clone(),
+    ))
 }
 
 /// Get sorted file paths from a starting directory.
@@ -119,14 +229,7 @@ pub fn get_file_path_data(
     sort_by: SortBy,
     sort_type: &SortType,
 ) -> anyhow::Result<Vec<String>> {
-    let entries = fs::read_dir(start_path)?
-        .map(|res| res.map(|e| e.path()))
-        .collect::<Result<Vec<_>, io::Error>>()?;
-
-    let file_strings =
-        convert_file_path_to_string(entries, show_hidden, sort_by, sort_type.clone());
-
-    Ok(file_strings)
+    Ok(read_listing(start_path, show_hidden, sort_by, sort_type)?.files)
 }
 
 /// Check if a path is a file (not a directory).
@@ -183,8 +286,18 @@ pub fn get_curr_path(path: String) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    fn with_info(paths: Vec<PathBuf>) -> Vec<(PathBuf, EntryInfo)> {
+        paths
+            .into_iter()
+            .map(|path| {
+                let info = EntryInfo::read(&path);
+                (path, info)
+            })
+            .collect()
+    }
 
     #[cfg(unix)]
     #[test]
@@ -214,6 +327,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Fail unless each record describes the path beside it.
+    pub(crate) fn assert_records_match(files: &[String], info: &[EntryInfo]) {
+        assert_eq!(files.len(), info.len());
+        for (file, info) in files.iter().zip(info) {
+            assert_eq!(*info, EntryInfo::read(Path::new(file)), "{file}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_records_stay_beside_their_paths_whatever_the_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, len) in [
+            ("b.txt", 300),
+            ("a.txt", 10),
+            (".hidden", 20),
+            ("c.txt", 2000),
+        ] {
+            fs::write(dir.path().join(name), "x".repeat(len)).unwrap();
+        }
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("folder"), dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("dangling")).unwrap();
+        let start = dir.path().to_string_lossy().into_owned();
+
+        for show_hidden in [false, true] {
+            for sort_by in [
+                SortBy::Default,
+                SortBy::Name,
+                SortBy::Size,
+                SortBy::DateAdded,
+            ] {
+                for sort_type in [SortType::ASC, SortType::DESC] {
+                    let listing =
+                        read_listing(start.clone(), show_hidden, sort_by.clone(), &sort_type)
+                            .unwrap();
+                    // Never the dangling link.
+                    assert_eq!(listing.files.len(), if show_hidden { 6 } else { 5 });
+                    assert_records_match(&listing.files, &listing.info);
+                }
+            }
+        }
+
+        let link = EntryInfo::read(&dir.path().join("link"));
+        assert!(link.is_symlink && link.is_dir());
+        let dangling = EntryInfo::read(&dir.path().join("dangling"));
+        assert!(dangling.is_symlink && dangling.kind.is_none());
     }
 
     #[test]
@@ -282,31 +444,34 @@ mod tests {
             fs::write(dir.path().join(name), name).unwrap();
             entries.push(dir.path().join(name));
         }
+        let entries = with_info(entries);
 
         for (sort_type, missing_index) in [(SortType::ASC, 0), (SortType::DESC, 3)] {
             let first = sort_entries_by_type(SortBy::DateAdded, sort_type.clone(), entries.clone());
             let second = sort_entries_by_type(SortBy::DateAdded, sort_type, first.clone());
             assert_eq!(first, second);
             // The missing entry falls back to UNIX_EPOCH, the oldest possible date.
-            assert_eq!(first[missing_index], dir.path().join("missing"));
+            assert_eq!(first[missing_index].0, dir.path().join("missing"));
         }
     }
 
     #[test]
     fn size_sort_orders_by_length() {
         let dir = tempfile::tempdir().unwrap();
-        let entries: Vec<PathBuf> = [("big", 3), ("small", 1), ("mid", 2)]
-            .into_iter()
-            .map(|(name, len)| {
-                let path = dir.path().join(name);
-                fs::write(&path, "x".repeat(len)).unwrap();
-                path
-            })
-            .collect();
-        let names = |sorted: Vec<PathBuf>| -> Vec<String> {
+        let entries = with_info(
+            [("big", 3), ("small", 1), ("mid", 2)]
+                .into_iter()
+                .map(|(name, len)| {
+                    let path = dir.path().join(name);
+                    fs::write(&path, "x".repeat(len)).unwrap();
+                    path
+                })
+                .collect(),
+        );
+        let names = |sorted: Vec<(PathBuf, EntryInfo)>| -> Vec<String> {
             sorted
                 .iter()
-                .map(|path| path.file_name().unwrap().to_string_lossy().to_string())
+                .map(|(path, _)| path.file_name().unwrap().to_string_lossy().to_string())
                 .collect()
         };
 

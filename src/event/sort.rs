@@ -3,7 +3,7 @@ use ratatui::widgets::ListState;
 use crate::{
     app::{App, InputMode},
     status_bar::StatusBar,
-    utils::{get_file_path_data, SortBy},
+    utils::{read_listing, SortBy},
 };
 
 /// Apply a sort to both panes' listings and persist the preference, keeping each
@@ -22,19 +22,19 @@ pub fn apply_sort(
     }
 
     let cur_path = app.left_directory_path().to_string_lossy().to_string();
-    let file_path_list = match get_file_path_data(
+    let listing = match read_listing(
         cur_path.clone(),
         app.show_hidden_files,
         app.sort_by.clone(),
         &app.sort_type,
     ) {
-        Ok(files) => files,
+        Ok(listing) => listing,
         Err(e) => {
             status_bar.show_error(format!("Could not refresh '{cur_path}': {e:#}"), None);
             return;
         }
     };
 
-    app.refresh_files_from_watcher(file_path_list, state);
+    app.refresh_files_from_watcher(listing, state);
     app.input_mode = InputMode::Normal;
 }
