@@ -395,7 +395,8 @@ use_nerd_fonts = "auto"    # Auto-detect (default)
   background at startup)
 - **Themes**: `~/.config/ff/themes/`
 
-`ff` stores active TOML settings under `~/.config/ff/settings.toml`.
+`ff` stores active TOML settings under `~/.config/ff/settings.toml`. Any setting or
+theme color you leave out uses its default, so these files only need what you change.
 Legacy JSON configuration is compatibility-only and should not be used for new settings.
 
 ### Precedence

@@ -72,7 +72,10 @@ impl Default for FinderSettings {
     }
 }
 
+/// Any field left out of settings.toml takes its value from `Settings::default()`,
+/// so a partial file loads and new settings don't break older files.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct Settings {
     pub start_path: String,
     pub root_dir: String,
@@ -82,37 +85,29 @@ pub struct Settings {
     pub theme: String,
 
     /// Show file sizes in file list
-    #[serde(default = "default_show_file_sizes")]
     pub show_size_bars: bool,
 
     /// Syntax highlighting theme for file previews
     /// Available themes: "base16-ocean.dark", "base16-eighties.dark", "base16-mocha.dark", "base16-ocean.light", "InspiredGitHub", "Solarized (dark)", "Solarized (light)"
-    #[serde(default = "default_syntax_theme")]
     pub syntax_theme: String,
 
     // === UI Modernization Settings ===
     /// Layout style: "classic", "modern", or "miller"
-    #[serde(default)]
     pub layout_style: LayoutStyle,
 
     /// Nerd font icons: "always", "never", or "auto"
-    #[serde(default)]
     pub use_nerd_fonts: NerdFontSetting,
 
     /// Show panel borders
-    #[serde(default = "default_show_borders")]
     pub show_borders: bool,
 
     /// Status bar style: "classic" or "minimal"
-    #[serde(default)]
     pub status_bar_style: StatusBarStyle,
 
     /// Mode-aware keybindings.
-    #[serde(default)]
     pub keymap: KeymapSettings,
 
     /// Finder/search behavior.
-    #[serde(default)]
     pub finder: FinderSettings,
 }
 
@@ -249,19 +244,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_from_file_merges_partial_keymap_overrides_with_defaults() {
+    fn a_keymap_only_file_loads_and_merges_with_the_defaults() {
         use crate::config::{Action, KeySequence};
 
         let mut file = NamedTempFile::new().unwrap();
         write!(
             file,
             r#"
-start_path = "/tmp"
-root_dir = "/tmp"
-cache_directory = "/tmp/cache.json"
-settings_path = "/tmp/settings.toml"
-ignore_directories = []
-theme = "onedark"
+show_borders = true
 
 [keymap.normal]
 "/" = "search.root"
@@ -271,11 +261,17 @@ theme = "onedark"
         )
         .unwrap();
 
-        // Bad entries never stop ff from starting.
-        let bindings = Settings::load_from_file(file.path())
-            .unwrap()
-            .keymap
-            .resolve();
+        // Every setting left out takes its default, and bad keymap entries never
+        // stop ff from starting.
+        let settings = Settings::load_from_file(file.path()).unwrap();
+        let defaults = Settings::default();
+        assert!(settings.show_borders);
+        assert_eq!(settings.start_path, defaults.start_path);
+        assert_eq!(settings.ignore_directories, defaults.ignore_directories);
+        assert_eq!(settings.theme, defaults.theme);
+        assert_eq!(settings.finder, defaults.finder);
+
+        let bindings = settings.keymap.resolve();
         let bound = |key: &str| {
             let sequence = KeySequence::parse(key).unwrap();
             bindings

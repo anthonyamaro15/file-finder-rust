@@ -11,24 +11,22 @@ use crate::config::get_themes_dir;
 use crate::errors::{AppError, AppResult};
 use ratatui::style::{Color, Modifier, Style};
 
-/// Theme configuration loaded from TOML
+/// Theme configuration loaded from TOML. Every table and color is optional: a
+/// missing one takes the OneDark default, so new colors don't break older files.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct Theme {
     pub palette: Palette,
-    #[serde(default)]
     pub ui: UiTheme,
-    #[serde(default)]
     pub syntax: SyntaxTheme,
-    #[serde(default)]
     pub icons: IconTheme,
-    #[serde(default)]
     pub markdown: MarkdownTheme,
-    #[serde(default)]
     pub statusbar: StatusBarTheme,
 }
 
 /// Core color palette
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct Palette {
     pub red: String,
     pub green: String,
@@ -50,6 +48,7 @@ pub struct Palette {
 
 /// UI element colors
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct UiTheme {
     pub active_border: String,
     pub inactive_border: String,
@@ -61,6 +60,7 @@ pub struct UiTheme {
 
 /// Syntax highlighting colors (for code preview)
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct SyntaxTheme {
     pub keyword: String,
     pub function: String,
@@ -74,6 +74,7 @@ pub struct SyntaxTheme {
 
 /// Icon colors by file type
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct IconTheme {
     pub directory: String,
     pub rust: String,
@@ -120,6 +121,7 @@ pub struct IconTheme {
 
 /// Markdown rendering colors
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct MarkdownTheme {
     pub header_1: String,
     pub header_2: String,
@@ -139,6 +141,7 @@ pub struct MarkdownTheme {
 
 /// Status bar colors
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct StatusBarTheme {
     pub background: String,
     pub foreground: String,
@@ -619,5 +622,30 @@ impl Theme {
         })?;
 
         Ok(Color::Rgb(r, g, b))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_partial_theme_file_loads_with_the_default_colors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mine.toml");
+        fs::write(
+            &path,
+            "[palette]\nred = \"#ff0000\"\n\n[icons]\nrust = \"#00ff00\"\n",
+        )
+        .unwrap();
+
+        let theme = Theme::load_from_file(&path).unwrap();
+        let defaults = Theme::default();
+        assert_eq!(theme.palette.red, "#ff0000");
+        assert_eq!(theme.palette.blue, defaults.palette.blue);
+        assert_eq!(theme.icons.rust, "#00ff00");
+        assert_eq!(theme.icons.directory, defaults.icons.directory);
+        assert_eq!(theme.ui.selected_bg, defaults.ui.selected_bg);
+        assert!(theme.to_colors().is_ok());
     }
 }
