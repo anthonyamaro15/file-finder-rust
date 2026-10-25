@@ -504,7 +504,7 @@ pub struct App {
     // Async image loading (separate channel because DynamicImage has different traits)
     pub image_receiver: Option<mpsc::Receiver<ImageLoadResult>>,
 
-    /// Running move, trash, or ZIP extraction, if any.
+    /// Running move, trash, ZIP extraction or compression, if any.
     pub job: Option<BackgroundJob>,
     /// The open "Copy to…"/"Move to…" picker.
     pub folder_picker: Option<FolderPicker>,
@@ -523,7 +523,8 @@ pub struct ImageLoadResult {
     pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
 }
 
-/// One-shot background operation (move, trash, ZIP extraction) that reports a single result.
+/// One-shot background operation (move, trash, ZIP extraction or compression) that
+/// reports a single result.
 #[derive(Debug)]
 pub struct BackgroundJob {
     /// Operation name for warnings, e.g. "move".
@@ -534,6 +535,8 @@ pub struct BackgroundJob {
     pub cancel: Arc<AtomicBool>,
     /// Paths the job changes, re-read into the folder index when it ends.
     pub changes: Vec<PathBuf>,
+    /// Item to highlight if it succeeds, in the pane it was started from.
+    pub select: Option<(PanePosition, String)>,
 }
 
 impl BackgroundJob {
@@ -556,6 +559,7 @@ impl BackgroundJob {
             receiver,
             cancel,
             changes,
+            select: None,
         }
     }
 

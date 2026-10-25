@@ -213,6 +213,7 @@ The `?` help popup reflects configured search keybindings.
 | `c`       | Copy                       |
 | `Shift+C` | Copy to… (pick a folder)   |
 | `Shift+M` | Move to… (pick a folder)   |
+| `z`       | Compress to ZIP beside the item |
 | `o`       | Open in file explorer      |
 | `I` (Shift+I) | Get Info: size, dates, permissions, owner |
 | `.`       | Toggle hidden files        |

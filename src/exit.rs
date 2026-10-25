@@ -79,7 +79,7 @@ pub(crate) fn may_exit<B: Backend>(
         Ok(String::new())
     };
     if let Err(error) = result {
-        if error.contains("failed to remove partial copy") || !error.contains("cancelled") {
+        if error.contains("failed to remove partial") || !error.contains("cancelled") {
             *quit_error = Some(error);
         }
     }
@@ -205,6 +205,47 @@ mod tests {
             let result = returned_rx.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!(result, (true, false, true, Some(error.into())));
             waiter.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn confirmed_quit_reports_a_partial_archive_left_behind() {
+        use std::{sync::atomic::Ordering, time::Duration};
+        for (error, reported) in [
+            ("Compression cancelled (partial archive removed)", false),
+            (
+                "Compression cancelled (failed to remove partial archive 'a.zip': denied)",
+                true,
+            ),
+        ] {
+            let mut app = App::new(Vec::new());
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let work = move |cancel: std::sync::Arc<std::sync::atomic::AtomicBool>| {
+                while !cancel.load(Ordering::Relaxed) {
+                    assert!(std::time::Instant::now() < deadline, "never cancelled");
+                    std::thread::yield_now();
+                }
+                Err(error.to_string())
+            };
+            app.start_job("compression", "Compressing 'a'…".into(), Vec::new(), work)
+                .unwrap();
+            let mut status = StatusBar::new();
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 6)).unwrap();
+            let (mut receiver, mut quit_error) = (None, None);
+            for allowed in [false, true] {
+                assert_eq!(
+                    may_exit(
+                        &mut app,
+                        &mut status,
+                        "q",
+                        &mut receiver,
+                        &mut terminal,
+                        &mut quit_error
+                    ),
+                    allowed
+                );
+            }
+            assert_eq!(quit_error, reported.then(|| error.to_string()));
         }
     }
 
