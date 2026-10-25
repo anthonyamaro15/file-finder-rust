@@ -22,8 +22,10 @@ use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
 // Internal imports
-use file_finder::exit::handle_file_selection;
-use file_finder::{app, cli, event::background, event::normal, event::popups, render};
+use file_finder::exit::{handle_file_selection, system_clipboard};
+use file_finder::{
+    app, cli, event::background, event::normal, event::palette, event::popups, render,
+};
 use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
@@ -303,6 +305,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         delete_receiver: None,
         selected_file: None,
         quit_error: None,
+        clipboard: system_clipboard(),
     };
 
     // Main loop
@@ -333,6 +336,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &widgets_ui,
             &exit_hint,
             &find_hint,
+            &keymap_runtime,
         )?;
 
         background::refresh_after_copy(
@@ -393,20 +397,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         None => {}
                     }
                     match loop_state.app.input_mode {
-                        InputMode::Normal => match normal::handle_normal_key(
-                            key,
-                            &mut loop_state,
-                            &mut keymap_runtime,
-                            &mut terminal,
-                            &startup_paths.refresh_fallback_path,
-                        )? {
-                            LoopControl::Continue => continue,
-                            LoopControl::Break => break,
-                            LoopControl::Return => {
-                                mark_index_stale_after_interrupted_quit(&mut loop_state);
-                                return Ok(());
+                        InputMode::Normal | InputMode::Palette => {
+                            let control = if loop_state.app.input_mode == InputMode::Normal {
+                                normal::handle_normal_key(
+                                    key,
+                                    &mut loop_state,
+                                    &mut keymap_runtime,
+                                    &mut terminal,
+                                    &startup_paths.refresh_fallback_path,
+                                )?
+                            } else if key.kind == KeyEventKind::Press {
+                                palette::handle_palette_key(
+                                    key,
+                                    &mut loop_state,
+                                    &keymap_runtime,
+                                    &mut terminal,
+                                    &startup_paths.refresh_fallback_path,
+                                )?
+                            } else {
+                                LoopControl::Continue
+                            };
+                            match control {
+                                LoopControl::Continue => continue,
+                                LoopControl::Break => break,
+                                LoopControl::Return => {
+                                    mark_index_stale_after_interrupted_quit(&mut loop_state);
+                                    return Ok(());
+                                }
                             }
-                        },
+                        }
 
                         InputMode::Visual => {
                             normal::handle_visual_key(key, &mut loop_state, &mut keymap_runtime)

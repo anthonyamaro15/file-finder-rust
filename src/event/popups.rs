@@ -531,6 +531,7 @@ mod tests {
             delete_receiver: None,
             selected_file: None,
             quit_error: None,
+            clipboard: Box::new(|_| Err("tests never use the real clipboard".into())),
         }
     }
 
@@ -1817,6 +1818,16 @@ mod tests {
             }
             InputMode::WatchKeyBinding => handle_keybinding_key(key, &mut state.app),
             InputMode::Visual => handle_visual_key(key, state, keymap),
+            InputMode::Palette => {
+                return crate::event::palette::handle_palette_key(
+                    key,
+                    state,
+                    keymap,
+                    &mut test_terminal(),
+                    "unused",
+                )
+                .unwrap();
+            }
             InputMode::WatchTrash | InputMode::WatchDelete => {
                 if handle_delete_key(key, state, &mut test_terminal(), "unused").unwrap() {
                     return LoopControl::Break;
@@ -2588,5 +2599,231 @@ mod tests {
         type_keys(&mut state, &mut keymap, "V");
         assert_eq!(state.app.input_mode, InputMode::Normal);
         assert!(state.app.visual.is_none());
+    }
+
+    /// Open the palette, type `query` and press Enter, as the main loop would.
+    fn run_from_palette(state: &mut LoopState, query: &str) -> LoopControl {
+        let mut keymap = default_keymap();
+        type_keys(state, &mut keymap, &format!(":{query}"));
+        assert_eq!(state.app.input_mode, InputMode::Palette);
+        dispatch_with(state, enter(), &mut keymap)
+    }
+
+    /// A clipboard keeping what's copied in the returned list.
+    fn fake_clipboard(state: &mut LoopState) -> std::rc::Rc<std::cell::RefCell<Vec<String>>> {
+        let copied: std::rc::Rc<std::cell::RefCell<Vec<String>>> = std::rc::Rc::default();
+        let sink = std::rc::Rc::clone(&copied);
+        state.clipboard = Box::new(move |text: &str| {
+            sink.borrow_mut().push(text.to_string());
+            Ok(())
+        });
+        copied
+    }
+
+    #[test]
+    fn the_palette_runs_the_chosen_action_as_its_key_would() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        std::fs::write(dir.path().join(".hidden"), "x").unwrap();
+
+        run_from_palette(&mut state, "hid");
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(state.app.show_hidden_files);
+        assert!(state
+            .app
+            .files
+            .contains(&spelled(&dir.path().join(".hidden"))));
+
+        run_from_palette(&mut state, "sort");
+        assert_eq!(state.app.input_mode, InputMode::WatchSort);
+        dispatch(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+
+        // A warning names the action by its key.
+        state.app.start_copy("copy_target".into(), None);
+        assert!(matches!(
+            run_from_palette(&mut state, "quit"),
+            LoopControl::Continue
+        ));
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Copy in progress — press q again to quit anyway")
+        );
+    }
+
+    #[test]
+    fn the_palette_filters_chooses_and_closes_without_running_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let copied = fake_clipboard(&mut state);
+        let mut keymap = default_keymap();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        type_keys(&mut state, &mut keymap, ":Copy");
+        assert_eq!(state.app.palette.query, "Copy");
+        for (code, selected) in [
+            (KeyCode::Down, 1),
+            (KeyCode::Up, 0),
+            (KeyCode::Up, 5),
+            (KeyCode::Down, 0),
+            (KeyCode::Down, 1),
+        ] {
+            dispatch_with(&mut state, key(code), &mut keymap);
+            assert_eq!(state.app.palette.selected, selected, "{code:?}");
+        }
+        // Editing the filter goes back to the best match.
+        dispatch_with(&mut state, key(KeyCode::Backspace), &mut keymap);
+        assert_eq!(state.app.palette.query, "Cop");
+        assert_eq!(state.app.palette.selected, 0);
+        dispatch_with(&mut state, key(KeyCode::Esc), &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert!(copied.borrow().is_empty());
+
+        // It opens empty, and Enter with nothing matching does nothing.
+        type_keys(&mut state, &mut keymap, ":");
+        assert_eq!(state.app.palette.query, "");
+        type_keys(&mut state, &mut keymap, "zzz");
+        dispatch_with(&mut state, enter(), &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::Palette);
+        assert_eq!(state.app.palette.query, "zzz");
+        // Other Ctrl keys type nothing, and Ctrl-C still quits.
+        dispatch_with(&mut state, chord('x', KeyModifiers::CONTROL), &mut keymap);
+        assert_eq!(state.app.palette.query, "zzz");
+        let quit = dispatch_with(&mut state, chord('c', KeyModifiers::CONTROL), &mut keymap);
+        assert!(matches!(quit, LoopControl::Break));
+    }
+
+    #[test]
+    fn the_palette_key_opens_it_only_in_normal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let mut keymap = default_keymap();
+
+        type_keys(&mut state, &mut keymap, "V:");
+        assert_eq!(state.app.input_mode, InputMode::Visual);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some(keymap.selection_hint())
+        );
+        dispatch_with(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut keymap,
+        );
+        type_keys(&mut state, &mut keymap, "s:");
+        assert_eq!(state.app.input_mode, InputMode::WatchSort);
+
+        // A rebound palette key opens it instead.
+        let mut settings = crate::config::KeymapSettings::default();
+        settings.normal.insert(":".into(), "none".into());
+        settings.normal.insert("<C-p>".into(), "palette".into());
+        let mut keymap = KeymapRuntime::from_settings(&settings);
+        let mut state = listing_state(dir.path(), "notes.txt");
+        type_keys(&mut state, &mut keymap, ":");
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        dispatch_with(&mut state, chord('p', KeyModifiers::CONTROL), &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::Palette);
+    }
+
+    #[test]
+    fn copy_actions_put_the_highlighted_items_path_name_or_folder_on_the_clipboard() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut state = listing_state(root, "notes.txt");
+        let copied = fake_clipboard(&mut state);
+        let notes = spelled(&root.join("notes.txt"));
+
+        run_from_palette(&mut state, "copy path");
+        assert_eq!(state.status_bar.notification_kind, NotificationKind::Info);
+        let shown = crate::utils::format::format_path_for_display(&notes, 60);
+        assert_eq!(
+            state.status_bar.error_message,
+            Some(format!("Copied path: {shown}"))
+        );
+        run_from_palette(&mut state, "copy name");
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Copied name: notes.txt")
+        );
+        run_from_palette(&mut state, "copy parent");
+        assert_eq!(*copied.borrow(), [notes, "notes.txt".into(), spelled(root)]);
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn copy_actions_use_the_active_panes_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let copied = fake_clipboard(&mut state);
+
+        run_from_palette(&mut state, "copy path");
+        run_from_palette(&mut state, "copy name");
+        dispatch(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        run_from_palette(&mut state, "copy parent");
+        let left = spelled(&dir.path().join("left"));
+        assert_eq!(*copied.borrow(), [right_item, "delta.txt".into(), left]);
+        assert_eq!(
+            state.app.get_selected_path(state.state.selected()),
+            Some(left_item)
+        );
+    }
+
+    #[test]
+    fn copy_actions_use_the_highlighted_search_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(&dir.path().join("here"), "notes.txt");
+        // A folder outside the listing, found by its "ñ": an ASCII query could match the
+        // random temp folder name instead.
+        let elsewhere = dir.path().join("elsewhere").join("piñata");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        state.index.store.insert(&spelled(&elsewhere));
+        let copied = fake_clipboard(&mut state);
+
+        press(&mut state, KeyCode::Char('/'));
+        type_search(&mut state, "/ñ");
+        search_key(&mut state, KeyCode::Esc);
+        assert_eq!(state.app.search_results.len(), 1);
+        run_from_palette(&mut state, "copy path");
+        run_from_palette(&mut state, "copy parent");
+        assert_eq!(
+            *copied.borrow(),
+            [spelled(&elsewhere), spelled(&dir.path().join("elsewhere"))]
+        );
+    }
+
+    #[test]
+    fn a_clipboard_failure_is_shown_and_nothing_else_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        state.clipboard = Box::new(|_| Err("no display to copy to".into()));
+
+        run_from_palette(&mut state, "copy name");
+        assert_eq!(state.status_bar.notification_kind, NotificationKind::Error);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some("Couldn't copy the name: no display to copy to")
+        );
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert_eq!(
+            selected(&state),
+            Some(spelled(&dir.path().join("notes.txt")))
+        );
+    }
+
+    #[test]
+    fn a_copy_action_bound_to_a_key_runs_from_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let copied = fake_clipboard(&mut state);
+        let mut settings = crate::config::KeymapSettings::default();
+        settings
+            .normal
+            .insert("<leader>c".into(), "copy.path".into());
+        settings.normal.insert("gy".into(), "copy.name".into());
+        let mut keymap = KeymapRuntime::from_settings(&settings);
+
+        type_keys(&mut state, &mut keymap, " cgy");
+        let notes = spelled(&dir.path().join("notes.txt"));
+        assert_eq!(*copied.borrow(), [notes, "notes.txt".into()]);
     }
 }

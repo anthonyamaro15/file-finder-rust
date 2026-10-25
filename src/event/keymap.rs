@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -7,8 +10,12 @@ use crate::{
         keymap::{ctrl_key, key_label, NAMED_KEYS},
         Action, KeySequence, KeymapSettings,
     },
-    render::configured_action_key_labels,
+    render::popups::action_key_labels,
 };
+
+/// How long a sequence waits for its next key before the box listing those keys
+/// appears, so typing `gg` quickly never flashes it.
+pub const WHICH_KEY_DELAY: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone)]
 pub struct KeymapRuntime {
@@ -17,6 +24,10 @@ pub struct KeymapRuntime {
     pending_leader: bool,
     /// First key of a two-key sequence, waiting for the second.
     pending_key: Option<String>,
+    /// When the pending sequence started waiting.
+    pending_since: Option<Instant>,
+    /// Each bound action's first key, as the help shows it.
+    first_keys: HashMap<Action, String>,
     ignored: Vec<String>,
     /// Shown for a key that does nothing while selecting, naming the keys that act.
     selection_hint: String,
@@ -25,13 +36,16 @@ pub struct KeymapRuntime {
 impl KeymapRuntime {
     pub fn from_settings(settings: &KeymapSettings) -> Self {
         let bindings = settings.resolve();
-        let keys: Vec<String> = [Action::FileTrash, Action::FileDelete]
-            .into_iter()
-            .filter_map(|action| {
-                configured_action_key_labels(settings, action)
-                    .into_iter()
-                    .next()
+        let first_keys: HashMap<Action, String> = Action::ALL
+            .iter()
+            .filter_map(|(action, _)| {
+                let key = action_key_labels(&bindings, *action).into_iter().next()?;
+                Some((*action, key))
             })
+            .collect();
+        let keys: Vec<&str> = [Action::FileTrash, Action::FileDelete]
+            .iter()
+            .filter_map(|action| first_keys.get(action).map(String::as_str))
             .collect();
         let selection_hint = if keys.is_empty() {
             "Esc to cancel the selection".to_string()
@@ -47,6 +61,8 @@ impl KeymapRuntime {
             normal: bindings.normal.into_iter().collect(),
             pending_leader: false,
             pending_key: None,
+            pending_since: None,
+            first_keys,
             ignored: bindings.ignored,
             selection_hint,
         }
@@ -62,6 +78,42 @@ impl KeymapRuntime {
         self.pending_leader || self.pending_key.is_some()
     }
 
+    /// How "press … again" warnings name `action` when the palette runs it: its first
+    /// key, or its name if nothing is bound to it.
+    pub fn key_for(&self, action: Action) -> String {
+        self.first_keys
+            .get(&action)
+            .cloned()
+            .unwrap_or_else(|| action.name().to_string())
+    }
+
+    /// Once a sequence has waited [`WHICH_KEY_DELAY`] for its next key at `now`: the
+    /// box's title ("Space …", "g …") and each next key with the action it runs.
+    pub fn which_key(&self, now: Instant) -> Option<(String, Vec<(String, Action)>)> {
+        let since = self.pending_since?;
+        if now.saturating_duration_since(since) < WHICH_KEY_DELAY {
+            return None;
+        }
+        let first = self.pending_key.as_ref().unwrap_or(&self.leader);
+        let mut next: Vec<(&String, Action)> = self
+            .normal
+            .iter()
+            .filter_map(|(sequence, action)| match sequence {
+                KeySequence::Pair(key, second) if self.pending_key.as_ref() == Some(key) => {
+                    Some((second, *action))
+                }
+                KeySequence::Leader(key) if self.pending_key.is_none() => Some((key, *action)),
+                _ => None,
+            })
+            .collect();
+        next.sort_by_key(|(key, _)| *key);
+        let rows: Vec<(String, Action)> = next
+            .into_iter()
+            .map(|(key, action)| (key_label(key), action))
+            .collect();
+        (!rows.is_empty()).then(|| (format!("{} …", key_label(first)), rows))
+    }
+
     /// The startup warning naming the settings.toml entries that were left out.
     pub fn warning(&self) -> Option<String> {
         (!self.ignored.is_empty())
@@ -71,6 +123,7 @@ impl KeymapRuntime {
     pub fn resolve_normal(&mut self, key: KeyEvent) -> Option<Action> {
         let pending_leader = std::mem::take(&mut self.pending_leader);
         let pending_key = self.pending_key.take();
+        self.pending_since = None;
         let key_string = key_to_string(key)?;
 
         if let Some(first) = pending_key {
@@ -88,6 +141,7 @@ impl KeymapRuntime {
             }
         } else if key_string == self.leader {
             self.pending_leader = true;
+            self.pending_since = Some(Instant::now());
             return None;
         }
         let starts_pair = self
@@ -96,6 +150,7 @@ impl KeymapRuntime {
             .any(|bound| matches!(bound, KeySequence::Pair(first, _) if *first == key_string));
         if starts_pair {
             self.pending_key = Some(key_string);
+            self.pending_since = Some(Instant::now());
             return None;
         }
 
@@ -192,6 +247,7 @@ mod tests {
             (key('.'), Action::ViewHidden),
             (named(KeyCode::Tab), Action::PaneSwitch),
             (key('?'), Action::Help),
+            (key(':'), Action::Palette),
             (key('q'), Action::Quit),
         ];
         for (pressed, action) in table {
@@ -201,11 +257,14 @@ mod tests {
         assert_eq!(runtime.resolve_normal(key('/')), Some(Action::SearchRoot));
         assert_eq!(runtime.resolve_normal(key('g')), None);
         assert_eq!(runtime.resolve_normal(key('g')), Some(Action::NavTop));
-        // Nothing else is bound, and every action has a key.
+        // Nothing else is bound, and every action but the copy actions has a key.
         assert_eq!(runtime.normal.len(), table.len() + 2);
-        for (action, name) in Action::ALL {
-            assert!(runtime.normal.values().any(|a| *a == action), "{name}");
-        }
+        let unbound: Vec<&str> = Action::ALL
+            .iter()
+            .filter(|(action, _)| !runtime.normal.values().any(|a| a == action))
+            .map(|(_, name)| *name)
+            .collect();
+        assert_eq!(unbound, ["copy.path", "copy.name", "copy.parent"]);
         assert!(runtime.warning().is_none());
     }
 
@@ -321,6 +380,66 @@ mod tests {
         assert_eq!(runtime.resolve_normal(ctrl_w), None);
         assert_eq!(runtime.resolve_normal(key('j')), Some(Action::PaneSwitch));
         assert_eq!(runtime.resolve_normal(key('j')), Some(Action::NavDown));
+    }
+
+    #[test]
+    fn warnings_name_an_action_by_its_first_live_key_or_its_name() {
+        let runtime = runtime(&[("x", "quit"), ("<leader>c", "copy.path")]);
+
+        assert_eq!(runtime.key_for(Action::Quit), "q");
+        assert_eq!(runtime.key_for(Action::FileOpen), "o");
+        assert_eq!(runtime.key_for(Action::SearchRoot), "Space + /");
+        assert_eq!(runtime.key_for(Action::CopyPath), "Space + c");
+        assert_eq!(runtime.key_for(Action::CopyName), "copy.name");
+    }
+
+    #[test]
+    fn the_which_key_box_lists_the_next_keys_once_a_sequence_has_waited() {
+        let mut keymap = runtime(&[("<leader>c", "copy.path"), ("gy", "copy.name")]);
+        let later = || Instant::now() + WHICH_KEY_DELAY;
+
+        assert_eq!(keymap.which_key(later()), None);
+        assert_eq!(keymap.resolve_normal(key(' ')), None);
+        // Typed quickly, the second key arrives before the box appears.
+        assert_eq!(keymap.which_key(Instant::now()), None);
+        assert_eq!(
+            keymap.which_key(later()),
+            Some((
+                "Space …".to_string(),
+                vec![
+                    ("/".to_string(), Action::SearchRoot),
+                    ("c".to_string(), Action::CopyPath)
+                ]
+            ))
+        );
+        // The next key, bound or not, closes it.
+        assert_eq!(keymap.resolve_normal(key('x')), None);
+        assert_eq!(keymap.which_key(later()), None);
+
+        assert_eq!(keymap.resolve_normal(key('g')), None);
+        assert_eq!(
+            keymap.which_key(later()),
+            Some((
+                "g …".to_string(),
+                vec![
+                    ("g".to_string(), Action::NavTop),
+                    ("y".to_string(), Action::CopyName)
+                ]
+            ))
+        );
+        assert_eq!(keymap.resolve_normal(key('y')), Some(Action::CopyName));
+        assert_eq!(keymap.which_key(later()), None);
+
+        // After the leader, a key that starts a sequence shows that sequence's keys.
+        keymap.resolve_normal(key(' '));
+        keymap.resolve_normal(key('g'));
+        assert_eq!(keymap.which_key(later()).unwrap().0, "g …");
+
+        // With nothing bound after the leader there is nothing to list.
+        let mut keymap = runtime(&[("<leader>/", "none")]);
+        assert_eq!(keymap.resolve_normal(key(' ')), None);
+        assert!(keymap.is_pending());
+        assert_eq!(keymap.which_key(later()), None);
     }
 
     #[test]

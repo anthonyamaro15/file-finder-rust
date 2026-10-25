@@ -7,7 +7,7 @@ use crate::{
     app::{App, InputMode},
     directory_store::DirectoryIndex,
     event::keymap::KeymapRuntime,
-    exit::may_exit,
+    exit::{may_exit, Clipboard},
     file_reader_content::FileContent,
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
@@ -19,6 +19,7 @@ pub mod file_actions;
 pub mod keymap;
 pub mod navigation;
 pub mod normal;
+pub mod palette;
 pub mod popups;
 pub mod search;
 pub mod sort;
@@ -39,6 +40,8 @@ pub struct LoopState {
     /// File chosen with Enter, handled after the terminal is restored
     pub selected_file: Option<String>,
     pub quit_error: Option<String>,
+    /// Where the copy actions put text (`exit::system_clipboard` outside tests).
+    pub clipboard: Clipboard,
 }
 
 /// What the main loop does after a key handler returns.

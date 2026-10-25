@@ -61,6 +61,8 @@ pub enum InputMode {
     WatchInfo,
     /// Selecting a run of adjacent items (see `App::visual`).
     Visual,
+    /// The command palette (see `App::palette`).
+    Palette,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +168,17 @@ pub struct FolderPicker {
     pub source: String,
     pub results: Vec<SearchResult>,
     pub selected: Option<usize>,
+}
+
+/// The open command palette: the typed filter and its highlighted match.
+#[derive(Debug, Default)]
+pub struct Palette {
+    pub query: String,
+    /// Row of `event::palette::palette_matches` that Enter runs.
+    pub selected: usize,
+    /// First match shown, kept between frames so the list only scrolls to keep the
+    /// highlight in view (set when drawn).
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -529,6 +542,8 @@ pub struct App {
     pub folder_picker: Option<FolderPicker>,
     /// The open Get Info popup.
     pub info: Option<crate::info::ItemInfo>,
+    /// The command palette, while `input_mode` is `Palette`.
+    pub palette: Palette,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(String, Instant)>,
     /// First line shown in the keybinding help, and how many fit (set when drawn).
@@ -741,6 +756,7 @@ impl App {
             job: None,
             folder_picker: None,
             info: None,
+            palette: Palette::default(),
             quit_warning: None,
             help_scroll: 0,
             help_page: 0,
