@@ -7,7 +7,7 @@ use log::{debug, warn};
 use ratatui::widgets::ListState;
 
 use crate::{
-    app::{App, InputMode},
+    app::{App, InputMode, PanePosition},
     directory_store::DirectoryIndex,
     event::file_actions::current_refresh_directory,
     file_reader_content::{self, FileContent, FileType},
@@ -400,8 +400,8 @@ pub fn refresh_after_copy(
     }
 }
 
-/// A finished move or extraction may have changed both panes and the folder index,
-/// even if it failed partway.
+/// A finished move, extraction or compression may have changed both panes and the folder
+/// index, even if it failed partway. On success, highlight what it made, if it says.
 pub fn poll_job(
     app: &mut App,
     state: &mut ListState,
@@ -409,10 +409,15 @@ pub fn poll_job(
     index: &mut DirectoryIndex,
     fallback_start_path: &str,
 ) {
+    let select = app.job.as_ref().and_then(|job| job.select.clone());
     if let Some((result, changes)) = app.poll_job() {
         for path in &changes {
             index.changed(path);
         }
+        let (select_left, select_right) = match select.filter(|_| result.is_ok()) {
+            Some((PanePosition::Right, path)) => (None, Some(path)),
+            other => (other.map(|(_, path)| path), None),
+        };
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
         if let Ok(files) = get_file_path_data(
             refresh_dir,
@@ -421,7 +426,7 @@ pub fn poll_job(
             &app.sort_type,
         ) {
             if result.is_ok() {
-                app.refresh_files_after_operation(files, state, None);
+                app.refresh_files_after_operation(files, state, select_left);
             } else {
                 app.refresh_files_from_watcher(files, state);
             }
@@ -429,6 +434,9 @@ pub fn poll_job(
         }
         if app.view_mode.is_dual_pane() {
             app.right_pane.refresh_files();
+            if let Some(path) = select_right {
+                app.right_pane.select_path(&path);
+            }
         }
         match result {
             Ok(message) => status_bar.show_info(message, None),

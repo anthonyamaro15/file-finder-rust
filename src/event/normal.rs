@@ -30,7 +30,7 @@ use crate::{
     exit::{may_exit, system_opener, write_result_file},
     file_reader_content::{FileContent, FileType},
     info::ItemInfo,
-    operations::copy_dir_file_with_progress_cancellable,
+    operations::{compress, copy_dir_file_with_progress_cancellable},
     utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
 };
 
@@ -259,6 +259,54 @@ pub fn handle_normal_key(
                     });
                     if let Err(warning) = started {
                         status_bar.show_warning(warning, None);
+                    }
+                }
+            }
+        }
+        KeyCode::Char('z') => {
+            // Compress the highlighted item into a ZIP beside it, like Finder's "Compress".
+            if let Some(selected) = app.active_selected_path(state.selected()) {
+                // Check first so a busy app doesn't create an archive just to remove it.
+                if let Some(warning) = app.busy_warning() {
+                    status_bar.show_warning(warning, None);
+                } else {
+                    match compress::reserve_archive(Path::new(&selected)) {
+                        Ok((archive, file)) => {
+                            let name = Path::new(&selected)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            let status = format!("Compressing '{name}'…");
+                            let pane = if app.is_right_pane_active() {
+                                PanePosition::Right
+                            } else {
+                                PanePosition::Left
+                            };
+                            let select = (pane, archive.to_string_lossy().into_owned());
+                            let started =
+                                app.start_job("compression", status, Vec::new(), move |cancel| {
+                                    compress::compress_to_zip(
+                                        Path::new(&selected),
+                                        &archive,
+                                        file,
+                                        &cancel,
+                                    )
+                                });
+                            match started {
+                                Ok(()) => {
+                                    if let Some(job) = app.job.as_mut() {
+                                        job.select = Some(select);
+                                    }
+                                }
+                                Err(warning) => {
+                                    // The job never ran: free the empty archive it reserved.
+                                    let _ = std::fs::remove_file(&select.1);
+                                    status_bar.show_warning(warning, None);
+                                }
+                            }
+                        }
+                        Err(e) => status_bar.show_error(e, None),
                     }
                 }
             }

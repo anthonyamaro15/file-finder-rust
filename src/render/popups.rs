@@ -387,6 +387,7 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "  Shift+C         Copy to… (pick a folder)".to_string(),
         "  Shift+M         Move to… (pick a folder)".to_string(),
         "  y               Extract ZIP archive".to_string(),
+        "  z               Compress to ZIP archive".to_string(),
         "  o               Open with system default".to_string(),
         "  I (Shift+I)     Get Info (size, dates, permissions)".to_string(),
         "".to_string(),

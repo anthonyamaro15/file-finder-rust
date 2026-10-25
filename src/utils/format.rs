@@ -37,15 +37,7 @@ pub fn format_local_time(time: SystemTime) -> Option<String> {
         const MONTHS: [&str; 12] = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
-        let seconds = match time.duration_since(UNIX_EPOCH) {
-            Ok(after) => libc::time_t::try_from(after.as_secs()).ok()?,
-            Err(before) => -libc::time_t::try_from(before.duration().as_secs()).ok()?,
-        };
-        // SAFETY: zero is valid for tm, and both pointers refer to live values.
-        let mut local: libc::tm = unsafe { std::mem::zeroed() };
-        if unsafe { libc::localtime_r(&seconds, &mut local) }.is_null() {
-            return None;
-        }
+        let local = local_time(time)?;
         let hour = match local.tm_hour % 12 {
             0 => 12,
             hour => hour,
@@ -65,6 +57,21 @@ pub fn format_local_time(time: SystemTime) -> Option<String> {
         let _ = (time, UNIX_EPOCH);
         None
     }
+}
+
+/// `time` broken down in the local time zone, or `None` when the system can't convert it.
+#[cfg(unix)]
+pub fn local_time(time: SystemTime) -> Option<libc::tm> {
+    let seconds = match time.duration_since(UNIX_EPOCH) {
+        Ok(after) => libc::time_t::try_from(after.as_secs()).ok()?,
+        Err(before) => -libc::time_t::try_from(before.duration().as_secs()).ok()?,
+    };
+    // SAFETY: zero is valid for tm, and both pointers refer to live values.
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&seconds, &mut local) }.is_null() {
+        return None;
+    }
+    Some(local)
 }
 
 /// Format a file size in bytes to a human-readable string.

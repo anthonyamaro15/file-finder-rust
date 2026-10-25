@@ -1,5 +1,6 @@
 //! File and copy operations module.
 
+pub mod compress;
 pub mod copy;
 pub mod file_ops;
 pub(crate) mod trash;

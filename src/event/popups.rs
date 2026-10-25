@@ -957,6 +957,43 @@ mod tests {
     }
 
     #[test]
+    fn z_compresses_the_active_panes_item_and_highlights_the_archive() {
+        for active in [PanePosition::Right, PanePosition::Left] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+            state.app.active_pane = active.clone();
+            press(&mut state, KeyCode::Char('z'));
+            finish_removal(&mut state);
+
+            let source = if active == PanePosition::Right {
+                &right_item
+            } else {
+                &left_item
+            };
+            let archive = format!("{source}.zip");
+            assert!(Path::new(&archive).is_file());
+            assert_eq!(
+                state.status_bar.error_message,
+                Some(format!(
+                    "Compressed '{}' to '{}'",
+                    name_of(source),
+                    name_of(&archive)
+                ))
+            );
+            let (left, right) = if active == PanePosition::Right {
+                (left_item, archive)
+            } else {
+                (archive, right_item)
+            };
+            assert_eq!(
+                state.app.get_selected_path(state.state.selected()),
+                Some(left)
+            );
+            assert_eq!(state.app.right_pane.get_selected_path(), Some(right));
+        }
+    }
+
+    #[test]
     fn leaving_dual_pane_returns_item_keys_to_the_left_listing() {
         let dir = tempfile::tempdir().unwrap();
         let (mut state, left_item, _) = dual_pane_state(dir.path());
