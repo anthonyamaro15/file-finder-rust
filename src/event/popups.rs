@@ -1544,38 +1544,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut state, left_item, right_item) = dual_pane_state(dir.path());
         let right = Path::new(&right_item).parent().unwrap().to_path_buf();
-        std::fs::create_dir(right.join("photos")).unwrap();
+        // Search for "ñ": fuzzy matching also scores full paths, and an ASCII query
+        // could match the random temp folder name and so every row.
+        std::fs::create_dir(right.join("piñata")).unwrap();
         state.app.right_pane.refresh_files();
         let left_files = state.app.files.clone();
-        let photos = spelled(&right.join("photos"));
+        let pinata = spelled(&right.join("piñata"));
 
         press(&mut state, KeyCode::Char('i'));
-        type_search(&mut state, "pho");
+        type_search(&mut state, "ñ");
 
-        // The top match is highlighted; others may match the temp folder's path.
+        // Only the matching folder is listed, and it is highlighted.
         let pane = &state.app.right_pane;
-        assert!(pane.get_list_length() < pane.files.len());
-        assert_eq!(pane.search_results[0].file_path, photos);
-        assert_eq!(pane.get_selected_path(), Some(photos.clone()));
+        assert_eq!(pane.get_list_length(), 1);
+        assert_eq!(pane.search_results[0].file_path, pinata);
+        assert_eq!(pane.get_selected_path(), Some(pinata.clone()));
         assert_eq!(state.app.files, left_files);
         assert!(state.app.search_results.is_empty());
         assert_eq!(state.app.filtered_indexes, [0, 1]);
         assert_eq!(selected(&state), Some(left_item.clone()));
-        assert_eq!(crate::ui::highlight_term(&state.app, true), "pho");
+        assert_eq!(crate::ui::highlight_term(&state.app, true), "ñ");
         assert_eq!(crate::ui::highlight_term(&state.app, false), "");
 
         // Esc keeps the filter in the right pane, as it does in the left listing.
         search_key(&mut state, KeyCode::Esc);
-        assert_eq!(state.app.search_box(), ("pho", false));
+        assert_eq!(state.app.search_box(), ("ñ", false));
         press(&mut state, KeyCode::Char('j'));
         press(&mut state, KeyCode::Char('k'));
         assert_eq!(
             state.app.active_selected_path(state.state.selected()),
-            Some(photos.clone())
+            Some(pinata.clone())
         );
         press(&mut state, KeyCode::Char('l'));
         let pane = &state.app.right_pane;
-        assert_eq!(pane.current_directory, photos);
+        assert_eq!(pane.current_directory, pinata);
         assert!(!pane.is_searching());
         assert_eq!(state.app.search_box(), ("", false));
 
