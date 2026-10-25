@@ -93,6 +93,8 @@ pub fn handle_rename_key(
                         Err(e) => {
                             app.is_create_edit_error = true;
                             app.error_message = e.user_message();
+                            // The popup title cuts long messages off; show it in full too.
+                            status_bar.show_error(app.error_message.clone(), None);
                         }
                     }
                 } else {
@@ -144,9 +146,10 @@ pub fn handle_create_key(
                 .to_string_lossy()
                 .to_string();
             match create_item_based_on_type(new_path.clone(), app.create_edit_file_name.clone()) {
-                Ok(_) => {
+                Ok(top_created) => {
                     app.input_mode = InputMode::Normal;
-                    index.changed(&Path::new(&new_path).join(&app.create_edit_file_name));
+                    // Indexes every folder it made, nested ones included.
+                    index.changed(&top_created);
 
                     let created_path =
                         created_item_path(Path::new(&new_path), &app.create_edit_file_name);
@@ -193,6 +196,8 @@ pub fn handle_create_key(
                 Err(e) => {
                     app.is_create_edit_error = true;
                     app.error_message = e.user_message();
+                    // The popup title cuts long messages off; show it in full too.
+                    status_bar.show_error(app.error_message.clone(), None);
                 }
             }
         }
@@ -809,7 +814,7 @@ mod tests {
         let spelled = |name: &str| root.join(name).to_string_lossy().into_owned();
 
         app.input_mode = InputMode::WatchCreate;
-        app.create_edit_file_name = "alpha".into();
+        app.create_edit_file_name = "alpha/inner/".into();
         let fallback = root.to_string_lossy().into_owned();
         handle_create_key(
             enter,
@@ -820,9 +825,10 @@ mod tests {
             &fallback,
         )
         .unwrap();
-        assert_eq!(index.store.directories, [spelled("alpha")]);
-        std::fs::create_dir(root.join("alpha/inner")).unwrap();
-        index.changed(&root.join("alpha/inner"));
+        assert_eq!(
+            index.store.directories,
+            [spelled("alpha"), spelled("alpha/inner")]
+        );
 
         app.input_mode = InputMode::WatchRename;
         app.current_path_to_edit = root.to_string_lossy().into_owned();
@@ -1261,6 +1267,22 @@ mod tests {
         press(&mut state, KeyCode::Char('h'));
         assert_eq!(Path::new(&state.app.current_directory), root);
         assert_eq!(selected(&state), Some(spelled(&photos)));
+    }
+
+    #[test]
+    fn a_failed_create_shows_the_whole_error_in_the_status_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+
+        create(&mut state, "notes.txt/inside.txt");
+
+        assert_eq!(state.app.input_mode, InputMode::WatchCreate);
+        assert!(state.app.is_create_edit_error);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some(state.app.error_message.as_str())
+        );
+        assert!(state.app.error_message.contains("is a file, not a folder"));
     }
 
     #[test]

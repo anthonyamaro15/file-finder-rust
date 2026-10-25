@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{atomic::AtomicBool, mpsc};
 use std::thread;
 
@@ -296,16 +296,79 @@ pub fn create_new_file(current_file_path: String, file_name: String) -> FileOper
     Ok(())
 }
 
-/// Create a file or directory based on whether the name contains a dot.
+/// Create a file, or a folder when the name ends with `/`. Folders on the way
+/// (`docs/todo.md`, `a/b/c/`) are created too, or reused if they exist; if a later
+/// step fails, the ones created here are removed again. Returns the top-most new
+/// entry, so its folders can be indexed.
 pub fn create_item_based_on_type(
     current_file_path: String,
     new_item: String,
-) -> FileOperationResult<()> {
-    if new_item.contains('.') {
-        create_new_file(current_file_path, new_item)
-    } else {
-        create_new_dir(current_file_path, new_item)
+) -> FileOperationResult<PathBuf> {
+    if new_item.starts_with('/') {
+        return Err(FileOperationError::invalid_name(
+            new_item,
+            "Cannot start with / (names are relative to this folder)",
+        ));
     }
+    if new_item.contains("//") {
+        return Err(FileOperationError::invalid_name(
+            new_item,
+            "Cannot contain //",
+        ));
+    }
+    let is_dir = new_item.ends_with('/');
+    let names: Vec<&str> = new_item
+        .strip_suffix('/')
+        .unwrap_or(&new_item)
+        .split('/')
+        .collect();
+    for name in &names {
+        validation::validate_filename(name)?;
+    }
+    let (last, parents) = names.split_last().expect("split yields a name");
+
+    let mut dir = PathBuf::from(&current_file_path);
+    let mut created = Vec::new();
+    let result = (|| -> FileOperationResult<()> {
+        for name in parents {
+            let parent = dir.to_string_lossy().into_owned();
+            dir.push(name);
+            // symlink_metadata so a link is never followed out of this folder.
+            match fs::symlink_metadata(&dir) {
+                Ok(metadata) if metadata.is_dir() => continue,
+                Ok(metadata) => {
+                    let kind = if metadata.is_symlink() {
+                        "a link"
+                    } else {
+                        "a file"
+                    };
+                    return Err(FileOperationError::Io {
+                        message: format!("'{name}' is {kind}, not a folder"),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+            create_new_dir(parent, name.to_string())?;
+            created.push(dir.clone());
+        }
+        let dir = dir.to_string_lossy().into_owned();
+        if is_dir {
+            create_new_dir(dir, last.to_string())
+        } else {
+            create_new_file(dir, last.to_string())
+        }
+    })();
+
+    if result.is_err() {
+        // Deepest first; remove_dir only removes them while they're still empty.
+        for dir in created.iter().rev() {
+            if let Err(e) = fs::remove_dir(dir) {
+                warn!("Could not remove '{}': {}", dir.display(), e);
+            }
+        }
+    }
+    result.map(|()| created.into_iter().next().unwrap_or_else(|| dir.join(last)))
 }
 
 /// Move a file or directory to a new location.

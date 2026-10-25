@@ -1,11 +1,12 @@
 use file_finder::app::App;
+use file_finder::errors::FileOperationResult;
 use file_finder::operations::file_ops::{create_new_dir, create_new_file, delete_dir, delete_file};
 use file_finder::operations::{
     copy_dir_file_helper, create_item_based_on_type, handle_delete_based_on_type, handle_rename,
 };
 use file_finder::utils::files::{check_if_exists, generate_copy_file_dir_name};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 #[cfg(test)]
@@ -68,28 +69,135 @@ mod file_creation_tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_create_item_based_on_type_file() {
-        let temp_dir = tempdir().expect("Failed to create temp directory");
-        let temp_path = temp_dir.path().to_string_lossy().to_string();
-        let item_name = "document.txt".to_string();
+    fn create(dir: &Path, name: &str) -> FileOperationResult<PathBuf> {
+        create_item_based_on_type(dir.to_string_lossy().into_owned(), name.to_string())
+    }
 
-        let result = create_item_based_on_type(temp_path.clone(), item_name.clone());
-
-        assert!(result.is_ok());
-        assert!(Path::new(&format!("{}/{}", temp_path, item_name)).is_file());
+    /// Every entry below `dir`, relative and sorted, e.g. ["docs", "docs/todo.md"].
+    fn tree(dir: &Path) -> Vec<String> {
+        let mut entries: Vec<String> = walkdir::WalkDir::new(dir)
+            .min_depth(1)
+            .into_iter()
+            .map(|e| {
+                let e = e.unwrap();
+                e.path().strip_prefix(dir).unwrap().display().to_string()
+            })
+            .collect();
+        entries.sort();
+        entries
     }
 
     #[test]
-    fn test_create_item_based_on_type_directory() {
-        let temp_dir = tempdir().expect("Failed to create temp directory");
-        let temp_path = temp_dir.path().to_string_lossy().to_string();
-        let item_name = "new_folder".to_string();
+    fn create_item_makes_a_folder_only_when_the_name_ends_with_a_slash() {
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path();
 
-        let result = create_item_based_on_type(temp_path.clone(), item_name.clone());
+        for name in ["Makefile", ".env", "notes", "document.txt"] {
+            assert_eq!(create(dir, name).unwrap(), dir.join(name));
+            assert!(dir.join(name).is_file(), "{name}");
+        }
+        for name in ["photos/", "v1.2/", ".config/"] {
+            let folder = dir.join(name.trim_end_matches('/'));
+            assert_eq!(create(dir, name).unwrap(), folder);
+            assert!(folder.is_dir(), "{name}");
+        }
+    }
 
-        assert!(result.is_ok());
-        assert!(Path::new(&format!("{}/{}", temp_path, item_name)).is_dir());
+    #[test]
+    fn create_item_creates_or_reuses_the_folders_on_the_way() {
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        // Returns the top-most new entry.
+        assert_eq!(create(dir, "docs/todo.md").unwrap(), dir.join("docs"));
+        assert_eq!(
+            create(dir, "docs/more.md").unwrap(),
+            dir.join("docs/more.md")
+        );
+        assert_eq!(create(dir, "a/b/c/").unwrap(), dir.join("a"));
+        assert_eq!(create(dir, "a/b/d/").unwrap(), dir.join("a/b/d"));
+
+        assert!(dir.join("docs/todo.md").is_file());
+        assert!(dir.join("docs/more.md").is_file());
+        assert!(dir.join("a/b/c").is_dir());
+        assert!(dir.join("a/b/d").is_dir());
+    }
+
+    #[test]
+    fn create_item_rejects_bad_names_and_creates_nothing() {
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        for name in [
+            "", "/", "//", "/abs", "../x", "a/../b", "a/./b", "a//b", "a//", "con", "a/con",
+            "con/", "a/b:c",
+        ] {
+            assert!(create(dir, name).is_err(), "{name:?}");
+        }
+        assert!(tree(dir).is_empty());
+    }
+
+    #[test]
+    fn create_item_never_overwrites() {
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("photos/kept")).unwrap();
+        fs::create_dir(dir.join("docs")).unwrap();
+        fs::write(dir.join("docs/todo.md"), "keep me").unwrap();
+        fs::write(dir.join("notes.txt"), "keep me too").unwrap();
+        let before = tree(dir);
+
+        for name in [
+            "photos/",
+            "photos",
+            "docs/todo.md",
+            "docs/todo.md/",
+            "notes.txt",
+            "notes.txt/",
+            // A file on the way is not replaced by a folder.
+            "notes.txt/x",
+            "notes.txt/x/y/",
+        ] {
+            assert!(create(dir, name).is_err(), "{name}");
+        }
+        assert_eq!(tree(dir), before);
+        assert_eq!(
+            fs::read_to_string(dir.join("docs/todo.md")).unwrap(),
+            "keep me"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "keep me too"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_item_never_goes_through_a_link() {
+        let temp_dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let dir = temp_dir.path();
+        std::os::unix::fs::symlink(outside.path(), dir.join("link")).unwrap();
+
+        for name in ["link/x", "link/x/", "link/new/x"] {
+            assert!(create(dir, name).is_err(), "{name}");
+        }
+        assert!(tree(outside.path()).is_empty());
+        assert_eq!(tree(dir), ["link"]);
+    }
+
+    #[test]
+    fn create_item_removes_only_the_folders_it_created_when_it_fails() {
+        let temp_dir = tempdir().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("keep/old")).unwrap();
+        // Each name is valid, but the whole path grows past the system limit, so the
+        // folders near the start get created before a later one fails.
+        let long = "d".repeat(200);
+        let name = format!("keep/{}/end.txt", vec![long.as_str(); 30].join("/"));
+
+        assert!(create(dir, &name).is_err());
+        assert_eq!(tree(dir), ["keep", "keep/old"]);
     }
 }
 

@@ -146,8 +146,7 @@ pub fn create_delete_confirmation_popup<'a>(
 }
 
 /// Create the create file/dir input popup widget.
-/// Shows "Create File" if input contains a dot (has extension),
-/// or "Create Directory" if no dot is present.
+/// Shows "Create Folder" if input ends with `/`, or "Create File" otherwise.
 pub fn create_create_input_popup<'a>(
     input_text: &'a str,
     is_error: bool,
@@ -157,10 +156,10 @@ pub fn create_create_input_popup<'a>(
         format!("Error: {}", error_message)
     } else if input_text.is_empty() {
         "Create File/Dir".to_string()
-    } else if input_text.contains('.') {
-        "Create File".to_string()
+    } else if input_text.ends_with('/') {
+        "Create Folder".to_string()
     } else {
-        "Create Directory".to_string()
+        "Create File".to_string()
     };
 
     let style = if is_error {
@@ -174,7 +173,8 @@ pub fn create_create_input_popup<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .title(title),
+                .title(title)
+                .title_bottom(Line::from("end with / for a folder").right_aligned()),
         )
         .style(style)
 }
@@ -358,7 +358,7 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 6] = [
     (
         "File Operations",
         &[
-            (Action::FileCreate, "Create new file/directory"),
+            (Action::FileCreate, "Create file (end with / for a folder)"),
             (Action::FileTrash, "Move to Trash (with confirmation)"),
             (Action::FileDelete, "Permanently delete (with confirmation)"),
             (Action::FileRename, "Rename file/directory"),
@@ -854,6 +854,35 @@ mod tests {
         let popup = Rect::new(20, 10, 40, 3);
 
         assert_eq!(input_popup_cursor_position(popup, 9), (30, 11));
+    }
+
+    #[test]
+    fn create_popup_title_follows_the_trailing_slash() {
+        use ratatui::{buffer::Buffer, widgets::Widget};
+        for (input, title) in [
+            ("", "Create File/Dir"),
+            ("Makefile", "Create File"),
+            ("v1.2", "Create File"),
+            ("docs/todo.md", "Create File"),
+            ("photos/", "Create Folder"),
+            ("v1.2/", "Create Folder"),
+        ] {
+            let area = Rect::new(0, 0, 40, 3);
+            let mut buffer = Buffer::empty(area);
+            create_create_input_popup(input, false, "").render(area, &mut buffer);
+            let rows: Vec<String> = buffer
+                .content
+                .chunks(40)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                .collect();
+
+            assert!(
+                rows[0].starts_with(&format!("╭{title}─")),
+                "{input}: {}",
+                rows[0]
+            );
+            assert!(rows[2].contains("end with / for a folder"), "{}", rows[2]);
+        }
     }
 
     #[test]
