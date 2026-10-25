@@ -511,7 +511,10 @@ pub struct App {
     /// The open Get Info popup.
     pub info: Option<crate::info::ItemInfo>,
     /// Exit key and time of the last "operation in progress" quit warning.
-    pub quit_warning: Option<(&'static str, Instant)>,
+    pub quit_warning: Option<(String, Instant)>,
+    /// First line shown in the keybinding help, and how many fit (set when drawn).
+    pub help_scroll: usize,
+    pub help_page: usize,
 }
 
 /// How long the same exit key, pressed again, leaves despite a running operation.
@@ -718,6 +721,8 @@ impl App {
             folder_picker: None,
             info: None,
             quit_warning: None,
+            help_scroll: 0,
+            help_page: 0,
         }
     }
 
@@ -1420,17 +1425,21 @@ impl App {
 
     /// Allow leaving `ff` with `key` unless an operation runs. Then the first press
     /// returns a warning, and the same key again within the window leaves anyway.
-    pub fn confirm_quit(&mut self, key: &'static str, now: Instant) -> Result<(), String> {
+    pub fn confirm_quit(&mut self, key: &str, now: Instant) -> Result<(), String> {
         let Some(operation) = self.busy_operation() else {
             return Ok(());
         };
-        let repeated = self.quit_warning.is_some_and(|(warned_key, warned_at)| {
-            warned_key == key && now.saturating_duration_since(warned_at) <= QUIT_CONFIRM_WINDOW
-        });
+        let repeated = self
+            .quit_warning
+            .as_ref()
+            .is_some_and(|(warned_key, warned_at)| {
+                warned_key == key
+                    && now.saturating_duration_since(*warned_at) <= QUIT_CONFIRM_WINDOW
+            });
         if repeated {
             return Ok(());
         }
-        self.quit_warning = Some((key, now));
+        self.quit_warning = Some((key.to_string(), now));
         Err(format!(
             "{} in progress — press {key} again to quit anyway",
             sentence_case(operation)

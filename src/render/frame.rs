@@ -19,20 +19,22 @@ use crate::{
     file_reader_content::FileType,
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
-        create_keybindings_popup, create_rename_input_popup, create_sort_options_popup,
-        draw_input_popup, draw_popup, input_popup_cursor_position, popups::draw_delete_popup,
-        render_folder_picker, render_info_popup, split_popup_area_vertical,
+        create_rename_input_popup, create_sort_options_popup, draw_input_popup, draw_popup,
+        input_popup_cursor_position, popups::draw_delete_popup, render_folder_picker,
+        render_info_popup, render_keybindings_popup, split_popup_area_vertical,
     },
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
 };
 
-/// Draw the frame, lending the image and right-pane list states to the widgets.
+/// Draw the frame, lending the image and right-pane list states to the widgets. The
+/// hints name the live quit and search keys.
 pub fn draw(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     loop_state: &mut LoopState,
     settings: &Settings,
     widgets_ui: &Ui,
+    exit_hint: &str,
     find_hint: &str,
 ) -> io::Result<()> {
     let LoopState {
@@ -81,7 +83,7 @@ pub fn draw(
                 };
                 (
                     vec![
-                        "Exit (q)".bold(),
+                        exit_hint.bold(),
                         search_indicator,
                         search_query.to_string().bold(),
                         " Enter to select file (enter)".bold(),
@@ -447,8 +449,6 @@ pub fn draw(
         let input_popup_area = draw_input_popup(f.size());
         let sort_option_area = draw_popup(f.size(), 90, 20);
         let sort_options_chunks = split_popup_area_vertical(sort_option_area);
-        let keybinding_area = draw_popup(f.size(), 55, 75);
-        let keybinding_chunks = split_popup_area_vertical(keybinding_area);
 
         match app.input_mode {
             InputMode::WatchCreate => {
@@ -471,9 +471,8 @@ pub fn draw(
                 f.render_widget(sort_popup, sort_options_chunks[0]);
             }
             InputMode::WatchKeyBinding => {
-                let keybindings_popup = create_keybindings_popup(&settings.keymap);
-                f.render_widget(Clear, keybinding_chunks[0]);
-                f.render_widget(keybindings_popup, keybinding_chunks[0]);
+                (app.help_scroll, app.help_page) =
+                    render_keybindings_popup(f, &settings.keymap, app.help_scroll);
             }
             InputMode::PickFolder => {
                 if let Some(picker) = &app.folder_picker {

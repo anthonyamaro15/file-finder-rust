@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     symbols::border,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
@@ -11,7 +11,10 @@ use ratatui::{
 };
 
 use crate::app::FolderPicker;
-use crate::config::{Action, KeymapSettings};
+use crate::config::{
+    keymap::{key_label, Bindings},
+    Action, KeySequence, KeymapSettings,
+};
 use crate::theme::OneDarkTheme;
 use crate::utils::format::replace_home_with_tilde;
 use crate::utils::{format_file_size, SortBy, SortType};
@@ -339,130 +342,213 @@ pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> 
         .style(OneDarkTheme::info())
 }
 
-/// Create the keybindings help popup widget.
-pub fn create_keybindings_popup<'a>(keymap: &KeymapSettings) -> Paragraph<'a> {
+/// The help's sections: each action and what it does. Copy to/Move to appear twice
+/// because Dual Pane mode sends the item to the other pane instead.
+const HELP_SECTIONS: [(&str, &[(Action, &str)]); 6] = [
+    (
+        "Navigation",
+        &[
+            (Action::NavDown, "Move down"),
+            (Action::NavUp, "Move up"),
+            (Action::NavParent, "Go to parent directory"),
+            (Action::NavEnter, "Enter directory"),
+            (Action::NavChoose, "Open with IDE / copy path"),
+        ],
+    ),
+    (
+        "File Operations",
+        &[
+            (Action::FileCreate, "Create new file/directory"),
+            (Action::FileTrash, "Move to Trash (with confirmation)"),
+            (Action::FileDelete, "Permanently delete (with confirmation)"),
+            (Action::FileRename, "Rename file/directory"),
+            (Action::FileDuplicate, "Copy file/directory beside it"),
+            (Action::FileCopyTo, "Copy to… (pick a folder)"),
+            (Action::FileMoveTo, "Move to… (pick a folder)"),
+            (Action::FileExtract, "Extract ZIP archive"),
+            (Action::FileCompress, "Compress to ZIP archive"),
+            (Action::FileOpen, "Open with system default"),
+            (Action::FileInfo, "Get Info (size, dates, permissions)"),
+        ],
+    ),
+    (
+        "Search",
+        &[
+            (Action::SearchCurrent, "Search current directory"),
+            (Action::SearchRoot, "Search from root cache"),
+        ],
+    ),
+    (
+        "View & Sort",
+        &[
+            (Action::ViewCycle, "Cycle view mode (Normal/Full/Dual)"),
+            (Action::ViewSort, "Sort options menu"),
+            (Action::ViewHidden, "Toggle hidden files"),
+        ],
+    ),
+    (
+        "Dual Pane Mode",
+        &[
+            (Action::PaneSwitch, "Switch active pane"),
+            (Action::FileCopyTo, "Copy to other pane"),
+            (Action::FileMoveTo, "Move to other pane"),
+        ],
+    ),
+    (
+        "General",
+        &[(Action::Help, "Show this help"), (Action::Quit, "Quit")],
+    ),
+];
+
+/// Keys inside popups, fixed so a keymap can never lock you out of one.
+const FIXED_KEYS: [(&str, &str); 10] = [
+    ("y / n or Esc", "Trash/Delete prompt: confirm / cancel"),
+    ("n s t / a d", "Sort menu: name, size, date / ASC, DESC"),
+    ("q or Esc", "Close the sort menu"),
+    ("Enter / Esc", "Text field: confirm / leave"),
+    ("← → Backspace", "Text field: move the cursor / delete"),
+    ("↑ / ↓", "Copy to… / Move to…: choose a folder"),
+    ("Esc, q or I", "Close Get Info"),
+    ("j k ↑ ↓", "Scroll this help (and PageUp/PageDown)"),
+    ("Esc, q or ?", "Close this help"),
+    ("Ctrl-C", "Quit (always)"),
+];
+
+/// Draw the help from the live keymap, sized to its lines and scrolled to `scroll`
+/// (kept in range). Returns the scroll used and how many lines fit.
+pub fn render_keybindings_popup(
+    f: &mut Frame,
+    keymap: &KeymapSettings,
+    scroll: usize,
+) -> (usize, usize) {
     let lines = keybinding_help_lines(keymap);
-
-    let list_items = Text::from(lines);
-
-    Paragraph::new(list_items)
+    // Borders and padding take 4 columns and 2 rows.
+    let width = lines.iter().map(Line::width).max().unwrap_or(0) + 4;
+    let area = draw_fixed_height_popup(
+        f.size().inner(&Margin::new(1, 1)),
+        0,
+        u16::try_from(width).unwrap_or(u16::MAX),
+        u16::try_from(lines.len() + 2).unwrap_or(u16::MAX),
+    );
+    let visible = usize::from(area.height.saturating_sub(2));
+    let total = lines.len();
+    let scroll = scroll.min(total.saturating_sub(visible));
+    let title = if total > visible {
+        format!(
+            "Keybindings — j/k scroll, Esc close ({}/{total})",
+            scroll + visible
+        )
+    } else {
+        "Keybindings (Esc to close)".to_string()
+    };
+    let popup = Paragraph::new(lines)
+        .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .title("Keybindings (q to close)"),
+                .padding(Padding::horizontal(1))
+                .title(title),
         )
-        .style(OneDarkTheme::normal())
+        .style(OneDarkTheme::normal());
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
+    (scroll, visible)
 }
 
 fn keybinding_help_lines(keymap: &KeymapSettings) -> Vec<Line<'static>> {
-    keybinding_help_text_lines(keymap)
-        .into_iter()
-        .map(|line| {
-            if line.starts_with("──") {
-                Line::styled(line, OneDarkTheme::info())
-            } else {
-                Line::from(line)
-            }
+    let bindings = keymap.resolve();
+    // Columns as wide as the widest keys (custom ones can be long) and description.
+    let key_width = Action::ALL
+        .iter()
+        .map(|(action, _)| {
+            key_text(&action_key_labels(&bindings, *action))
+                .chars()
+                .count()
         })
-        .collect()
-}
-
-fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
-    vec![
-        "".to_string(),
-        "── Navigation ──".to_string(),
-        "  j / ↓           Move down".to_string(),
-        "  k / ↑           Move up".to_string(),
-        "  h / ←           Go to parent directory".to_string(),
-        "  l / →           Enter directory".to_string(),
-        "  Enter           Open with IDE / copy path".to_string(),
-        "".to_string(),
-        "── File Operations ──".to_string(),
-        "  a               Create new file/directory".to_string(),
-        "  d               Move to Trash (with confirmation)".to_string(),
-        "  D (Shift+D)     Permanently delete (with confirmation)".to_string(),
-        "  r               Rename file/directory".to_string(),
-        "  c               Copy file/directory".to_string(),
-        "  Shift+C         Copy to… (pick a folder)".to_string(),
-        "  Shift+M         Move to… (pick a folder)".to_string(),
-        "  y               Extract ZIP archive".to_string(),
-        "  z               Compress to ZIP archive".to_string(),
-        "  o               Open with system default".to_string(),
-        "  I (Shift+I)     Get Info (size, dates, permissions)".to_string(),
-        "".to_string(),
-        "── Search ──".to_string(),
-        keybinding_help_row(
-            &configured_action_key_labels(keymap, Action::SearchCurrent),
-            "Search current directory",
-        ),
-        keybinding_help_row(
-            &configured_action_key_labels(keymap, Action::SearchRoot),
-            "Search from root cache",
-        ),
-        "  Esc             Exit search mode".to_string(),
-        "".to_string(),
-        "── View & Sort ──".to_string(),
-        "  p               Cycle view mode (Normal/Full/Dual)".to_string(),
-        "  s               Sort options menu".to_string(),
-        "  .               Toggle hidden files".to_string(),
-        "  ?               Show this help".to_string(),
-        "".to_string(),
-        "── Dual Pane Mode ──".to_string(),
-        "  Tab             Switch active pane".to_string(),
-        "  j/k/h/l         Navigate in active pane".to_string(),
-        "  Shift+C         Copy to other pane".to_string(),
-        "  Shift+M         Move to other pane".to_string(),
-        "".to_string(),
-        "── General ──".to_string(),
-        "  q / Ctrl-C      Quit / Close popup".to_string(),
-    ]
+        .max()
+        .unwrap_or(0)
+        .max(15);
+    let description_width = HELP_SECTIONS
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(_, description)| description.chars().count())
+        .max()
+        .unwrap_or(0);
+    let widths = (key_width, description_width);
+    let mut lines = Vec::new();
+    for (title, rows) in HELP_SECTIONS {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::styled(format!("── {title} ──"), OneDarkTheme::info()));
+        for (action, description) in rows {
+            let keys = key_text(&action_key_labels(&bindings, *action));
+            lines.push(keybinding_help_row(&keys, description, widths, *action));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "── Popup keys (can't be rebound) ──",
+        OneDarkTheme::info(),
+    ));
+    for (keys, description) in FIXED_KEYS {
+        lines.push(Line::from(format!("  {keys:<key_width$} {description}")));
+    }
+    lines
 }
 
 pub fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> Vec<String> {
-    let mut key_labels: Vec<(bool, String)> = keymap
+    action_key_labels(&keymap.resolve(), action)
+}
+
+/// Plain characters first, then named keys, Ctrl chords and leader sequences.
+fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
+    let mut key_labels: Vec<(u8, String)> = bindings
         .normal
         .iter()
-        .filter_map(|(key, configured_action)| {
-            if Action::parse(configured_action) != Some(action.clone()) {
-                return None;
-            }
-
-            Some((
-                key.starts_with("<leader>"),
-                format_key_sequence(key, keymap),
-            ))
+        .filter(|(_, bound)| *bound == action)
+        .map(|(sequence, _)| {
+            let rank = match sequence {
+                KeySequence::Leader(_) => 3,
+                KeySequence::Single(key) if key.starts_with("<C-") => 2,
+                KeySequence::Single(key) if key.chars().count() > 1 => 1,
+                KeySequence::Single(_) => 0,
+            };
+            (rank, format_key_sequence(sequence, &bindings.leader))
         })
         .collect();
 
-    key_labels.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    key_labels.sort();
     key_labels.into_iter().map(|(_, label)| label).collect()
 }
 
-fn format_key_sequence(key: &str, keymap: &KeymapSettings) -> String {
-    if let Some(rest) = key.strip_prefix("<leader>") {
-        format!("{} + {}", format_key(&keymap.leader), format_key(rest))
-    } else {
-        format_key(key)
+fn format_key_sequence(sequence: &KeySequence, leader: &str) -> String {
+    match sequence {
+        KeySequence::Leader(key) => format!("{} + {}", key_label(leader), key_label(key)),
+        KeySequence::Single(key) => key_label(key),
     }
 }
 
-fn format_key(key: &str) -> String {
-    match key {
-        " " => "Space".to_string(),
-        "" => "Unbound".to_string(),
-        value => value.to_string(),
-    }
+/// One help row: the keys, what the action does, and its settings.toml name, dimmed.
+fn keybinding_help_row(
+    keys: &str,
+    description: &str,
+    (key_width, width): (usize, usize),
+    action: Action,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("  {keys:<key_width$} {description:<width$}  ")),
+        Span::styled(action.name(), OneDarkTheme::dotfile()),
+    ])
 }
 
-fn keybinding_help_row(keys: &[String], description: &str) -> String {
-    let key_text = if keys.is_empty() {
+fn key_text(keys: &[String]) -> String {
+    if keys.is_empty() {
         "Unbound".to_string()
     } else {
         keys.join(" or ")
-    };
-
-    format!("  {:<15} {}", key_text, description)
+    }
 }
 
 /// Split an area for vertical popup content with margins.
@@ -481,36 +567,159 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn keybinding_help_text_uses_default_configured_search_keys() {
-        let lines = keybinding_help_text_lines(&KeymapSettings::default());
+    fn help_text(keymap: &KeymapSettings) -> Vec<String> {
+        keybinding_help_lines(keymap)
+            .iter()
+            .map(|line| {
+                let text: String = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                text.trim_end().to_string()
+            })
+            .collect()
+    }
 
-        assert!(lines.contains(&"  / or i          Search current directory".to_string()));
-        assert!(lines.contains(&"  Space + /       Search from root cache".to_string()));
-        assert!(lines.contains(&"  j / ↓           Move down".to_string()));
-        assert!(lines.contains(&"  Shift+C         Copy to… (pick a folder)".to_string()));
-        assert!(lines.contains(&"  Shift+C         Copy to other pane".to_string()));
+    fn has_row(lines: &[String], keys: &str, description: &str, action: &str) -> bool {
+        lines.iter().any(|line| {
+            line.strip_prefix(&format!("  {keys} "))
+                .is_some_and(|rest| {
+                    rest.trim_start().starts_with(description)
+                        && line.ends_with(&format!("  {action}"))
+                })
+        })
+    }
+
+    /// The column `text` starts at in the help.
+    fn column(lines: &[String], text: &str) -> usize {
+        lines
+            .iter()
+            .find_map(|line| line.find(text).map(|i| line[..i].chars().count()))
+            .unwrap()
     }
 
     #[test]
-    fn keybinding_help_text_reflects_custom_search_keys() {
+    fn keybinding_help_lists_every_action_with_its_default_keys() {
+        let lines = help_text(&KeymapSettings::default());
+
+        assert!(has_row(
+            &lines,
+            "/ or i",
+            "Search current directory",
+            "search.current"
+        ));
+        assert!(has_row(
+            &lines,
+            "Space + /",
+            "Search from root cache",
+            "search.root"
+        ));
+        assert!(has_row(&lines, "j or ↓", "Move down", "nav.down"));
+        assert!(has_row(
+            &lines,
+            "Enter",
+            "Open with IDE / copy path",
+            "nav.choose"
+        ));
+        assert!(has_row(
+            &lines,
+            "Shift+C",
+            "Copy to… (pick a folder)",
+            "file.copy_to"
+        ));
+        assert!(has_row(
+            &lines,
+            "Shift+C",
+            "Copy to other pane",
+            "file.copy_to"
+        ));
+        assert!(has_row(&lines, "Tab", "Switch active pane", "pane.switch"));
+        assert!(lines.contains(&"  Ctrl-C          Quit (always)".to_string()));
+        assert!(!lines.iter().any(|line| line.contains("Unbound")));
+        for (_, name) in Action::ALL {
+            assert!(lines.iter().any(|line| line.ends_with(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn keybinding_help_reflects_custom_keys_and_marks_unbound_actions() {
         let mut settings = KeymapSettings {
             leader: ",".to_string(),
             ..KeymapSettings::default()
         };
-        settings
-            .normal
-            .insert("f".to_string(), "search.current".to_string());
-        settings
-            .normal
-            .insert("/".to_string(), "search.root".to_string());
+        for (key, action) in [
+            ("f", "search.current"),
+            ("/", "search.root"),
+            ("<C-d>", "nav.down"),
+            ("q", "none"),
+        ] {
+            settings.normal.insert(key.to_string(), action.to_string());
+        }
 
-        let lines = keybinding_help_text_lines(&settings);
+        let lines = help_text(&settings);
 
-        assert!(lines.contains(&"  f or i          Search current directory".to_string()));
-        assert!(lines.contains(&"  / or , + /      Search from root cache".to_string()));
-        assert!(!lines.contains(&"  / or i          Search current directory".to_string()));
-        assert!(lines.contains(&"  q / Ctrl-C      Quit / Close popup".to_string()));
+        assert!(has_row(
+            &lines,
+            "f or i",
+            "Search current directory",
+            "search.current"
+        ));
+        assert!(has_row(
+            &lines,
+            "/ or , + /",
+            "Search from root cache",
+            "search.root"
+        ));
+        assert!(has_row(&lines, "j or ↓ or Ctrl-d", "Move down", "nav.down"));
+        assert!(has_row(&lines, "Unbound", "Quit", "quit"));
+        // Long custom keys widen the key column instead of shifting their row.
+        assert_eq!(column(&lines, "Move down"), column(&lines, "Move up"));
+        assert_eq!(column(&lines, "Move down"), column(&lines, "Quit (always)"));
+        assert!(!has_row(
+            &lines,
+            "/ or i",
+            "Search current directory",
+            "search.current"
+        ));
+    }
+
+    #[test]
+    fn keybinding_help_scrolls_when_it_does_not_fit() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let screen = |width, height, scroll| {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut view = (0, 0);
+            terminal
+                .draw(|f| view = render_keybindings_popup(f, &KeymapSettings::default(), scroll))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            (view, text)
+        };
+        let total = keybinding_help_lines(&KeymapSettings::default()).len();
+
+        let ((scroll, visible), top) = screen(80, 24, 0);
+        assert_eq!((scroll, visible), (0, 20));
+        assert!(top.contains(&format!("Keybindings — j/k scroll, Esc close (20/{total})")));
+        assert!(top.contains("── Navigation ──") && top.contains("nav.down"));
+        assert!(!top.contains("Quit (always)"));
+
+        let ((scroll, _), bottom) = screen(80, 24, usize::MAX);
+        assert_eq!(scroll, total - visible);
+        assert!(bottom.contains(&format!("({total}/{total})")));
+        assert!(bottom.contains("Quit (always)"));
+        assert!(!bottom.contains("── Navigation ──"));
+
+        let ((scroll, _), all) = screen(120, 80, 5);
+        assert_eq!(scroll, 0);
+        assert!(all.contains("Keybindings (Esc to close)"));
+        assert!(all.contains("── Navigation ──") && all.contains("Quit (always)"));
     }
 
     #[test]

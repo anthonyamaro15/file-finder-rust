@@ -17,7 +17,7 @@ use crate::{app::App, operations::CopyMessage, status_bar::StatusBar};
 pub(crate) fn may_exit<B: Backend>(
     app: &mut App,
     status_bar: &mut StatusBar,
-    key: &'static str,
+    key: &str,
     receiver: &mut Option<mpsc::Receiver<CopyMessage>>,
     terminal: &mut Terminal<B>,
     quit_error: &mut Option<String>,

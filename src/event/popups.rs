@@ -342,10 +342,16 @@ pub fn handle_sort_key(
     Ok(())
 }
 
-/// Keybinding help: Esc or `q` closes it.
+/// Keybinding help: `j`/`k`, the arrows and PageUp/PageDown scroll it (drawing keeps
+/// it in range); Esc, `q` or `?` closes it.
 pub fn handle_keybinding_key(key: KeyEvent, app: &mut App) {
-    if let KeyCode::Esc | KeyCode::Char('q') = key.code {
-        app.input_mode = InputMode::Normal;
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q' | '?') => app.input_mode = InputMode::Normal,
+        KeyCode::Char('j') | KeyCode::Down => app.help_scroll += 1,
+        KeyCode::Char('k') | KeyCode::Up => app.help_scroll = app.help_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.help_scroll += app.help_page,
+        KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(app.help_page),
+        _ => {}
     }
 }
 
@@ -1538,38 +1544,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut state, left_item, right_item) = dual_pane_state(dir.path());
         let right = Path::new(&right_item).parent().unwrap().to_path_buf();
-        std::fs::create_dir(right.join("photos")).unwrap();
+        // Search for "ñ": fuzzy matching also scores full paths, and an ASCII query
+        // could match the random temp folder name and so every row.
+        std::fs::create_dir(right.join("piñata")).unwrap();
         state.app.right_pane.refresh_files();
         let left_files = state.app.files.clone();
-        let photos = spelled(&right.join("photos"));
+        let pinata = spelled(&right.join("piñata"));
 
         press(&mut state, KeyCode::Char('i'));
-        type_search(&mut state, "pho");
+        type_search(&mut state, "ñ");
 
-        // The top match is highlighted; others may match the temp folder's path.
+        // Only the matching folder is listed, and it is highlighted.
         let pane = &state.app.right_pane;
-        assert!(pane.get_list_length() < pane.files.len());
-        assert_eq!(pane.search_results[0].file_path, photos);
-        assert_eq!(pane.get_selected_path(), Some(photos.clone()));
+        assert_eq!(pane.get_list_length(), 1);
+        assert_eq!(pane.search_results[0].file_path, pinata);
+        assert_eq!(pane.get_selected_path(), Some(pinata.clone()));
         assert_eq!(state.app.files, left_files);
         assert!(state.app.search_results.is_empty());
         assert_eq!(state.app.filtered_indexes, [0, 1]);
         assert_eq!(selected(&state), Some(left_item.clone()));
-        assert_eq!(crate::ui::highlight_term(&state.app, true), "pho");
+        assert_eq!(crate::ui::highlight_term(&state.app, true), "ñ");
         assert_eq!(crate::ui::highlight_term(&state.app, false), "");
 
         // Esc keeps the filter in the right pane, as it does in the left listing.
         search_key(&mut state, KeyCode::Esc);
-        assert_eq!(state.app.search_box(), ("pho", false));
+        assert_eq!(state.app.search_box(), ("ñ", false));
         press(&mut state, KeyCode::Char('j'));
         press(&mut state, KeyCode::Char('k'));
         assert_eq!(
             state.app.active_selected_path(state.state.selected()),
-            Some(photos.clone())
+            Some(pinata.clone())
         );
         press(&mut state, KeyCode::Char('l'));
         let pane = &state.app.right_pane;
-        assert_eq!(pane.current_directory, photos);
+        assert_eq!(pane.current_directory, pinata);
         assert!(!pane.is_searching());
         assert_eq!(state.app.search_box(), ("", false));
 
@@ -1617,14 +1625,22 @@ mod tests {
 
     /// Route `key` as the main loop does: the modifier guard, then the mode's handler.
     fn dispatch(state: &mut LoopState, key: KeyEvent) -> LoopControl {
-        if let Some(control) = crate::event::handle_modifier_key(key, state, &mut test_terminal()) {
+        let mut keymap = KeymapRuntime::from_settings(&crate::config::KeymapSettings::default());
+        dispatch_with(state, key, &mut keymap)
+    }
+
+    fn dispatch_with(
+        state: &mut LoopState,
+        key: KeyEvent,
+        keymap: &mut KeymapRuntime,
+    ) -> LoopControl {
+        let guard = crate::event::handle_modifier_key(key, keymap, state, &mut test_terminal());
+        if let Some(control) = guard {
             return control;
         }
         match state.app.input_mode.clone() {
             InputMode::Normal => {
-                let mut keymap =
-                    KeymapRuntime::from_settings(&crate::config::KeymapSettings::default());
-                return handle_normal_key(key, state, &mut keymap, &mut test_terminal(), "unused")
+                return handle_normal_key(key, state, keymap, &mut test_terminal(), "unused")
                     .unwrap();
             }
             InputMode::WatchCreate => handle_create_key(
@@ -1814,6 +1830,78 @@ mod tests {
             press(&mut state, KeyCode::Right);
             assert_eq!(browsed(&state), Path::new(&highlighted.unwrap()));
         }
+    }
+
+    fn custom_keymap(entries: &[(&str, &str)]) -> KeymapRuntime {
+        let mut settings = crate::config::KeymapSettings::default();
+        for (key, action) in entries {
+            settings.normal.insert(key.to_string(), action.to_string());
+        }
+        KeymapRuntime::from_settings(&settings)
+    }
+
+    #[test]
+    fn a_configured_ctrl_chord_acts_in_normal_mode_but_not_in_a_text_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let mut keymap = custom_keymap(&[("<C-d>", "nav.down"), ("x", "file.trash")]);
+        let photos = spelled(&dir.path().join("photos"));
+
+        dispatch_with(&mut state, chord('d', KeyModifiers::CONTROL), &mut keymap);
+        assert_eq!(selected(&state), Some(photos.clone()));
+        dispatch_with(&mut state, chord('a', KeyModifiers::CONTROL), &mut keymap);
+        assert_eq!(selected(&state), Some(photos));
+
+        dispatch_with(&mut state, chord('r', KeyModifiers::NONE), &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::WatchRename);
+        let name = state.app.create_edit_file_name.clone();
+        dispatch_with(&mut state, chord('d', KeyModifiers::CONTROL), &mut keymap);
+        assert_eq!(state.app.create_edit_file_name, name);
+        dispatch_with(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &mut keymap,
+        );
+
+        // A rebound key does its new action.
+        dispatch_with(&mut state, chord('x', KeyModifiers::NONE), &mut keymap);
+        assert_eq!(state.app.input_mode, InputMode::WatchTrash);
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_when_the_keymap_tries_to_bind_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let mut keymap = custom_keymap(&[("<C-c>", "nav.down")]);
+
+        assert!(keymap.warning().unwrap().contains("Ctrl-C always quits"));
+        let control = dispatch_with(&mut state, chord('c', KeyModifiers::CONTROL), &mut keymap);
+        assert!(matches!(control, LoopControl::Break));
+    }
+
+    #[test]
+    fn help_scrolls_with_its_fixed_keys_and_closes_with_question_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        state.app.help_scroll = 7;
+        press(&mut state, KeyCode::Char('?'));
+        assert_eq!(state.app.help_scroll, 0);
+        state.app.help_page = 10;
+        for (code, scroll) in [
+            (KeyCode::Char('j'), 1),
+            (KeyCode::Down, 2),
+            (KeyCode::PageDown, 12),
+            (KeyCode::Char('k'), 11),
+            (KeyCode::Up, 10),
+            (KeyCode::PageUp, 0),
+            (KeyCode::Char('k'), 0),
+        ] {
+            dispatch(&mut state, KeyEvent::new(code, KeyModifiers::NONE));
+            assert_eq!(state.app.help_scroll, scroll, "{code:?}");
+        }
+        assert_eq!(state.app.input_mode, InputMode::WatchKeyBinding);
+        dispatch(&mut state, chord('?', KeyModifiers::NONE));
+        assert_eq!(state.app.input_mode, InputMode::Normal);
     }
 
     #[test]
