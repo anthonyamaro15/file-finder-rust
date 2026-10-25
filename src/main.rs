@@ -41,7 +41,7 @@ use file_finder::{
     render::{configured_action_key_labels, image_renderer::ImageRenderer},
     status_bar::StatusBar,
     ui::Ui,
-    utils::{get_file_path_data, init, SortBy, SortType},
+    utils::{init, read_listing, SortBy, SortType},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,13 +138,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
 
     // Initial file list uses default sort (will be stored in app.sort_by/sort_type)
-    let file_strings = get_file_path_data(
+    let listing = read_listing(
         startup_paths.file_list_path.clone(),
         false,
         SortBy::Default,
         &SortType::ASC,
     )?;
-    let mut app = App::new(file_strings.clone());
+    let mut app = App::with_listing(listing);
     app.current_directory = startup_paths.file_list_path.clone();
     app.max_search_results = settings.finder.max_results;
 

@@ -1,6 +1,5 @@
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
-use std::fs;
 
 use crate::utils::format::format_file_size;
 
@@ -15,15 +14,6 @@ pub fn create_size_text(file_size: u64) -> Span<'static> {
     let size_str = format_file_size(file_size);
     // Use a very muted gray for file sizes (yazi-style)
     Span::styled(size_str, Style::default().fg(Color::Rgb(92, 99, 112)))
-}
-
-/// Get file size for a path (returns 0 for directories or errors)
-pub fn get_file_size(path: &str) -> u64 {
-    fs::metadata(path)
-        .ok()
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use ratatui::widgets::ListState;
 
 use crate::app::{global_search_results, local_search_results, SearchResult};
 use crate::directory_store::DirectoryStore;
-use crate::utils::files::{get_file_path_data, SortBy, SortType};
+use crate::utils::files::{read_listing, EntryInfo, Listing, SortBy, SortType};
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 /// Represents a single pane in the file browser.
@@ -21,6 +21,8 @@ pub struct Pane {
     pub current_directory: String,
     /// Files in this pane's directory
     pub files: Vec<String>,
+    /// Each of `files`' details, read with the listing; drawing uses these, not the disk.
+    pub file_info: Vec<EntryInfo>,
     /// Read-only copy of files for filtering/search
     pub read_only_files: Vec<String>,
     /// Display labels for files (filename only, not full path)
@@ -51,33 +53,25 @@ impl Default for Pane {
 }
 
 impl Pane {
-    /// Create a new Pane with the given directory and files
+    /// Create a new Pane with the given directory and files, each read from disk for its
+    /// details.
     pub fn new(current_directory: String, files: Vec<String>) -> Self {
-        let has_files = !files.is_empty();
-        let files_clone = files.clone();
-        let mut file_labels: Vec<String> = Vec::new();
+        Self::with_listing(current_directory, files.into())
+    }
 
-        for file in files.iter() {
-            let new_path = Path::new(file);
-            let get_file_name = new_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| file.clone());
-
-            file_labels.push(get_file_name);
-        }
-
+    pub fn with_listing(current_directory: String, listing: Listing) -> Self {
+        let has_files = !listing.files.is_empty();
         let mut list_state = ListState::default();
         if has_files {
             list_state.select(Some(0));
         }
 
-        Pane {
+        let mut pane = Pane {
             current_directory,
-            files,
-            read_only_files: files_clone,
-            file_labels,
+            files: Vec::new(),
+            file_info: Vec::new(),
+            read_only_files: Vec::new(),
+            file_labels: Vec::new(),
             selected_index: if has_files { Some(0) } else { None },
             search_results: Vec::new(),
             global_search_mode: false,
@@ -87,11 +81,15 @@ impl Pane {
             sort_by: SortBy::Default,
             sort_type: SortType::ASC,
             watcher: None,
-        }
+        };
+        pane.set_listing(listing);
+        pane
     }
 
-    /// Update file references after the file list changes
-    pub fn update_file_references(&mut self) {
+    /// Show `listing`, each path beside its record, and update the labels.
+    fn set_listing(&mut self, listing: Listing) {
+        self.files = listing.files;
+        self.file_info = listing.info;
         self.read_only_files = self.files.clone();
         self.file_labels.clear();
 
@@ -121,6 +119,16 @@ impl Pane {
                 .map(|result| result.file_path.clone())
         } else {
             self.files.get(index).cloned()
+        }
+    }
+
+    /// The record of the selected item, like `get_selected_path`.
+    pub fn get_selected_info(&self) -> Option<EntryInfo> {
+        let index = self.selected_index?;
+        if self.is_searching() {
+            self.search_results.get(index).map(|result| result.info)
+        } else {
+            self.file_info.get(index).copied()
         }
     }
 
@@ -205,7 +213,7 @@ impl Pane {
         self.search_results = if self.global_search_mode {
             global_search_results(store, query, max_results)
         } else {
-            local_search_results(&self.files, query)
+            local_search_results(&self.files, &self.file_info, query)
         };
         self.selected_index = (!self.search_results.is_empty()).then_some(0);
         self.list_state.select(self.selected_index);
@@ -213,7 +221,7 @@ impl Pane {
 
     /// Refresh files from the current directory
     pub fn refresh_files(&mut self) {
-        let new_files = get_file_path_data(
+        let listing = read_listing(
             self.current_directory.clone(),
             self.show_hidden_files,
             self.sort_by.clone(),
@@ -222,11 +230,11 @@ impl Pane {
         .unwrap_or_default();
 
         let selected = self.get_selected_path();
-        self.files = new_files;
-        self.update_file_references();
+        self.set_listing(listing);
         // A local search runs again on the new listing; global results don't come from it.
         if self.is_searching() && !self.global_search_mode {
-            self.search_results = local_search_results(&self.files, &self.search_input);
+            self.search_results =
+                local_search_results(&self.files, &self.file_info, &self.search_input);
         }
         self.restore_selection(selected);
     }
@@ -291,22 +299,22 @@ impl Pane {
 
     /// Navigate to a new directory
     pub fn navigate_to_directory(&mut self, path: &str) -> anyhow::Result<()> {
-        let files = get_file_path_data(
+        let listing = read_listing(
             path.to_string(),
             self.show_hidden_files,
             self.sort_by.clone(),
             &self.sort_type,
         )?;
         // Going to the parent selects the directory just left; otherwise use the first row.
-        let selected_index = files
+        let selected_index = listing
+            .files
             .iter()
             .position(|file| file == &self.current_directory)
-            .or_else(|| (!files.is_empty()).then_some(0));
+            .or_else(|| (!listing.files.is_empty()).then_some(0));
 
         self.current_directory = path.to_string();
         self.clear_search();
-        self.files = files;
-        self.update_file_references();
+        self.set_listing(listing);
 
         self.selected_index = selected_index;
         self.list_state.select(selected_index);
@@ -320,6 +328,7 @@ impl Pane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::files::get_file_path_data;
 
     #[test]
     fn navigation_failure_preserves_directory_listing_and_selection() {
@@ -427,6 +436,36 @@ mod tests {
         assert!(pane.files.contains(&created));
         assert_eq!(pane.get_selected_path(), highlighted);
         assert_eq!(pane.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn watcher_modify_refreshes_the_changed_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, "a").unwrap();
+        // Written a while ago, so the watcher (whole-second times) sees the next write.
+        let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        std::fs::File::options()
+            .write(true)
+            .open(&notes)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        let mut pane = Pane::new(dir.path().to_string_lossy().into_owned(), Vec::new());
+        pane.refresh_files();
+        pane.watch_directory();
+        // Give the poll watcher a moment to read the folder first.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        std::fs::write(&notes, "abc").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pane.file_info[0].size != 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            pane.poll_watcher();
+        }
+
+        assert_eq!(pane.file_info[0].size, 3);
+        assert_eq!(pane.get_selected_info().map(|info| info.size), Some(3));
     }
 
     #[test]

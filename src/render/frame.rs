@@ -7,7 +7,7 @@ use ratatui::{
     prelude::*,
     style::{Color, Style},
     symbols::border,
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, Paragraph},
     Terminal,
 };
 use ratatui_image::StatefulImage;
@@ -347,43 +347,7 @@ pub fn draw(
             let right_pane = &app.right_pane;
             let is_right_active = app.is_right_pane_active();
 
-            // Generate list items for right pane using icon provider (with dotfile dimming)
-            let listing_item = |path: &str, label: &str| {
-                let path = std::path::Path::new(path);
-                let icon = widgets_ui.icon_provider.get_for_path(path, path.is_dir());
-
-                // Check if this is a dotfile (hidden file)
-                let is_dotfile = label.starts_with('.');
-
-                if is_dotfile {
-                    // Dim dotfiles
-                    ListItem::new(ratatui::text::Line::from(vec![
-                        ratatui::text::Span::styled(
-                            format!("{} {}", icon, label),
-                            OneDarkTheme::dotfile(),
-                        ),
-                    ]))
-                } else {
-                    ListItem::new(format!("{} {}", icon, label))
-                }
-            };
-            // A search shows its results, highlighted like the left listing's
-            let search_term = crate::ui::highlight_term(app, true);
-            let right_items: Vec<ListItem> = if right_pane.is_searching()
-                && (right_pane.global_search_mode || !search_term.is_empty())
-            {
-                right_pane.search_results.iter()
-                    .map(|result| widgets_ui.search_result_item(result, search_term, app, settings.show_size_bars))
-                    .collect()
-            } else if right_pane.is_searching() {
-                right_pane.search_results.iter()
-                    .map(|result| listing_item(&result.file_path, &result.display_name))
-                    .collect()
-            } else {
-                right_pane.files.iter().zip(&right_pane.file_labels)
-                    .map(|(path, label)| listing_item(path, label))
-                    .collect()
-            };
+            let right_items = widgets_ui.right_pane_items(app, settings);
 
             let right_items = if is_right_active {
                 crate::ui::style_visual_rows(right_items, app)
@@ -456,6 +420,7 @@ pub fn draw(
             render_batch_confirmation_popup(
                 f,
                 &app.batch_targets,
+                |path| app.listed_info(path),
                 app.input_mode == InputMode::WatchTrash,
             );
         } else if app.render_popup {

@@ -91,7 +91,6 @@ pub fn handle_rename_key(
                                 (!from_right_pane).then_some(new_path),
                                 status_bar,
                             );
-                            status_bar.invalidate_cache();
                             app.input_mode = InputMode::Normal;
                         }
                         Err(e) => {
@@ -195,7 +194,6 @@ pub fn handle_create_key(
                                 .show_error(format!("Could not open '{new_path}': {e:#}"), None);
                         }
                     }
-                    status_bar.invalidate_cache();
                 }
                 Err(e) => {
                     app.is_create_edit_error = true;
@@ -301,7 +299,6 @@ pub fn handle_delete_key(
                         }
                         let current_dir = current_refresh_directory(app, fallback_start_path);
                         refresh_file_list(app, Path::new(&current_dir), state, None, status_bar);
-                        status_bar.invalidate_cache();
                     } else if let Err(e) = delete_result {
                         status_bar.show_error(e.user_message(), None);
                         warn!("Delete operation failed: {}", e.user_message());
@@ -507,7 +504,7 @@ mod tests {
         LoopControl,
     };
     use crate::status_bar::NotificationKind;
-    use crate::utils::{generate_copy_file_dir_name, get_file_path_data};
+    use crate::utils::{generate_copy_file_dir_name, get_file_path_data, read_listing};
     use crossterm::event::KeyModifiers;
     use ratatui::{layout::Rect, TerminalOptions, Viewport};
     use std::time::{Duration, Instant};
@@ -922,8 +919,8 @@ mod tests {
 
         handle_rename(&app).unwrap();
         app.reset_create_edit_values();
-        let files = get_file_path_data(directory, false, SortBy::Name, &SortType::ASC).unwrap();
-        app.refresh_files_after_operation(files, &mut state, Some(destination.clone()));
+        let listing = read_listing(directory, false, SortBy::Name, &SortType::ASC).unwrap();
+        app.refresh_files_after_operation(listing, &mut state, Some(destination.clone()));
 
         assert_eq!(state.selected(), Some(1));
         assert_eq!(app.get_selected_path(state.selected()), Some(destination));
@@ -976,6 +973,77 @@ mod tests {
             index.store.directories,
             [spelled("beta"), spelled("beta/inner")]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sorting_hidden_files_and_navigation_keep_each_record_beside_its_path() {
+        use crate::utils::files::tests::assert_records_match;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (name, len) in [
+            ("b.txt", 300),
+            ("a.txt", 10),
+            (".hidden", 20),
+            ("c.txt", 2000),
+        ] {
+            std::fs::write(root.join(name), "x".repeat(len)).unwrap();
+        }
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/inner.txt"), "inner").unwrap();
+        std::os::unix::fs::symlink(root.join("sub"), root.join("link")).unwrap();
+        let mut state = removal_state(root, Vec::new());
+        let listing = read_listing(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
+        state
+            .app
+            .refresh_files_after_operation(listing, &mut state.state, None);
+        let check = |state: &LoopState, step: &str| {
+            assert_records_match(&state.app.files, &state.app.file_info);
+            assert_records_match(&state.app.right_pane.files, &state.app.right_pane.file_info);
+            assert!(!state.app.files.is_empty(), "{step}");
+        };
+        let sort = |state: &mut LoopState, code: char| {
+            state.app.input_mode = InputMode::WatchSort;
+            let key = KeyEvent::new(KeyCode::Char(code), KeyModifiers::NONE);
+            handle_sort_key(key, &mut state.app, &mut state.state, &mut state.status_bar).unwrap();
+        };
+        let highlight = |state: &mut LoopState, name: &str| {
+            let path = spelled(&root.join(name));
+            let row = state.app.files.iter().position(|file| *file == path);
+            state.state.select(row);
+            state.app.curr_index = row;
+        };
+
+        press(&mut state, KeyCode::Char('.'));
+        check(&state, "hidden shown");
+        sort(&mut state, 'd');
+        sort(&mut state, 's');
+        check(&state, "size, descending");
+        press(&mut state, KeyCode::Char('p'));
+        press(&mut state, KeyCode::Char('p'));
+        assert_eq!(state.app.view_mode, ViewMode::DualPane);
+        check(&state, "dual pane");
+        highlight(&mut state, "sub");
+        press(&mut state, KeyCode::Char('l'));
+        assert_eq!(state.app.files, [spelled(&root.join("sub/inner.txt"))]);
+        check(&state, "into sub");
+        press(&mut state, KeyCode::Char('h'));
+        check(&state, "back up");
+        press(&mut state, KeyCode::Tab);
+        state
+            .app
+            .right_pane
+            .select_path(&spelled(&root.join("link")));
+        press(&mut state, KeyCode::Char('l'));
+        assert_eq!(
+            state.app.right_pane.current_directory,
+            spelled(&root.join("link"))
+        );
+        check(&state, "right pane into the link");
+        press(&mut state, KeyCode::Char('.'));
+        sort(&mut state, 't');
+        check(&state, "hidden hidden, by date");
     }
 
     fn press(state: &mut LoopState, code: KeyCode) -> LoopControl {
@@ -2144,10 +2212,10 @@ mod tests {
     /// main loop does.
     fn watcher_refresh(state: &mut LoopState) -> Option<String> {
         let directory = state.app.current_directory.clone();
-        let files = get_file_path_data(directory, false, SortBy::Name, &SortType::ASC).unwrap();
+        let listing = read_listing(directory, false, SortBy::Name, &SortType::ASC).unwrap();
         state
             .app
-            .refresh_files_from_watcher(files, &mut state.state);
+            .refresh_files_from_watcher(listing, &mut state.state);
         state.app.sync_visual(&mut state.state)
     }
 
@@ -2294,10 +2362,10 @@ mod tests {
         assert_eq!(highlighted(&state).as_deref(), Some("e"));
         // A refresh that keeps the highlighted row, not its item, is put right.
         std::fs::write(root.join("0"), "0").unwrap();
-        let files = get_file_path_data(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
+        let listing = read_listing(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
         state
             .app
-            .refresh_files_after_operation(files, &mut state.state, None);
+            .refresh_files_after_operation(listing, &mut state.state, None);
         assert_eq!(highlighted(&state).as_deref(), Some("d"));
         assert_eq!(state.app.sync_visual(&mut state.state), None);
         assert_eq!(highlighted(&state).as_deref(), Some("e"));

@@ -19,7 +19,7 @@ use crate::config::{
 use crate::event::palette::palette_matches;
 use crate::theme::OneDarkTheme;
 use crate::utils::format::replace_home_with_tilde;
-use crate::utils::{format_file_size, SortBy, SortType};
+use crate::utils::{format_file_size, EntryInfo, SortBy, SortType};
 
 /// Calculate a centered popup area within the given rect.
 ///
@@ -148,8 +148,14 @@ pub fn create_delete_confirmation_popup<'a>(
 }
 
 /// Draw a selection's Trash or permanent-delete prompt: how many items, the first few
-/// names (folders end in `/`) and how many more, sized to fit.
-pub fn render_batch_confirmation_popup(f: &mut Frame, targets: &[String], to_trash: bool) {
+/// names (folders end in `/`, by their records from `listed_info`) and how many more,
+/// sized to fit.
+pub fn render_batch_confirmation_popup(
+    f: &mut Frame,
+    targets: &[String],
+    listed_info: impl Fn(&str) -> Option<EntryInfo>,
+    to_trash: bool,
+) {
     const SHOWN: usize = 5;
     let count = match targets.len() {
         1 => "1 item".to_string(),
@@ -166,7 +172,8 @@ pub fn render_batch_confirmation_popup(f: &mut Frame, targets: &[String], to_tra
     for target in targets.iter().take(SHOWN) {
         let path = Path::new(target);
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        let slash = if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+        // A folder itself, not a link to one.
+        let slash = if listed_info(target).is_some_and(|info| info.is_dir() && !info.is_symlink) {
             "/"
         } else {
             ""
@@ -1328,7 +1335,7 @@ mod tests {
                 file_path: "/w/Projects".into(),
                 display_name: "Projects".into(),
                 score: 1,
-                is_directory: true,
+                info: EntryInfo::default(),
                 original_index: 0,
             }],
             selected: Some(0),
@@ -1427,7 +1434,14 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal
-            .draw(|f| render_batch_confirmation_popup(f, targets, to_trash))
+            .draw(|f| {
+                render_batch_confirmation_popup(
+                    f,
+                    targets,
+                    |path| Some(EntryInfo::read(Path::new(path))),
+                    to_trash,
+                )
+            })
             .unwrap();
         terminal
             .backend()

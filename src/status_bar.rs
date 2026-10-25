@@ -1,5 +1,6 @@
 use crate::app::{App, InputMode, ViewMode};
 use crate::config::theme::ThemeColors;
+use crate::utils::files::{EntryInfo, EntryKind};
 use crate::utils::format::format_path_for_display;
 use ratatui::{
     prelude::*,
@@ -9,7 +10,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use std::env;
-use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -33,9 +33,6 @@ pub struct StatusBar {
     pub error_display_time: Option<Instant>,
     pub notification_kind: NotificationKind,
     pub notification_duration: Duration,
-    // Cache tracking - only recalculate when the active pane or its directory changes:
-    // (right pane active, directory); None when invalidated
-    cached_listing: Option<(bool, String)>,
 }
 
 impl Default for StatusBar {
@@ -57,58 +54,24 @@ impl StatusBar {
             error_display_time: None,
             notification_kind: NotificationKind::Error,
             notification_duration: Duration::from_secs(DEFAULT_NOTIFICATION_SECS),
-            cached_listing: None,
         }
     }
 
+    /// Describe the active pane from its listing's records, never the disk.
     pub fn update(&mut self, app: &App) {
         // Describe the active pane: its directory (even when empty) and listing
-        let right_pane = is_right_pane(app);
-        let current_dir = app.current_directory_path().to_string_lossy().to_string();
-        let files = if right_pane {
-            &app.right_pane.files
+        let file_info = if is_right_pane(app) {
+            &app.right_pane.file_info
         } else {
-            &app.files
+            &app.file_info
         };
+        self.file_count = file_info.iter().filter(|info| info.is_file()).count();
+        self.directory_count = file_info.iter().filter(|info| info.is_dir()).count();
+        self.total_size = file_info.iter().map(EntryInfo::file_size).sum();
 
-        // Check if we need to recalculate expensive metadata operations
-        let listing = (right_pane, current_dir.clone());
-        let needs_recalc = self.cached_listing.as_ref() != Some(&listing)
-            || self.file_count + self.directory_count != files.len();
-
-        if needs_recalc {
-            self.update_file_counts(files);
-            self.calculate_total_size(files);
-            self.cached_listing = Some(listing);
-        }
-
-        // These are cheap operations - always update
-        self.current_directory = current_dir;
+        self.current_directory = app.current_directory_path().to_string_lossy().to_string();
         self.update_selected_item_info(app);
         self.update_error_display();
-    }
-
-    /// Invalidate cache - call this after file operations (create, delete, rename)
-    pub fn invalidate_cache(&mut self) {
-        self.cached_listing = None;
-    }
-
-    fn update_file_counts(&mut self, files: &[String]) {
-        let mut file_count = 0;
-        let mut directory_count = 0;
-
-        for path in files {
-            if let Ok(metadata) = fs::metadata(path) {
-                if metadata.is_file() {
-                    file_count += 1;
-                } else if metadata.is_dir() {
-                    directory_count += 1;
-                }
-            }
-        }
-
-        self.file_count = file_count;
-        self.directory_count = directory_count;
     }
 
     fn update_selected_item_info(&mut self, app: &App) {
@@ -117,17 +80,16 @@ impl StatusBar {
 
             if let Some(file_name) = path.file_name() {
                 let name = file_name.to_string_lossy();
+                let info = app.active_selected_info(app.curr_index).unwrap_or_default();
 
-                if let Ok(metadata) = fs::metadata(&selected_path) {
-                    let file_type = if metadata.is_file() {
-                        "File"
-                    } else if metadata.is_dir() {
-                        "Directory"
-                    } else {
-                        "Other"
+                if let Some(kind) = info.kind {
+                    let file_type = match kind {
+                        EntryKind::File => "File",
+                        EntryKind::Folder => "Directory",
+                        EntryKind::Other => "Other",
                     };
 
-                    let size = Self::format_file_size(metadata.len());
+                    let size = Self::format_file_size(info.size);
                     self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
                 } else {
                     self.selected_item_info = format!("{} | Unknown", name);
@@ -138,20 +100,6 @@ impl StatusBar {
         } else {
             self.selected_item_info = "No selection".to_string();
         }
-    }
-
-    fn calculate_total_size(&mut self, files: &[String]) {
-        let mut total = 0u64;
-
-        for path in files {
-            if let Ok(metadata) = fs::metadata(path) {
-                if metadata.is_file() {
-                    total += metadata.len();
-                }
-            }
-        }
-
-        self.total_size = total;
     }
 
     fn get_system_info() -> String {
@@ -413,42 +361,32 @@ impl StatusBar {
 
     /// Get size and permissions for selected file
     fn get_selected_file_info(&self, app: &App) -> (String, String) {
-        if let Some(path) = app.active_selected_path(app.curr_index) {
-            if let Ok(metadata) = fs::metadata(path) {
-                let size = Self::format_file_size(metadata.len());
-                let perms = Self::format_permissions(&metadata);
-                return (size, perms);
-            }
+        match app.active_selected_info(app.curr_index) {
+            Some(info) if info.kind.is_some() => (
+                Self::format_file_size(info.size),
+                Self::format_permissions(&info),
+            ),
+            _ => ("--".to_string(), "----------".to_string()),
         }
-        ("--".to_string(), "----------".to_string())
     }
 
-    /// Format Unix-style permissions string
+    /// Format Unix-style permissions string of what the item is (a link's target)
     #[cfg(unix)]
-    fn format_permissions(metadata: &fs::Metadata) -> String {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = metadata.permissions().mode();
-
-        let file_type = if metadata.is_dir() {
-            'd'
-        } else if metadata.file_type().is_symlink() {
-            'l'
-        } else {
-            '-'
-        };
+    fn format_permissions(info: &EntryInfo) -> String {
+        let file_type = if info.is_dir() { 'd' } else { '-' };
 
         format!(
             "{}{}",
             file_type,
-            crate::utils::format::permission_bits(mode)
+            crate::utils::format::permission_bits(info.mode)
         )
     }
 
     #[cfg(not(unix))]
-    fn format_permissions(metadata: &fs::Metadata) -> String {
-        if metadata.is_dir() {
+    fn format_permissions(info: &EntryInfo) -> String {
+        if info.is_dir() {
             "d---------".to_string()
-        } else if metadata.permissions().readonly() {
+        } else if info.mode & 0o222 == 0 {
             "-r--r--r--".to_string()
         } else {
             "-rw-rw-rw-".to_string()
@@ -658,6 +596,77 @@ mod tests {
         assert_eq!(status_bar.selected_item_info, "b.txt | File | 7 B");
         assert_eq!(StatusBar::get_position_indicator(&app), "2/3");
         assert_eq!(status_bar.get_selected_file_info(&app).0, "7 B");
+    }
+
+    #[test]
+    fn selected_item_info_comes_from_the_records_until_the_listing_is_read_again() {
+        use crate::app::PanePosition;
+        use crate::utils::{read_listing, SortBy, SortType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let notes = dir.path().join("notes.txt");
+        std::fs::write(&notes, "notes").unwrap();
+        let start = dir.path().to_string_lossy().into_owned();
+        let listing = || read_listing(start.clone(), false, SortBy::Name, &SortType::ASC).unwrap();
+        let mut app = App::with_listing(listing());
+        app.right_pane = crate::pane::Pane::with_listing(start.clone(), listing());
+        let mut status_bar = StatusBar::new();
+        let minimal = |status_bar: &StatusBar, app: &App| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 1)).unwrap();
+            terminal
+                .draw(|f| status_bar.render_minimal(f, f.size(), app, &app.theme_colors))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            screen
+        };
+
+        for right in [false, true] {
+            if right {
+                app.view_mode = ViewMode::DualPane;
+                app.active_pane = PanePosition::Right;
+            }
+            std::fs::write(&notes, "notes").unwrap();
+            app.refresh_files_from_watcher(listing(), &mut ratatui::widgets::ListState::default());
+            app.right_pane.refresh_files();
+            status_bar.update(&app);
+            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
+            assert!(minimal(&status_bar, &app).contains("5 B  -rw"));
+
+            // Grown, then gone: still what the records say.
+            std::fs::write(&notes, "x".repeat(2048)).unwrap();
+            status_bar.update(&app);
+            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
+            assert_eq!(status_bar.total_size, 5);
+            std::fs::remove_file(&notes).unwrap();
+            status_bar.update(&app);
+            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
+            assert_eq!((status_bar.file_count, status_bar.directory_count), (1, 0));
+            assert!(
+                minimal(&status_bar, &app).contains("5 B  -rw"),
+                "right: {right}"
+            );
+
+            std::fs::write(&notes, "x".repeat(2048)).unwrap();
+            if right {
+                app.right_pane.refresh_files();
+            } else {
+                app.refresh_files_from_watcher(
+                    listing(),
+                    &mut ratatui::widgets::ListState::default(),
+                );
+            }
+            status_bar.update(&app);
+            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 2.0 KB");
+            assert_eq!(status_bar.total_size, 2048);
+            assert!(minimal(&status_bar, &app).contains("2.0 KB  -rw"));
+        }
     }
 
     #[test]

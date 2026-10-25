@@ -3,9 +3,18 @@ mod common;
 use common::*;
 use file_finder::utils::files::{
     convert_file_path_to_string, generate_copy_file_dir_name, get_curr_path, is_file,
-    sort_entries_by_type, SortBy, SortType,
+    sort_entries_by_type, EntryInfo, SortBy, SortType,
 };
 use std::fs;
+use std::path::PathBuf;
+
+/// Entries beside their details, as listings sort them.
+fn with_info(entries: &[PathBuf]) -> Vec<(PathBuf, EntryInfo)> {
+    entries
+        .iter()
+        .map(|path| (path.clone(), EntryInfo::read(path)))
+        .collect()
+}
 
 #[cfg(test)]
 mod sorting_tests {
@@ -27,7 +36,11 @@ mod sorting_tests {
             fs::write(entry, "test content").expect("Failed to create test file");
         }
 
-        let sorted = sort_entries_by_type(SortBy::Name, SortType::ASC, entries.clone());
+        let sorted: Vec<PathBuf> =
+            sort_entries_by_type(SortBy::Name, SortType::ASC, with_info(&entries))
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
 
         assert_eq!(
             sorted[0].file_name().unwrap().to_str().unwrap(),
@@ -59,7 +72,11 @@ mod sorting_tests {
             fs::write(entry, "test content").expect("Failed to create test file");
         }
 
-        let sorted = sort_entries_by_type(SortBy::Name, SortType::DESC, entries.clone());
+        let sorted: Vec<PathBuf> =
+            sort_entries_by_type(SortBy::Name, SortType::DESC, with_info(&entries))
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
 
         assert_eq!(
             sorted[0].file_name().unwrap().to_str().unwrap(),
@@ -91,7 +108,11 @@ mod sorting_tests {
         fs::write(&entries[1], "x".repeat(100)).expect("Failed to create medium file");
         fs::write(&entries[2], "x".repeat(10)).expect("Failed to create small file");
 
-        let sorted = sort_entries_by_type(SortBy::Size, SortType::ASC, entries.clone());
+        let sorted: Vec<PathBuf> =
+            sort_entries_by_type(SortBy::Size, SortType::ASC, with_info(&entries))
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
 
         // Should be sorted by size: small, medium, large
         assert!(sorted[0].metadata().unwrap().len() < sorted[1].metadata().unwrap().len());
@@ -114,7 +135,11 @@ mod sorting_tests {
             fs::write(entry, "test content").expect("Failed to create test file");
         }
 
-        let sorted = sort_entries_by_type(SortBy::Name, SortType::ASC, entries.clone());
+        let sorted: Vec<PathBuf> =
+            sort_entries_by_type(SortBy::Name, SortType::ASC, with_info(&entries))
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect();
 
         assert_eq!(
             sorted[0].file_name().unwrap().to_str().unwrap(),
@@ -188,7 +213,8 @@ mod string_conversion_tests {
             base_path.join("subdir1"),
         ];
 
-        let result = convert_file_path_to_string(entries, true, SortBy::Default, SortType::ASC);
+        let result =
+            convert_file_path_to_string(entries, true, SortBy::Default, SortType::ASC).files;
 
         // Should include hidden files when show_hidden is true
         assert_eq!(result.len(), 3);
@@ -206,7 +232,8 @@ mod string_conversion_tests {
             base_path.join("subdir1"),
         ];
 
-        let result = convert_file_path_to_string(entries, false, SortBy::Default, SortType::ASC);
+        let result =
+            convert_file_path_to_string(entries, false, SortBy::Default, SortType::ASC).files;
 
         // Should not include hidden files when show_hidden is false
         assert_eq!(result.len(), 2);

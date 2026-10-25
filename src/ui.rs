@@ -11,7 +11,7 @@ use std::{path::Path, rc::Rc};
 use crate::app::{App, InputMode, SearchResult, ViewMode};
 use crate::config::Settings;
 use crate::icons::IconProvider;
-use crate::render::{create_size_text, get_file_size};
+use crate::render::create_size_text;
 pub mod theme;
 use self::theme::OneDarkTheme;
 use crate::highlight::highlight_search_term;
@@ -315,8 +315,9 @@ impl Ui {
                     // Use pre-computed file name from app
                     let file_name = &app.file_read_only_label_list[file_index];
                     let file_path = &app.files[file_index];
+                    let info = app.file_info[file_index];
                     let path = Path::new(file_path);
-                    let is_dir = path.is_dir();
+                    let is_dir = info.is_dir();
                     let colored_icon =
                         self.icon_provider
                             .get_colored_for_path(path, is_dir, &app.theme_colors);
@@ -351,9 +352,8 @@ impl Ui {
 
                         // Add file size for files (not directories)
                         if show_file_sizes && !is_dir {
-                            let file_size = get_file_size(file_path);
                             spans.push(Span::raw(" "));
-                            spans.push(create_size_text(file_size));
+                            spans.push(create_size_text(info.file_size()));
                         }
 
                         ListItem::from(ratatui::text::Line::from(spans))
@@ -382,14 +382,67 @@ impl Ui {
 
                         // Add file size for files (not directories)
                         if show_file_sizes && !is_dir {
-                            let file_size = get_file_size(file_path);
                             spans.push(Span::raw(" "));
-                            spans.push(create_size_text(file_size));
+                            spans.push(create_size_text(info.file_size()));
                         }
 
                         ListItem::from(ratatui::text::Line::from(spans))
                     }
                 })
+                .collect()
+        }
+    }
+
+    /// The right pane's rows: its listing, or its search's results, highlighted like the
+    /// left listing's while the query is typed.
+    pub fn right_pane_items(&self, app: &App, settings: &Settings) -> Vec<ListItem<'static>> {
+        let right_pane = &app.right_pane;
+        // Generate list items for right pane using icon provider (with dotfile dimming)
+        let listing_item = |path: &str, label: &str, is_dir: bool| {
+            let icon = self.icon_provider.get_for_path(Path::new(path), is_dir);
+
+            // Check if this is a dotfile (hidden file)
+            let is_dotfile = label.starts_with('.');
+
+            if is_dotfile {
+                // Dim dotfiles, with `crate::theme`'s dimmer colour rather than this module's
+                ListItem::new(ratatui::text::Line::from(vec![Span::styled(
+                    format!("{} {}", icon, label),
+                    crate::theme::OneDarkTheme::dotfile(),
+                )]))
+            } else {
+                ListItem::new(format!("{} {}", icon, label))
+            }
+        };
+        // A search shows its results, highlighted like the left listing's
+        let search_term = highlight_term(app, true);
+        if right_pane.is_searching() && (right_pane.global_search_mode || !search_term.is_empty()) {
+            right_pane
+                .search_results
+                .iter()
+                .map(|result| {
+                    self.search_result_item(result, search_term, app, settings.show_size_bars)
+                })
+                .collect()
+        } else if right_pane.is_searching() {
+            right_pane
+                .search_results
+                .iter()
+                .map(|result| {
+                    listing_item(
+                        &result.file_path,
+                        &result.display_name,
+                        result.info.is_dir(),
+                    )
+                })
+                .collect()
+        } else {
+            right_pane
+                .files
+                .iter()
+                .zip(&right_pane.file_labels)
+                .zip(&right_pane.file_info)
+                .map(|((path, label), info)| listing_item(path, label, info.is_dir()))
                 .collect()
         }
     }
@@ -405,7 +458,7 @@ impl Ui {
     ) -> ListItem<'static> {
         let colored_icon = self.icon_provider.get_colored_for_path(
             Path::new(&result.file_path),
-            result.is_directory,
+            result.info.is_dir(),
             &app.theme_colors,
         );
 
@@ -430,10 +483,9 @@ impl Ui {
             ));
 
             // Add file size for files (not directories)
-            if show_file_sizes && !result.is_directory {
-                let file_size = get_file_size(&result.file_path);
+            if show_file_sizes && !result.info.is_dir() {
                 spans.push(Span::raw(" "));
-                spans.push(create_size_text(file_size));
+                spans.push(create_size_text(result.info.file_size()));
             }
 
             ListItem::from(ratatui::text::Line::from(spans))
@@ -448,10 +500,9 @@ impl Ui {
             ];
 
             // Add file size for files (not directories)
-            if show_file_sizes && !result.is_directory {
-                let file_size = get_file_size(&result.file_path);
+            if show_file_sizes && !result.info.is_dir() {
                 spans.push(Span::raw(" "));
-                spans.push(create_size_text(file_size));
+                spans.push(create_size_text(result.info.file_size()));
             }
 
             ListItem::from(ratatui::text::Line::from(spans))
@@ -496,5 +547,122 @@ pub fn highlight_term(app: &App, right_pane: bool) -> &str {
         term.trim_start_matches(' ').trim_start_matches('/')
     } else {
         term
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::{read_listing, SortBy, SortType};
+    use ratatui::{backend::TestBackend, Terminal};
+    use std::fs;
+
+    /// A folder listing a 5-byte notes.txt and a photos/ folder.
+    fn notes_and_photos() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "notes").unwrap();
+        fs::create_dir(dir.path().join("photos")).unwrap();
+        let start = dir.path().to_string_lossy().into_owned();
+        (dir, start)
+    }
+
+    fn listing(start: &str) -> crate::utils::Listing {
+        read_listing(start.to_string(), false, SortBy::Name, &SortType::ASC).unwrap()
+    }
+
+    /// Grow notes.txt to 2 KB and make photos a 3000-byte file, behind ff's back.
+    fn change_on_disk(dir: &Path) {
+        fs::write(dir.join("notes.txt"), "x".repeat(2048)).unwrap();
+        fs::remove_dir(dir.join("photos")).unwrap();
+        fs::write(dir.join("photos"), "x".repeat(3000)).unwrap();
+    }
+
+    /// The screen's rows.
+    fn draw(width: u16, render: impl FnOnce(&mut Frame)) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
+        terminal.draw(render).unwrap();
+        let buffer = terminal.backend().buffer();
+        buffer
+            .content()
+            .chunks(buffer.area.width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn row<'a>(rows: &'a [String], name: &str) -> &'a str {
+        rows.iter().find(|row| row.contains(name)).unwrap()
+    }
+
+    #[test]
+    fn left_rows_draw_from_the_records_until_the_listing_is_read_again() {
+        let (dir, start) = notes_and_photos();
+        let settings = Settings::default();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(listing(&start));
+        let mut state = ListState::default();
+        let mut draw_left = |app: &App| {
+            draw(100, |f| {
+                let area = f.size();
+                let chunks: Rc<[Rect]> = vec![area, area, area].into();
+                ui.render_list_preview(f, &chunks, &mut ListState::default(), app, &settings);
+            })
+        };
+
+        let before = draw_left(&app);
+        assert!(row(&before, "notes.txt").contains("notes.txt 5 B"));
+        assert!(!row(&before, "photos").contains(" B"));
+
+        change_on_disk(dir.path());
+        assert_eq!(draw_left(&app), before);
+
+        app.refresh_files_from_watcher(listing(&start), &mut state);
+        let after = draw_left(&app);
+        assert!(row(&after, "notes.txt").contains("notes.txt 2.0 KB"));
+        assert!(row(&after, "photos").contains("photos 2.9 KB"));
+    }
+
+    #[test]
+    fn right_pane_rows_draw_from_the_records_until_the_listing_is_read_again() {
+        let (dir, start) = notes_and_photos();
+        let settings = Settings::default();
+        let ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::new(Vec::new());
+        app.view_mode = ViewMode::DualPane;
+        app.right_pane = crate::pane::Pane::with_listing(start.clone(), listing(&start));
+        let photos = dir.path().join("photos");
+        let folder_row = format!("{} photos", ui.icon_provider.get_for_path(&photos, true));
+        let file_row = format!("{} photos", ui.icon_provider.get_for_path(&photos, false));
+        assert_ne!(folder_row, file_row);
+        let draw_right = |app: &App| {
+            draw(40, |f| {
+                f.render_widget(List::new(ui.right_pane_items(app, &settings)), f.size())
+            })
+        };
+
+        assert!(row(&draw_right(&app), "photos").contains(&folder_row));
+        change_on_disk(dir.path());
+        assert!(row(&draw_right(&app), "photos").contains(&folder_row));
+
+        app.right_pane.refresh_files();
+        assert!(row(&draw_right(&app), "photos").contains(&file_row));
+    }
+
+    #[test]
+    fn right_pane_dims_dotfiles_with_the_dimmer_theme_colour() {
+        let settings = Settings::default();
+        let ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::new(Vec::new());
+        app.right_pane = crate::pane::Pane::new("/w".into(), vec!["/w/.hidden".into()]);
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        terminal
+            .draw(|f| f.render_widget(List::new(ui.right_pane_items(&app, &settings)), f.size()))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let dot = buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == ".")
+            .unwrap();
+        assert_eq!(Some(dot.fg), crate::theme::OneDarkTheme::dotfile().fg);
     }
 }

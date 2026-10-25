@@ -36,8 +36,8 @@ use crate::{
     operations::{compress, copy_dir_file_with_progress_cancellable},
     status_bar::StatusBar,
     utils::{
-        format::format_path_for_display, generate_copy_file_dir_name, get_curr_path,
-        get_file_path_data, is_file,
+        format::format_path_for_display, generate_copy_file_dir_name, get_curr_path, is_file,
+        read_listing,
     },
 };
 
@@ -352,16 +352,13 @@ pub fn run_action(
             // Refresh the browsed directory (even when it's empty or a
             // global result is highlighted), keeping any search filter.
             let refresh_dir = current_refresh_directory(app, fallback_start_path);
-            match get_file_path_data(
+            match read_listing(
                 refresh_dir,
                 app.show_hidden_files,
                 app.sort_by.clone(),
                 &app.sort_type,
             ) {
-                Ok(files) => {
-                    app.refresh_files_from_watcher(files, state);
-                    status_bar.invalidate_cache();
-                }
+                Ok(listing) => app.refresh_files_from_watcher(listing, state),
                 Err(e) => {
                     status_bar.show_error(format!("Could not refresh the listing: {e}"), None)
                 }

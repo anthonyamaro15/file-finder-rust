@@ -7,7 +7,7 @@ use crate::{
     app::{App, InputMode},
     event::navigation::parent_directory,
     status_bar::StatusBar,
-    utils::{get_curr_path, get_file_path_data},
+    utils::{get_curr_path, read_listing},
 };
 
 pub fn containing_directory(path: &Path) -> PathBuf {
@@ -61,13 +61,13 @@ pub fn refresh_file_list(
     select_path: Option<String>,
     status_bar: &mut StatusBar,
 ) {
-    match get_file_path_data(
+    match read_listing(
         directory.to_string_lossy().to_string(),
         app.show_hidden_files,
         app.sort_by.clone(),
         &app.sort_type,
     ) {
-        Ok(files) => app.refresh_files_after_operation(files, state, select_path),
+        Ok(listing) => app.refresh_files_after_operation(listing, state, select_path),
         Err(e) => status_bar.show_error(
             format!("Could not refresh '{}': {e:#}", directory.display()),
             None,
@@ -84,7 +84,7 @@ pub fn enter_directory(
     state: &mut ListState,
     select_path: Option<String>,
 ) -> anyhow::Result<()> {
-    let files = get_file_path_data(
+    let listing = read_listing(
         directory.to_string(),
         app.show_hidden_files,
         app.sort_by.clone(),
@@ -93,7 +93,7 @@ pub fn enter_directory(
     app.input_mode = InputMode::Normal;
     app.prev_dir = get_curr_path(directory.to_string());
     app.preserved_selection_index = Some(0);
-    app.refresh_files_after_operation(files, state, select_path);
+    app.refresh_files_after_operation(listing, state, select_path);
     if let Err(e) = app.start_watching_directory(directory) {
         debug!("Failed to start watching directory '{}': {}", directory, e);
     } else {

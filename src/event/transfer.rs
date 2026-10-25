@@ -19,6 +19,7 @@ use crate::{
     },
     operations::{self, copy_dir_file_with_progress_cancellable, CopyMessage},
     status_bar::StatusBar,
+    utils::EntryInfo,
 };
 
 /// Where `source` goes when copied or moved into `dest_dir`, or why it mustn't: the
@@ -143,7 +144,7 @@ pub fn folder_picker_results(
                     display_name: item_name(&typed),
                     file_path,
                     score: 0,
-                    is_directory: true,
+                    info: EntryInfo::read(&typed),
                     original_index: 0,
                 },
             );

@@ -12,6 +12,11 @@ use notify::{
 
 type WatcherBackend = PollWatcher;
 
+/// The poll watcher compares modification times in whole seconds, so it misses a write
+/// later in the same second as one it reported. Files it reports modified are reported
+/// once more this long after, when that second is over.
+const RECHECK_DELAY: Duration = Duration::from_secs(1);
+
 /// Events that the file watcher can send to the main application
 #[derive(Debug, Clone)]
 pub enum WatcherEvent {
@@ -133,6 +138,9 @@ impl FileSystemWatcher {
         let mut event_buffer: Vec<Event> = Vec::new();
         let mut last_flush = std::time::Instant::now();
         let flush_interval = Duration::from_millis(200); // Flush events every 200ms
+                                                         // Modified files to report again once `recheck_at` passes.
+        let mut recheck: Vec<PathBuf> = Vec::new();
+        let mut recheck_at = None;
 
         loop {
             // Try to receive events with a timeout
@@ -140,6 +148,14 @@ impl FileSystemWatcher {
                 Ok(Ok(event)) => {
                     // Filter events to only include files in the watched directory
                     if Self::event_in_directory(&event, &watched_path) {
+                        if matches!(event.kind, EventKind::Modify(_)) {
+                            for path in &event.paths {
+                                if !recheck.contains(path) {
+                                    recheck.push(path.clone());
+                                }
+                            }
+                            recheck_at = Some(std::time::Instant::now() + RECHECK_DELAY);
+                        }
                         event_buffer.push(event);
                     }
                 }
@@ -180,6 +196,19 @@ impl FileSystemWatcher {
 
                 event_buffer.clear();
                 last_flush = now;
+            }
+
+            if recheck_at.is_some_and(|at| now >= at) {
+                recheck_at = None;
+                recheck
+                    .retain(|path| path.parent() == Some(watched_path.as_path()) && path.is_file());
+                if !recheck.is_empty() {
+                    let event = WatcherEvent::FilesModified(std::mem::take(&mut recheck));
+                    if let Err(e) = event_sender.send(event) {
+                        error!("Failed to send processed event: {}", e);
+                        break;
+                    }
+                }
             }
         }
 
@@ -380,6 +409,46 @@ mod tests {
                     .iter()
                     .any(|event| { matches!(event, WatcherEvent::DirectoryChanged) })
         );
+    }
+
+    fn set_modified(path: &Path, time: std::time::SystemTime) {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(time)
+            .unwrap();
+    }
+
+    fn reports_modified(events: &[WatcherEvent], file: &Path) -> bool {
+        events.iter().any(
+            |event| matches!(event, WatcherEvent::FilesModified(paths) if paths.iter().any(|p| p == file)),
+        )
+    }
+
+    #[test]
+    fn a_later_write_in_the_same_second_is_reported_too() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        fs::write(&file, "a").unwrap();
+        set_modified(
+            &file,
+            std::time::SystemTime::now() - Duration::from_secs(10),
+        );
+        let mut watcher = FileSystemWatcher::new().unwrap();
+        watcher.watch_directory(dir.path()).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+
+        fs::write(&file, "ab").unwrap();
+        let first = wait_for_events(&watcher, Duration::from_secs(3));
+        assert!(reports_modified(&first, &file), "{first:?}");
+
+        // Written again within the second the watcher already saw.
+        let seen = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, "abc").unwrap();
+        set_modified(&file, seen);
+        let again = wait_for_events(&watcher, Duration::from_secs(3));
+        assert!(reports_modified(&again, &file), "{again:?}");
     }
 
     #[test]

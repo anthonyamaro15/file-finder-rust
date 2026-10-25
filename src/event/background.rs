@@ -17,7 +17,7 @@ use crate::{
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
     status_bar::StatusBar,
-    utils::{format_file_size, get_file_path_data},
+    utils::{format_file_size, get_file_path_data, read_listing},
 };
 
 /// Preview debounce delay in milliseconds
@@ -387,14 +387,13 @@ pub fn refresh_after_copy(
     }
     if succeeded {
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
-        if let Ok(files) = get_file_path_data(
+        if let Ok(listing) = read_listing(
             refresh_dir,
             app.show_hidden_files,
             app.sort_by.clone(),
             &app.sort_type,
         ) {
-            app.refresh_files_after_operation(files, state, destination);
-            status_bar.invalidate_cache();
+            app.refresh_files_after_operation(listing, state, destination);
         }
         // Shift+C may have copied into the right pane's folder.
         if app.view_mode.is_dual_pane() {
@@ -420,18 +419,17 @@ pub fn poll_job(
             other => (other.map(|(_, path)| path), None),
         };
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
-        if let Ok(files) = get_file_path_data(
+        if let Ok(listing) = read_listing(
             refresh_dir,
             app.show_hidden_files,
             app.sort_by.clone(),
             &app.sort_type,
         ) {
             if result.is_ok() {
-                app.refresh_files_after_operation(files, state, select_left);
+                app.refresh_files_after_operation(listing, state, select_left);
             } else {
-                app.refresh_files_from_watcher(files, state);
+                app.refresh_files_from_watcher(listing, state);
             }
-            status_bar.invalidate_cache();
         }
         if app.view_mode.is_dual_pane() {
             app.right_pane.refresh_files();
@@ -519,18 +517,17 @@ pub fn poll_delete(
 
                     // Refresh the directory being browsed, even for a global search target.
                     let refresh_dir = current_refresh_directory(app, fallback_start_path);
-                    if let Ok(files) = get_file_path_data(
+                    if let Ok(listing) = read_listing(
                         refresh_dir,
                         app.show_hidden_files,
                         app.sort_by.clone(),
                         &app.sort_type,
                     ) {
                         if success {
-                            app.refresh_files_after_operation(files, state, None);
+                            app.refresh_files_after_operation(listing, state, None);
                         } else {
-                            app.refresh_files_from_watcher(files, state);
+                            app.refresh_files_from_watcher(listing, state);
                         }
-                        status_bar.invalidate_cache();
                     }
                     if app.view_mode.is_dual_pane() {
                         app.right_pane.refresh_files();
@@ -597,13 +594,13 @@ pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_st
         // File system changes detected, refresh the CURRENT directory (not the start path)
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
 
-        if let Ok(file_path_list) = get_file_path_data(
+        if let Ok(listing) = read_listing(
             refresh_dir,
             app.show_hidden_files,
             app.sort_by.clone(),
             &app.sort_type,
         ) {
-            app.refresh_files_from_watcher(file_path_list, state);
+            app.refresh_files_from_watcher(listing, state);
 
             // Log the file system events for debugging
             for event_msg in fs_events {
