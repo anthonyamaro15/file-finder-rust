@@ -138,7 +138,8 @@ impl FileSystemWatcher {
         let mut event_buffer: Vec<Event> = Vec::new();
         let mut last_flush = std::time::Instant::now();
         let flush_interval = Duration::from_millis(200); // Flush events every 200ms
-                                                         // Modified files to report again once `recheck_at` passes.
+
+        // Modified files to report again once `recheck_at` passes.
         let mut recheck: Vec<PathBuf> = Vec::new();
         let mut recheck_at = None;
 
