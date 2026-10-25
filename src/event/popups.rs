@@ -12,7 +12,7 @@ use crate::{
     directory_store::DirectoryIndex,
     event::{
         file_actions::{
-            create_target_directory, created_item_path, current_refresh_directory,
+            create_target_directory, created_item_path, current_refresh_directory, enter_directory,
             refresh_file_list,
         },
         sort::apply_sort,
@@ -23,7 +23,7 @@ use crate::{
         create_item_based_on_type, delete_with_progress, handle_delete_based_on_type, handle_rename,
     },
     status_bar::StatusBar,
-    utils::{check_if_exists, get_file_path_data, SortBy, SortType},
+    utils::{check_if_exists, SortBy, SortType},
 };
 
 /// Rename mode: edit the new name, then rename on Enter.
@@ -80,16 +80,12 @@ pub fn handle_rename_key(
                             }
                             let current_dir = current_refresh_directory(app, fallback_start_path);
                             app.reset_create_edit_values();
-                            let file_path_list = get_file_path_data(
-                                current_dir,
-                                app.show_hidden_files,
-                                app.sort_by.clone(),
-                                &app.sort_type,
-                            )?;
-                            app.refresh_files_after_operation(
-                                file_path_list,
+                            refresh_file_list(
+                                app,
+                                Path::new(&current_dir),
                                 state,
                                 (!from_right_pane).then_some(new_path),
+                                status_bar,
                             );
                             status_bar.invalidate_cache();
                             app.input_mode = InputMode::Normal;
@@ -161,14 +157,36 @@ pub fn handle_create_key(
                         app.right_pane.refresh_files();
                     }
                     if from_right_pane {
+                        // Created inside the highlighted folder: open it, as `l` does.
+                        if Path::new(&new_path) != Path::new(&app.right_pane.current_directory) {
+                            if let Err(e) = app.right_pane.navigate_to_directory(&new_path) {
+                                status_bar.show_error(
+                                    format!("Could not open '{new_path}': {e:#}"),
+                                    None,
+                                );
+                            }
+                        }
                         if let Some(created_path) = created_path {
                             app.right_pane.select_path(&created_path);
                         }
                         // The left listing stays in its own folder.
                         let left_dir = current_refresh_directory(app, fallback_start_path);
-                        refresh_file_list(app, Path::new(&left_dir), state, None)?;
+                        refresh_file_list(app, Path::new(&left_dir), state, None, status_bar);
+                    } else if Path::new(&new_path) == app.left_directory_path() {
+                        refresh_file_list(
+                            app,
+                            Path::new(&new_path),
+                            state,
+                            created_path,
+                            status_bar,
+                        );
                     } else {
-                        refresh_file_list(app, Path::new(&new_path), state, created_path)?;
+                        // Created inside the highlighted folder (or beside a search result
+                        // elsewhere): go there, as `l` does, so later refreshes stay there.
+                        if let Err(e) = enter_directory(app, &new_path, state, created_path) {
+                            status_bar
+                                .show_error(format!("Could not open '{new_path}': {e:#}"), None);
+                        }
                     }
                     status_bar.invalidate_cache();
                 }
@@ -251,13 +269,7 @@ pub fn handle_delete_key(
                             app.right_pane.refresh_files();
                         }
                         let current_dir = current_refresh_directory(app, fallback_start_path);
-                        let files = get_file_path_data(
-                            current_dir,
-                            app.show_hidden_files,
-                            app.sort_by.clone(),
-                            &app.sort_type,
-                        )?;
-                        app.refresh_files_after_operation(files, state, None);
+                        refresh_file_list(app, Path::new(&current_dir), state, None, status_bar);
                         status_bar.invalidate_cache();
                     } else if let Err(e) = delete_result {
                         status_bar.show_error(e.user_message(), None);
@@ -300,19 +312,23 @@ pub(crate) fn start_trash(
 }
 
 /// Sort mode: pick the sort field or direction.
-pub fn handle_sort_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
+pub fn handle_sort_key(
+    key: KeyEvent,
+    app: &mut App,
+    status_bar: &mut StatusBar,
+) -> anyhow::Result<()> {
     match key.code {
         KeyCode::Char('q') => {
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Char('n') => {
-            apply_sort(app, SortBy::Name)?;
+            apply_sort(app, SortBy::Name, status_bar);
         }
         KeyCode::Char('s') => {
-            apply_sort(app, SortBy::Size)?;
+            apply_sort(app, SortBy::Size, status_bar);
         }
         KeyCode::Char('t') => {
-            apply_sort(app, SortBy::DateAdded)?;
+            apply_sort(app, SortBy::DateAdded, status_bar);
         }
         KeyCode::Char('a') => {
             app.sort_type = SortType::ASC;
@@ -351,7 +367,7 @@ mod tests {
         LoopControl,
     };
     use crate::status_bar::NotificationKind;
-    use crate::utils::generate_copy_file_dir_name;
+    use crate::utils::{generate_copy_file_dir_name, get_file_path_data};
     use crossterm::event::KeyModifiers;
     use ratatui::{layout::Rect, TerminalOptions, Viewport};
     use std::time::{Duration, Instant};
@@ -1116,5 +1132,271 @@ mod tests {
             state.app.get_selected_path(state.state.selected()),
             Some(left_item)
         );
+    }
+
+    fn spelled(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    /// Press `a`, type `name` and Enter, as the main loop would.
+    fn create(state: &mut LoopState, name: &str) {
+        press(state, KeyCode::Char('a'));
+        state.app.create_edit_file_name = name.into();
+        handle_create_key(
+            enter(),
+            &mut state.app,
+            &mut state.state,
+            &mut state.status_bar,
+            &mut state.index,
+            "unused",
+        )
+        .unwrap();
+    }
+
+    /// Press `r`, type `name` and Enter, as the main loop would.
+    fn rename(state: &mut LoopState, name: &str) {
+        press(state, KeyCode::Char('r'));
+        state.app.create_edit_file_name = name.into();
+        handle_rename_key(
+            enter(),
+            &mut state.app,
+            &mut state.state,
+            &mut state.status_bar,
+            &mut state.index,
+            "unused",
+        )
+        .unwrap();
+    }
+
+    /// `root` listing an empty photos/ and notes.txt, with `highlight` highlighted
+    /// (nothing if it isn't listed).
+    fn listing_state(root: &Path, highlight: &str) -> LoopState {
+        std::fs::create_dir_all(root.join("photos")).unwrap();
+        std::fs::write(root.join("notes.txt"), "notes").unwrap();
+        let files = get_file_path_data(spelled(root), false, SortBy::Name, &SortType::ASC).unwrap();
+        let mut state = removal_state(root, files);
+        let highlighted = spelled(&root.join(highlight));
+        state
+            .state
+            .select(state.app.files.iter().position(|f| *f == highlighted));
+        state
+    }
+
+    fn selected(state: &LoopState) -> Option<String> {
+        state.app.get_selected_path(state.state.selected())
+    }
+
+    #[test]
+    fn create_inside_the_highlighted_folder_moves_there_and_a_rename_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let photos = root.join("photos");
+        let mut state = listing_state(root, "photos");
+        let in_photos = |name: &str| spelled(&photos.join(name));
+
+        create(&mut state, "new.txt");
+        assert_eq!(Path::new(&state.app.current_directory), photos);
+        assert!(state.app.file_watcher.is_some());
+        assert_eq!(state.app.files, [in_photos("new.txt")]);
+        assert_eq!(selected(&state), Some(in_photos("new.txt")));
+        assert!(!state.status_bar.has_error());
+
+        rename(&mut state, "renamed.txt");
+        assert_eq!(Path::new(&state.app.current_directory), photos);
+        assert_eq!(state.app.files, [in_photos("renamed.txt")]);
+        assert_eq!(selected(&state), Some(in_photos("renamed.txt")));
+        assert!(photos.join("renamed.txt").is_file());
+
+        // `h` steps out as from any folder `l` entered.
+        press(&mut state, KeyCode::Char('h'));
+        assert_eq!(Path::new(&state.app.current_directory), root);
+        assert_eq!(selected(&state), Some(spelled(&photos)));
+    }
+
+    #[test]
+    fn create_beside_a_file_or_without_a_selection_stays_in_the_folder() {
+        for highlight in ["notes.txt", "nothing"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let mut state = listing_state(root, highlight);
+            assert_eq!(selected(&state).is_some(), highlight == "notes.txt");
+
+            create(&mut state, "new.txt");
+            assert!(root.join("new.txt").is_file(), "{highlight}");
+            assert!(!root.join("photos/new.txt").exists(), "{highlight}");
+            assert_eq!(Path::new(&state.app.current_directory), root, "{highlight}");
+            assert_eq!(state.app.files.len(), 3, "{highlight}");
+            assert_eq!(
+                selected(&state),
+                Some(spelled(&root.join("new.txt"))),
+                "{highlight}"
+            );
+        }
+    }
+
+    #[test]
+    fn create_inside_the_right_panes_highlighted_folder_opens_it_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        let left_dir = spelled(Path::new(&left_item).parent().unwrap());
+        let photos = Path::new(&right_item).with_file_name("photos");
+        std::fs::create_dir(&photos).unwrap();
+        state.app.right_pane.refresh_files();
+        state.app.right_pane.select_path(&spelled(&photos));
+
+        create(&mut state, "new.txt");
+        assert!(photos.join("new.txt").is_file());
+        assert_eq!(Path::new(&state.app.right_pane.current_directory), photos);
+        assert_eq!(
+            state.app.right_pane.get_selected_path(),
+            Some(spelled(&photos.join("new.txt")))
+        );
+
+        rename(&mut state, "renamed.txt");
+        assert_eq!(Path::new(&state.app.right_pane.current_directory), photos);
+        assert_eq!(
+            state.app.right_pane.get_selected_path(),
+            Some(spelled(&photos.join("renamed.txt")))
+        );
+        assert_eq!(state.app.current_directory, left_dir);
+        assert_eq!(selected(&state), Some(left_item));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn operations_whose_refresh_cannot_read_the_folder_show_an_error_and_keep_running() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root reads any folder, so the refresh cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let set_mode = |path: &Path, mode| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        for operation in ["create", "create inside", "rename", "delete", "sort"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            let inside = operation == "create inside";
+            let mut state = listing_state(root, if inside { "photos" } else { "notes.txt" });
+            let files = state.app.files.clone();
+            // Writable but not listable: the operation works, re-reading the folder fails.
+            let unreadable = if inside {
+                root.join("photos")
+            } else {
+                root.into()
+            };
+            set_mode(&unreadable, 0o300);
+            match operation {
+                "create" | "create inside" => create(&mut state, "new.txt"),
+                "rename" => rename(&mut state, "renamed.txt"),
+                "delete" => {
+                    open_removal('D', &mut state);
+                    confirm_removal(&mut state);
+                }
+                _ => {
+                    press(&mut state, KeyCode::Char('s'));
+                    handle_sort_key(
+                        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+                        &mut state.app,
+                        &mut state.status_bar,
+                    )
+                    .unwrap();
+                }
+            }
+            set_mode(&unreadable, 0o700);
+
+            assert_eq!(
+                state.status_bar.notification_kind,
+                NotificationKind::Error,
+                "{operation}"
+            );
+            let error = state.status_bar.error_message.clone().unwrap();
+            assert!(error.starts_with("Could not"), "{operation}: {error}");
+            assert_eq!(state.app.files, files, "{operation}");
+            assert_eq!(Path::new(&state.app.current_directory), root, "{operation}");
+            let done = match operation {
+                "create" => root.join("new.txt").is_file(),
+                "create inside" => root.join("photos/new.txt").is_file(),
+                "rename" => root.join("renamed.txt").is_file(),
+                "delete" => !root.join("notes.txt").exists(),
+                _ => state.app.sort_by == SortBy::Name,
+            };
+            assert!(done, "{operation}");
+        }
+    }
+
+    #[test]
+    fn operations_after_the_left_folder_vanished_show_an_error_and_keep_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        std::fs::remove_dir_all(Path::new(&left_item).parent().unwrap()).unwrap();
+        let right = |name: &str| spelled(&Path::new(&right_item).with_file_name(name));
+
+        create(&mut state, "new.txt");
+        assert!(state.status_bar.has_error());
+        assert_eq!(
+            state.app.right_pane.get_selected_path(),
+            Some(right("new.txt"))
+        );
+
+        state.status_bar = StatusBar::new();
+        rename(&mut state, "renamed.txt");
+        assert!(state.status_bar.has_error());
+        assert_eq!(state.app.input_mode, InputMode::Normal);
+        assert_eq!(
+            state.app.right_pane.get_selected_path(),
+            Some(right("renamed.txt"))
+        );
+        assert_eq!(selected(&state), Some(left_item));
+    }
+
+    #[test]
+    fn l_and_h_move_the_browsed_folder_with_the_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let photos = root.join("photos");
+        let mut state = listing_state(root, "photos");
+
+        for photo in [None, Some("a.jpg")] {
+            if let Some(photo) = photo {
+                std::fs::write(photos.join(photo), "jpg").unwrap();
+            }
+            press(&mut state, KeyCode::Char('l'));
+            assert_eq!(Path::new(&state.app.current_directory), photos);
+            assert_eq!(
+                selected(&state),
+                photo.map(|photo| spelled(&photos.join(photo)))
+            );
+            // An empty listing steps out through `prev_dir` instead.
+            press(&mut state, KeyCode::Char('h'));
+            assert_eq!(Path::new(&state.app.current_directory), root);
+            assert_eq!(selected(&state), Some(spelled(&photos)));
+        }
+    }
+
+    #[test]
+    fn l_and_h_into_a_vanished_folder_show_an_error_and_stay_put() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a/b");
+        let mut state = listing_state(&root, "photos");
+        let files = state.app.files.clone();
+
+        std::fs::remove_dir(root.join("photos")).unwrap();
+        press(&mut state, KeyCode::Char('l'));
+        assert!(state.status_bar.has_error());
+        assert_eq!(Path::new(&state.app.current_directory), root);
+        assert_eq!(state.app.files, files);
+
+        state.status_bar = StatusBar::new();
+        std::fs::remove_dir_all(dir.path().join("a")).unwrap();
+        press(&mut state, KeyCode::Char('h'));
+        assert!(state.status_bar.has_error());
+        assert_eq!(Path::new(&state.app.current_directory), root);
+        assert_eq!(state.app.files, files);
     }
 }

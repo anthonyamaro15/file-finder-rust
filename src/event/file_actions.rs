@@ -1,8 +1,14 @@
 use std::path::{Path, PathBuf};
 
+use log::debug;
 use ratatui::widgets::ListState;
 
-use crate::{app::App, event::navigation::parent_directory, utils::get_file_path_data};
+use crate::{
+    app::{App, InputMode},
+    event::navigation::parent_directory,
+    status_bar::StatusBar,
+    utils::{get_curr_path, get_file_path_data},
+};
 
 pub fn containing_directory(path: &Path) -> PathBuf {
     parent_directory(path).unwrap_or_default()
@@ -46,21 +52,53 @@ pub(crate) fn current_refresh_directory(app: &App, fallback_start_path: &str) ->
     }
 }
 
+/// Reload the left listing after an operation. A failed read shows an error and keeps
+/// the old listing, so it never ends ff.
 pub fn refresh_file_list(
     app: &mut App,
     directory: &Path,
     state: &mut ListState,
     select_path: Option<String>,
-) -> anyhow::Result<()> {
-    let file_path_list = get_file_path_data(
+    status_bar: &mut StatusBar,
+) {
+    match get_file_path_data(
         directory.to_string_lossy().to_string(),
         app.show_hidden_files,
         app.sort_by.clone(),
         &app.sort_type,
+    ) {
+        Ok(files) => app.refresh_files_after_operation(files, state, select_path),
+        Err(e) => status_bar.show_error(
+            format!("Could not refresh '{}': {e:#}", directory.display()),
+            None,
+        ),
+    }
+}
+
+/// Browse `directory` in the left listing, as `l` does: leave any search and move
+/// `current_directory`, the watcher and `prev_dir` there. Highlights `select_path`,
+/// else the first row. A failed read changes nothing.
+pub fn enter_directory(
+    app: &mut App,
+    directory: &str,
+    state: &mut ListState,
+    select_path: Option<String>,
+) -> anyhow::Result<()> {
+    let files = get_file_path_data(
+        directory.to_string(),
+        app.show_hidden_files,
+        app.sort_by.clone(),
+        &app.sort_type,
     )?;
-
-    app.refresh_files_after_operation(file_path_list, state, select_path);
-
+    app.input_mode = InputMode::Normal;
+    app.prev_dir = get_curr_path(directory.to_string());
+    app.preserved_selection_index = Some(0);
+    app.refresh_files_after_operation(files, state, select_path);
+    if let Err(e) = app.start_watching_directory(directory) {
+        debug!("Failed to start watching directory '{}': {}", directory, e);
+    } else {
+        debug!("Started watching directory: {}", directory);
+    }
     Ok(())
 }
 
@@ -117,8 +155,8 @@ mod tests {
                 dir.path(),
                 &mut state,
                 created_item_path(dir.path(), name),
-            )
-            .unwrap();
+                &mut StatusBar::new(),
+            );
 
             assert_eq!(state.selected(), Some(1));
             assert_eq!(
@@ -144,8 +182,8 @@ mod tests {
             dir.path(),
             &mut state,
             created_item_path(dir.path(), "zulu/child"),
-        )
-        .unwrap();
+            &mut StatusBar::new(),
+        );
         assert_eq!(state.selected(), Some(1));
         assert_eq!(
             app.get_selected_path(state.selected()),
@@ -162,8 +200,8 @@ mod tests {
             dir.path(),
             &mut state,
             created_item_path(dir.path(), ".hidden.txt"),
-        )
-        .unwrap();
+            &mut StatusBar::new(),
+        );
         assert_eq!(state.selected(), Some(1));
         assert_eq!(app.files.len(), 2);
     }
@@ -178,8 +216,13 @@ mod tests {
         app.sort_by = SortBy::Name;
         app.sort_type = SortType::DESC;
 
-        refresh_file_list(&mut app, temp_dir.path(), &mut ListState::default(), None)
-            .expect("refresh");
+        refresh_file_list(
+            &mut app,
+            temp_dir.path(),
+            &mut ListState::default(),
+            None,
+            &mut StatusBar::new(),
+        );
 
         let names = app
             .files
