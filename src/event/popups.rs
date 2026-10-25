@@ -93,6 +93,8 @@ pub fn handle_rename_key(
                         Err(e) => {
                             app.is_create_edit_error = true;
                             app.error_message = e.user_message();
+                            // The popup title cuts long messages off; show it in full too.
+                            status_bar.show_error(app.error_message.clone(), None);
                         }
                     }
                 } else {
@@ -194,6 +196,8 @@ pub fn handle_create_key(
                 Err(e) => {
                     app.is_create_edit_error = true;
                     app.error_message = e.user_message();
+                    // The popup title cuts long messages off; show it in full too.
+                    status_bar.show_error(app.error_message.clone(), None);
                 }
             }
         }
@@ -1263,6 +1267,22 @@ mod tests {
         press(&mut state, KeyCode::Char('h'));
         assert_eq!(Path::new(&state.app.current_directory), root);
         assert_eq!(selected(&state), Some(spelled(&photos)));
+    }
+
+    #[test]
+    fn a_failed_create_shows_the_whole_error_in_the_status_bar() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+
+        create(&mut state, "notes.txt/inside.txt");
+
+        assert_eq!(state.app.input_mode, InputMode::WatchCreate);
+        assert!(state.app.is_create_edit_error);
+        assert_eq!(
+            state.status_bar.error_message.as_deref(),
+            Some(state.app.error_message.as_str())
+        );
+        assert!(state.app.error_message.contains("is a file, not a folder"));
     }
 
     #[test]
