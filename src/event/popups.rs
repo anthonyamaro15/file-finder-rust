@@ -319,7 +319,7 @@ pub fn handle_sort_key(
     status_bar: &mut StatusBar,
 ) -> anyhow::Result<()> {
     match key.code {
-        KeyCode::Char('q') => {
+        KeyCode::Char('q') | KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Char('n') => {
@@ -342,9 +342,9 @@ pub fn handle_sort_key(
     Ok(())
 }
 
-/// Keybinding help: `q` closes it.
+/// Keybinding help: Esc or `q` closes it.
 pub fn handle_keybinding_key(key: KeyEvent, app: &mut App) {
-    if let KeyCode::Char('q') = key.code {
+    if let KeyCode::Esc | KeyCode::Char('q') = key.code {
         app.input_mode = InputMode::Normal;
     }
 }
@@ -1609,5 +1609,225 @@ mod tests {
         press(&mut state, KeyCode::Char('l'));
         assert_eq!(Path::new(&state.app.right_pane.current_directory), target);
         assert_eq!(selected(&state), Some(left_item));
+    }
+
+    fn chord(c: char, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), modifiers)
+    }
+
+    /// Route `key` as the main loop does: the modifier guard, then the mode's handler.
+    fn dispatch(state: &mut LoopState, key: KeyEvent) -> LoopControl {
+        if let Some(control) = crate::event::handle_modifier_key(key, state, &mut test_terminal()) {
+            return control;
+        }
+        match state.app.input_mode.clone() {
+            InputMode::Normal => {
+                let mut keymap =
+                    KeymapRuntime::from_settings(&crate::config::KeymapSettings::default());
+                return handle_normal_key(key, state, &mut keymap, &mut test_terminal(), "unused")
+                    .unwrap();
+            }
+            InputMode::WatchCreate => handle_create_key(
+                key,
+                &mut state.app,
+                &mut state.state,
+                &mut state.status_bar,
+                &mut state.index,
+                "unused",
+            )
+            .unwrap(),
+            InputMode::WatchRename => handle_rename_key(
+                key,
+                &mut state.app,
+                &mut state.state,
+                &mut state.status_bar,
+                &mut state.index,
+                "unused",
+            )
+            .unwrap(),
+            InputMode::WatchSort => {
+                handle_sort_key(key, &mut state.app, &mut state.state, &mut state.status_bar)
+                    .unwrap()
+            }
+            InputMode::WatchKeyBinding => handle_keybinding_key(key, &mut state.app),
+            InputMode::Editing => search_key(state, key.code),
+            InputMode::PickFolder => {
+                let selected = state.state.selected();
+                crate::event::transfer::handle_folder_picker_key(
+                    key,
+                    &mut state.app,
+                    selected,
+                    &mut state.status_bar,
+                    &state.index.store,
+                    &mut state.copy_receiver,
+                )
+            }
+            mode => panic!("dispatch doesn't route {mode:?}"),
+        }
+        LoopControl::Continue
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_every_mode_without_acting_as_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        for mode in [
+            InputMode::Normal,
+            InputMode::Editing,
+            InputMode::WatchCreate,
+            InputMode::WatchRename,
+            InputMode::WatchTrash,
+            InputMode::WatchDelete,
+            InputMode::WatchSort,
+            InputMode::WatchKeyBinding,
+            InputMode::WatchInfo,
+            InputMode::PickFolder,
+        ] {
+            state.app.input_mode = mode;
+            let control = dispatch(&mut state, chord('c', KeyModifiers::CONTROL));
+            assert!(matches!(control, LoopControl::Break));
+        }
+        // Nothing was duplicated or typed.
+        assert!(state.copy_receiver.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert!(state.app.create_edit_file_name.is_empty() && state.app.input.is_empty());
+    }
+
+    #[test]
+    fn ctrl_c_during_an_operation_warns_then_quits_on_the_second_press() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let work = move |cancel: std::sync::Arc<std::sync::atomic::AtomicBool>| {
+            while !cancel.load(Ordering::Relaxed) {
+                assert!(Instant::now() < deadline, "never cancelled");
+                std::thread::yield_now();
+            }
+            Err("Compression cancelled (partial archive removed)".to_string())
+        };
+        state
+            .app
+            .start_job("compression", "Compressing…".into(), Vec::new(), work)
+            .unwrap();
+        state.app.input_mode = InputMode::WatchCreate;
+
+        let control = dispatch(&mut state, chord('c', KeyModifiers::CONTROL));
+        assert!(matches!(control, LoopControl::Continue));
+        assert_eq!(
+            state.status_bar.notification_kind,
+            NotificationKind::Warning
+        );
+        let warning = state.status_bar.error_message.clone().unwrap();
+        assert!(warning.contains("press Ctrl-C again"), "{warning}");
+        assert!(state.app.job.is_some());
+        assert!(state.app.create_edit_file_name.is_empty());
+
+        let control = dispatch(&mut state, chord('c', KeyModifiers::CONTROL));
+        assert!(matches!(control, LoopControl::Break));
+        assert!(state.app.job.is_none());
+        assert_eq!(state.quit_error, None);
+    }
+
+    #[test]
+    fn ctrl_and_alt_letters_do_nothing_in_normal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let (ctrl, alt) = (KeyModifiers::CONTROL, KeyModifiers::ALT);
+        for key in [
+            chord('d', ctrl),
+            chord('a', ctrl),
+            chord('z', ctrl),
+            chord('D', ctrl | KeyModifiers::SHIFT),
+            chord('d', alt),
+            chord('a', alt),
+            chord('c', alt),
+            chord('h', alt),
+        ] {
+            assert!(matches!(dispatch(&mut state, key), LoopControl::Continue));
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+        }
+        assert!(state.copy_receiver.is_none() && state.app.job.is_none());
+        assert_eq!(Path::new(&state.app.current_directory), dir.path());
+        assert_eq!(
+            selected(&state),
+            Some(spelled(&dir.path().join("notes.txt")))
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn text_fields_skip_ctrl_and_alt_letters_but_take_shifted_and_accented_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        let (none, shift) = (KeyModifiers::NONE, KeyModifiers::SHIFT);
+        let field = |state: &LoopState| match state.app.input_mode {
+            InputMode::Editing => state.app.input.clone(),
+            _ => state.app.create_edit_file_name.clone(),
+        };
+        // Rename, create, "Copy to…" (Shift+C) and search.
+        for (open, mode) in [
+            (chord('r', none), InputMode::WatchRename),
+            (chord('a', none), InputMode::WatchCreate),
+            (chord('C', shift), InputMode::PickFolder),
+            (chord('/', none), InputMode::Editing),
+        ] {
+            dispatch(&mut state, open);
+            assert_eq!(state.app.input_mode, mode);
+            let before = field(&state);
+            for key in [
+                chord('x', none),
+                chord('b', KeyModifiers::CONTROL),
+                chord('f', KeyModifiers::ALT),
+                chord('É', shift),
+                chord('Z', shift),
+                chord('ñ', none),
+            ] {
+                dispatch(&mut state, key);
+            }
+            assert_eq!(field(&state), format!("{before}xÉZñ"));
+            dispatch(&mut state, KeyEvent::new(KeyCode::Esc, none));
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+        }
+    }
+
+    #[test]
+    fn left_and_right_arrows_act_like_h_and_l_in_either_pane() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, left_item, right_item) = dual_pane_state(dir.path());
+        for (pane, item) in [
+            (PanePosition::Right, right_item),
+            (PanePosition::Left, left_item),
+        ] {
+            state.app.active_pane = pane.clone();
+            let browsed = |state: &LoopState| {
+                std::path::PathBuf::from(if pane == PanePosition::Left {
+                    &state.app.current_directory
+                } else {
+                    &state.app.right_pane.current_directory
+                })
+            };
+            assert_eq!(browsed(&state), Path::new(&item).parent().unwrap());
+            press(&mut state, KeyCode::Left);
+            assert_eq!(browsed(&state), dir.path());
+            let highlighted = state.app.active_selected_path(state.state.selected());
+            press(&mut state, KeyCode::Right);
+            assert_eq!(browsed(&state), Path::new(&highlighted.unwrap()));
+        }
+    }
+
+    #[test]
+    fn esc_closes_the_help_and_the_sort_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = listing_state(dir.path(), "notes.txt");
+        for (open, popup) in [
+            ('?', InputMode::WatchKeyBinding),
+            ('s', InputMode::WatchSort),
+        ] {
+            press(&mut state, KeyCode::Char(open));
+            assert_eq!(state.app.input_mode, popup);
+            dispatch(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(state.app.input_mode, InputMode::Normal);
+        }
     }
 }

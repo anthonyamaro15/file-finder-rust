@@ -374,8 +374,8 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "── Navigation ──".to_string(),
         "  j / ↓           Move down".to_string(),
         "  k / ↑           Move up".to_string(),
-        "  h               Go to parent directory".to_string(),
-        "  l               Enter directory".to_string(),
+        "  h / ←           Go to parent directory".to_string(),
+        "  l / →           Enter directory".to_string(),
         "  Enter           Open with IDE / copy path".to_string(),
         "".to_string(),
         "── File Operations ──".to_string(),
@@ -401,7 +401,6 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
             "Search from root cache",
         ),
         "  Esc             Exit search mode".to_string(),
-        "  ↑/↓             Search history".to_string(),
         "".to_string(),
         "── View & Sort ──".to_string(),
         "  p               Cycle view mode (Normal/Full/Dual)".to_string(),
@@ -416,7 +415,7 @@ fn keybinding_help_text_lines(keymap: &KeymapSettings) -> Vec<String> {
         "  Shift+M         Move to other pane".to_string(),
         "".to_string(),
         "── General ──".to_string(),
-        "  q               Quit / Close popup".to_string(),
+        "  q / Ctrl-C      Quit / Close popup".to_string(),
     ]
 }
 
@@ -511,7 +510,7 @@ mod tests {
         assert!(lines.contains(&"  f or i          Search current directory".to_string()));
         assert!(lines.contains(&"  / or , + /      Search from root cache".to_string()));
         assert!(!lines.contains(&"  / or i          Search current directory".to_string()));
-        assert!(lines.contains(&"  q               Quit / Close popup".to_string()));
+        assert!(lines.contains(&"  q / Ctrl-C      Quit / Close popup".to_string()));
     }
 
     #[test]

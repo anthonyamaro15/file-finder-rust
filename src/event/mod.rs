@@ -1,10 +1,12 @@
 use std::sync::mpsc;
 
-use ratatui::widgets::ListState;
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::{backend::Backend, widgets::ListState, Terminal};
 
 use crate::{
     app::App,
     directory_store::DirectoryIndex,
+    exit::may_exit,
     file_reader_content::FileContent,
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
@@ -46,4 +48,43 @@ pub enum LoopControl {
     Break,
     /// Return from `main` at once; the handler already restored the terminal.
     Return,
+}
+
+/// Runs before every mode's handler. Ctrl-C quits like `q`; any other Ctrl or Alt
+/// character is swallowed so it never acts as, or types, the plain character.
+/// Shift passes through. Returns `None` for keys the current mode should handle.
+pub fn handle_modifier_key<B: Backend>(
+    key: KeyEvent,
+    loop_state: &mut LoopState,
+    terminal: &mut Terminal<B>,
+) -> Option<LoopControl> {
+    if !matches!(key.code, KeyCode::Char(_))
+        || !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
+    }
+    let LoopState {
+        app,
+        status_bar,
+        copy_receiver,
+        quit_error,
+        ..
+    } = loop_state;
+    if key.code == KeyCode::Char('c')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.kind == KeyEventKind::Press
+        && may_exit(
+            app,
+            status_bar,
+            "Ctrl-C",
+            copy_receiver,
+            terminal,
+            quit_error,
+        )
+    {
+        return Some(LoopControl::Break);
+    }
+    Some(LoopControl::Continue)
 }

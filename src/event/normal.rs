@@ -101,7 +101,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('h') => {
+        KeyCode::Char('h') | KeyCode::Left => {
             // In DualPane mode with right pane active, navigate right pane to parent
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 let current_dir = app.right_pane.current_directory.clone();
@@ -135,7 +135,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('l') => {
+        KeyCode::Char('l') | KeyCode::Right => {
             // In DualPane mode with right pane active, enter directory in right pane
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 if let Some(selected) = app.right_pane.get_selected_path() {
