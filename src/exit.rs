@@ -87,6 +87,25 @@ pub(crate) fn may_exit<B: Backend>(
     true
 }
 
+/// Puts text on the clipboard for the copy actions; tests swap in a fake so they never
+/// touch the real clipboard.
+pub type Clipboard = Box<dyn FnMut(&str) -> Result<(), String>>;
+
+/// The system clipboard, opened on first use and kept open: on X11 the copied text is
+/// only there while ff holds it. Opening fails without a display.
+pub fn system_clipboard() -> Clipboard {
+    let mut opened: Option<ClipboardContext> = None;
+    Box::new(move |text| {
+        let context = match &mut opened {
+            Some(context) => context,
+            None => opened.insert(ClipboardContext::new().map_err(|e| e.to_string())?),
+        };
+        context
+            .set_contents(text.to_owned())
+            .map_err(|e| e.to_string())
+    })
+}
+
 /// Program that opens a file with the system default application.
 pub(crate) fn system_opener() -> &'static str {
     if cfg!(target_os = "macos") {

@@ -25,6 +25,8 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 - Copy to… / Move to… any folder, picked by name like root search (`Shift+C` / `Shift+M`)
 - Toggle hidden files
 - Sort by name, size, or modified date
+- Copy an item's path, name or folder path to the clipboard
+- Command palette (`:`): run any action by typing what it does
 
 ### 🖼️ **View Modes**
 
@@ -261,9 +263,33 @@ with `↑`/`↓` and `Enter` (`Esc` cancels).
 | -------------- | ----------------- |
 | `s`            | Sort options menu |
 | `?`            | Show keybindings  |
+| `:`            | Command palette   |
 | `q` / `Ctrl-C` | Quit              |
 
 Every key above can be rebound; see [Keybindings](#keybindings).
+
+### 🎛️ Command Palette
+
+Press `:` to see every action with its key (the same list as the `?` help) and run one
+without remembering its key. Type to filter by what an action does, such as `hid`,
+`copy` or `trash` (setting names such as `file.trash` work too); the matched letters
+are underlined. Choose with `↑`/`↓`, press `Enter` to run the highlighted action, just
+as its key would, or `Esc` to close.
+
+Some actions have no key until you bind one, so the palette is how you reach them:
+
+| Palette entry           | Copies to the clipboard                      |
+| ----------------------- | -------------------------------------------- |
+| Copy path               | The highlighted item's full path             |
+| Copy name               | Its file or folder name                      |
+| Copy parent folder path | The path of the folder that contains it      |
+
+They act on the active pane's highlighted item, search results included, and the
+status bar says what was copied.
+
+After a key that starts a sequence, such as `Space` (the leader) or `g` (for `gg`),
+pause for a moment and a box at the bottom right lists each key that can follow and
+what it does.
 
 ---
 
@@ -316,6 +342,9 @@ included, with each action's name.
 | `file.compress`  | `z`                 | Compress to ZIP                           |
 | `file.open`      | `o`                 | Open with the system default app          |
 | `file.info`      | `I`                 | Get Info                                  |
+| `copy.path`      | none                | Copy the highlighted item's full path     |
+| `copy.name`      | none                | Copy its file or folder name              |
+| `copy.parent`    | none                | Copy the path of the folder holding it    |
 | `search.current` | `/`, `i`            | Search current directory                  |
 | `search.root`    | `<leader>/`         | Root search                               |
 | `view.cycle`     | `p`                 | Cycle view mode                           |
@@ -323,6 +352,7 @@ included, with each action's name.
 | `view.hidden`    | `.`                 | Toggle hidden files                       |
 | `pane.switch`    | `<Tab>`             | Switch active pane                        |
 | `help`           | `?`                 | Show keybindings                          |
+| `palette`        | `:`                 | Command palette                           |
 | `quit`           | `q`                 | Quit                                      |
 
 Key syntax (names inside `<…>` are case-insensitive):
@@ -352,13 +382,14 @@ leader = " "
 "d" = "none"         # d does nothing
 "<C-d>" = "nav.down"
 "<C-u>" = "nav.up"
+"<leader>c" = "copy.path"   # Space, then c copies the highlighted item's path
 ```
 
 - `"none"` removes a default binding. An action can have several keys.
 - `Ctrl-C` always quits and can't be rebound. Keys inside popups (confirm prompts,
-  the sort menu, text fields, the Copy/Move to… picker, Get Info and the help) and
-  visual mode's `o` and `Esc` are fixed, so a keymap can never lock you out of one;
-  `?` lists them too. In visual mode the rebound `nav.*`, `select.visual`,
+  the sort menu, text fields, the Copy/Move to… picker, Get Info, the palette and the
+  help) and visual mode's `o` and `Esc` are fixed, so a keymap can never lock you out
+  of one; `?` lists them too. In visual mode the rebound `nav.*`, `select.visual`,
   `file.trash` and `file.delete` keys apply.
 - Bad entries (unknown action, bad key, `<C-c>`) never stop ff from starting: they're
   ignored, named in one warning at startup and logged to `~/.config/ff/ff.log`.

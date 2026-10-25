@@ -25,6 +25,9 @@ pub enum Action {
     FileCompress,
     FileOpen,
     FileInfo,
+    CopyPath,
+    CopyName,
+    CopyParent,
     SearchCurrent,
     SearchRoot,
     ViewCycle,
@@ -32,12 +35,13 @@ pub enum Action {
     ViewHidden,
     PaneSwitch,
     Help,
+    Palette,
     Quit,
 }
 
 impl Action {
     /// Every action with its name in settings.toml.
-    pub const ALL: [(Self, &'static str); 27] = [
+    pub const ALL: [(Self, &'static str); 31] = [
         (Self::NavDown, "nav.down"),
         (Self::NavUp, "nav.up"),
         (Self::NavTop, "nav.top"),
@@ -57,6 +61,9 @@ impl Action {
         (Self::FileCompress, "file.compress"),
         (Self::FileOpen, "file.open"),
         (Self::FileInfo, "file.info"),
+        (Self::CopyPath, "copy.path"),
+        (Self::CopyName, "copy.name"),
+        (Self::CopyParent, "copy.parent"),
         (Self::SearchCurrent, "search.current"),
         (Self::SearchRoot, "search.root"),
         (Self::ViewCycle, "view.cycle"),
@@ -64,6 +71,7 @@ impl Action {
         (Self::ViewHidden, "view.hidden"),
         (Self::PaneSwitch, "pane.switch"),
         (Self::Help, "help"),
+        (Self::Palette, "palette"),
         (Self::Quit, "quit"),
     ];
 
@@ -317,8 +325,8 @@ fn default_leader() -> String {
 }
 
 /// Every default Normal-mode key; the README's "Keyboard Shortcuts" and keymap table
-/// list them.
-const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 33] = [
+/// list them. The `copy.*` actions have none until the user binds one.
+const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 34] = [
     ("j", "nav.down"),
     ("<Down>", "nav.down"),
     ("k", "nav.up"),
@@ -351,6 +359,7 @@ const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 33] = [
     (".", "view.hidden"),
     ("<Tab>", "pane.switch"),
     ("?", "help"),
+    (":", "palette"),
     ("q", "quit"),
 ];
 
@@ -563,6 +572,33 @@ mod tests {
     }
 
     #[test]
+    fn the_copy_actions_have_no_default_key_until_one_is_bound() {
+        let unbound = |bindings: &Bindings| -> Vec<&str> {
+            Action::ALL
+                .iter()
+                .filter(|(action, _)| !bindings.normal.iter().any(|(_, bound)| bound == action))
+                .map(|(_, name)| *name)
+                .collect()
+        };
+        let mut settings = KeymapSettings::default();
+        assert_eq!(
+            unbound(&settings.resolve()),
+            ["copy.path", "copy.name", "copy.parent"]
+        );
+
+        settings
+            .normal
+            .insert("<leader>c".into(), "copy.path".into());
+        settings.normal.insert("gy".into(), "copy.name".into());
+        let bindings = settings.resolve();
+        assert_eq!(bound_in(&bindings, "<leader>c"), Some(Action::CopyPath));
+        assert_eq!(bound_in(&bindings, "gy"), Some(Action::CopyName));
+        assert_eq!(bound_in(&bindings, "gg"), Some(Action::NavTop));
+        assert_eq!(unbound(&bindings), ["copy.parent"]);
+        assert!(bindings.ignored.is_empty());
+    }
+
+    #[test]
     fn readme_keymap_table_lists_every_action_with_its_default_keys() {
         let readme = include_str!("../../README.md");
         let rows: Vec<&str> = readme
@@ -574,12 +610,23 @@ mod tests {
             })
             .collect();
         assert_eq!(rows.len(), Action::ALL.len(), "{rows:#?}");
-        for (key, name) in DEFAULT_NORMAL_KEYMAP {
-            let row = rows
-                .iter()
+        let row = |name: &str| {
+            rows.iter()
                 .find(|row| row.starts_with(&format!("| `{name}` ")))
-                .unwrap_or_else(|| panic!("{name} has no README row"));
-            assert!(row.contains(&format!("`{key}`")), "{name}: {key}");
+                .unwrap_or_else(|| panic!("{name} has no README row"))
+        };
+        for (key, name) in DEFAULT_NORMAL_KEYMAP {
+            assert!(row(name).contains(&format!("`{key}`")), "{name}: {key}");
+        }
+        // An action without a default key says so in its "Default keys" cell.
+        for (_, name) in Action::ALL {
+            if !DEFAULT_NORMAL_KEYMAP
+                .iter()
+                .any(|(_, bound)| *bound == name)
+            {
+                let default_keys = row(name).split('|').nth(2).unwrap_or_default();
+                assert_eq!(default_keys.trim(), "none", "{name}");
+            }
         }
     }
 }

@@ -15,12 +15,12 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 
 use crate::{
-    app::{App, InputMode, PanePosition, SearchScope, TransferKind, ViewMode},
+    app::{App, InputMode, Palette, PanePosition, SearchScope, TransferKind, ViewMode},
     config::Action,
     event::{
         file_actions::{
-            containing_directory_or_current, current_refresh_directory, enter_directory,
-            rename_target,
+            containing_directory, containing_directory_or_current, current_refresh_directory,
+            enter_directory, rename_target,
         },
         keymap::{pressed_key_label, KeymapRuntime},
         navigation::{
@@ -30,11 +30,15 @@ use crate::{
         transfer::{open_folder_picker, start_transfer},
         LoopControl, LoopState,
     },
-    exit::{may_exit, system_opener, write_result_file},
+    exit::{may_exit, system_opener, write_result_file, Clipboard},
     file_reader_content::{FileContent, FileType},
     info::ItemInfo,
     operations::{compress, copy_dir_file_with_progress_cancellable},
-    utils::{generate_copy_file_dir_name, get_curr_path, get_file_path_data, is_file},
+    status_bar::StatusBar,
+    utils::{
+        format::format_path_for_display, generate_copy_file_dir_name, get_curr_path,
+        get_file_path_data, is_file,
+    },
 };
 
 /// Handle a key in Normal mode and tell the main loop how to go on.
@@ -42,6 +46,28 @@ pub fn handle_normal_key(
     key: KeyEvent,
     loop_state: &mut LoopState,
     keymap_runtime: &mut KeymapRuntime,
+    terminal: &mut Terminal<CrosstermBackend<impl io::Write>>,
+    fallback_start_path: &str,
+) -> io::Result<LoopControl> {
+    let Some(action) = keymap_runtime.resolve_normal(key) else {
+        return Ok(LoopControl::Continue);
+    };
+    run_action(
+        action,
+        &pressed_key_label(key),
+        loop_state,
+        terminal,
+        fallback_start_path,
+    )
+}
+
+/// Do what `action`'s key does in Normal mode, whether pressed or run from the palette,
+/// and tell the main loop how to go on. `key_label` names the key in "press … again to
+/// quit anyway".
+pub fn run_action(
+    action: Action,
+    key_label: &str,
+    loop_state: &mut LoopState,
     terminal: &mut Terminal<CrosstermBackend<impl io::Write>>,
     fallback_start_path: &str,
 ) -> io::Result<LoopControl> {
@@ -54,13 +80,9 @@ pub fn handle_normal_key(
         copy_receiver,
         selected_file,
         quit_error,
+        clipboard,
         ..
     } = loop_state;
-    let Some(action) = keymap_runtime.resolve_normal(key) else {
-        return Ok(LoopControl::Continue);
-    };
-    // Names the key in "press … again to quit anyway".
-    let key_label = pressed_key_label(key);
 
     match action {
         Action::SearchCurrent => {
@@ -77,7 +99,7 @@ pub fn handle_normal_key(
             if may_exit(
                 app,
                 status_bar,
-                &key_label,
+                key_label,
                 copy_receiver,
                 terminal,
                 quit_error,
@@ -159,7 +181,7 @@ pub fn handle_normal_key(
                 if !may_exit(
                     app,
                     status_bar,
-                    &key_label,
+                    key_label,
                     copy_receiver,
                     terminal,
                     quit_error,
@@ -372,6 +394,17 @@ pub fn handle_normal_key(
             app.input_mode = InputMode::WatchKeyBinding;
         }
 
+        Action::Palette => {
+            app.palette = Palette::default();
+            app.input_mode = InputMode::Palette;
+        }
+
+        Action::CopyPath | Action::CopyName | Action::CopyParent => {
+            if let Some(selected) = app.active_selected_path(state.selected()) {
+                copy_to_clipboard(action, &selected, clipboard, status_bar);
+            }
+        }
+
         Action::FileInfo => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Read-only, so it never waits for (or blocks) a running operation.
@@ -396,7 +429,7 @@ pub fn handle_normal_key(
                 if !may_exit(
                     app,
                     status_bar,
-                    &key_label,
+                    key_label,
                     copy_receiver,
                     terminal,
                     quit_error,
@@ -439,6 +472,40 @@ pub fn handle_normal_key(
         }
     }
     Ok(LoopControl::Continue)
+}
+
+/// Put the highlighted item's path, name or folder's path on the clipboard, and say
+/// in the status bar what was copied or why it couldn't be.
+fn copy_to_clipboard(
+    action: Action,
+    selected: &str,
+    clipboard: &mut Clipboard,
+    status_bar: &mut StatusBar,
+) {
+    let path = Path::new(selected);
+    let (what, text) = match action {
+        Action::CopyName => (
+            "name",
+            path.file_name()
+                .map_or(selected.into(), |name| name.to_string_lossy().into_owned()),
+        ),
+        Action::CopyParent => (
+            "folder path",
+            containing_directory(path).to_string_lossy().into_owned(),
+        ),
+        _ => ("path", selected.to_string()),
+    };
+    match clipboard(&text) {
+        Ok(()) => {
+            let shown = if action == Action::CopyName {
+                text
+            } else {
+                format_path_for_display(&text, 60)
+            };
+            status_bar.show_info(format!("Copied {what}: {shown}"), None);
+        }
+        Err(e) => status_bar.show_error(format!("Couldn't copy the {what}: {e}"), None),
+    }
 }
 
 /// Move the active pane's highlight: `nav.down`/`nav.up` by a row, wrapping around

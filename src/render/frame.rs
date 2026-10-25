@@ -1,6 +1,6 @@
 //! Drawing one frame of the main screen.
 
-use std::io;
+use std::{io, time::Instant};
 
 use ratatui::{
     backend::CrosstermBackend,
@@ -15,13 +15,15 @@ use ratatui_image::StatefulImage;
 use crate::{
     app::{InputMode, ViewMode},
     config::Settings,
-    event::LoopState,
+    event::{keymap::KeymapRuntime, LoopState},
     file_reader_content::FileType,
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_rename_input_popup, create_sort_options_popup, draw_input_popup, draw_popup,
         input_popup_cursor_position,
-        popups::{draw_delete_popup, render_batch_confirmation_popup},
+        popups::{
+            draw_delete_popup, render_batch_confirmation_popup, render_palette, render_which_key,
+        },
         render_folder_picker, render_info_popup, render_keybindings_popup,
         split_popup_area_vertical,
     },
@@ -30,7 +32,8 @@ use crate::{
 };
 
 /// Draw the frame, lending the image and right-pane list states to the widgets. The
-/// hints name the live quit and search keys.
+/// hints name the live quit and search keys; `keymap_runtime` says when a sequence is
+/// waiting for its next key.
 pub fn draw(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     loop_state: &mut LoopState,
@@ -38,6 +41,7 @@ pub fn draw(
     widgets_ui: &Ui,
     exit_hint: &str,
     find_hint: &str,
+    keymap_runtime: &KeymapRuntime,
 ) -> io::Result<()> {
     let LoopState {
         app,
@@ -113,6 +117,10 @@ pub fn draw(
             InputMode::WatchInfo => (vec!["Get Info".bold()], OneDarkTheme::info()),
             InputMode::PickFolder => (
                 vec!["Pick a folder (Enter to confirm, Esc to cancel)".bold()],
+                OneDarkTheme::info(),
+            ),
+            InputMode::Palette => (
+                vec!["Run an action (Enter to run, Esc to close)".bold()],
                 OneDarkTheme::info(),
             ),
             InputMode::CacheLoading => {
@@ -500,6 +508,15 @@ pub fn draw(
             InputMode::WatchInfo => {
                 if let Some(info) = &app.info {
                     render_info_popup(f, &info.rows);
+                }
+            }
+            InputMode::Palette => {
+                app.palette.scroll =
+                    render_palette(f, &app.palette, &settings.keymap, &app.theme_colors);
+            }
+            InputMode::Normal | InputMode::Visual => {
+                if let Some((title, keys)) = keymap_runtime.which_key(Instant::now()) {
+                    render_which_key(f, &title, &keys, &app.theme_colors);
                 }
             }
             _ => {}

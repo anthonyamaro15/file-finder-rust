@@ -1,20 +1,22 @@
 //! Popup rendering utilities and widget builders.
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
     Frame,
 };
 
-use crate::app::FolderPicker;
+use crate::app::{FolderPicker, Palette};
 use crate::config::{
     keymap::{key_label, Bindings},
-    Action, KeySequence, KeymapSettings,
+    Action, KeySequence, KeymapSettings, ThemeColors,
 };
+use crate::event::palette::palette_matches;
 use crate::theme::OneDarkTheme;
 use crate::utils::format::replace_home_with_tilde;
 use crate::utils::{format_file_size, SortBy, SortType};
@@ -397,8 +399,9 @@ pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> 
 }
 
 /// The help's sections: each action and what it does. Copy to/Move to appear twice
-/// because Dual Pane mode sends the item to the other pane instead.
-const HELP_SECTIONS: [(&str, &[(Action, &str)]); 7] = [
+/// because Dual Pane mode sends the item to the other pane instead. The palette lists
+/// the same actions under the same groups.
+const HELP_SECTIONS: [(&str, &[(Action, &str)]); 8] = [
     (
         "Navigation",
         &[
@@ -425,6 +428,14 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 7] = [
             (Action::FileCompress, "Compress to ZIP archive"),
             (Action::FileOpen, "Open with system default"),
             (Action::FileInfo, "Get Info (size, dates, permissions)"),
+        ],
+    ),
+    (
+        "Clipboard",
+        &[
+            (Action::CopyPath, "Copy path"),
+            (Action::CopyName, "Copy name"),
+            (Action::CopyParent, "Copy parent folder path"),
         ],
     ),
     (
@@ -463,7 +474,11 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 7] = [
     ),
     (
         "General",
-        &[(Action::Help, "Show this help"), (Action::Quit, "Quit")],
+        &[
+            (Action::Help, "Show this help"),
+            (Action::Palette, "Command palette: run any action"),
+            (Action::Quit, "Quit"),
+        ],
     ),
 ];
 
@@ -476,7 +491,7 @@ const FIXED_KEYS: [(&str, &str); 12] = [
     ("q or Esc", "Close the sort menu"),
     ("Enter / Esc", "Text field: confirm / leave"),
     ("← → Backspace", "Text field: move the cursor / delete"),
-    ("↑ / ↓", "Copy to… / Move to…: choose a folder"),
+    ("↑ / ↓", "Palette, Copy to… / Move to…: choose"),
     ("Esc, q or I", "Close Get Info"),
     ("j k ↑ ↓", "Scroll this help (and PageUp/PageDown)"),
     ("Esc, q or ?", "Close this help"),
@@ -572,7 +587,7 @@ pub fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> 
 }
 
 /// Plain characters first, then named keys, Ctrl chords and leader sequences.
-fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
+pub(crate) fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
     let mut key_labels: Vec<(u8, String)> = bindings
         .normal
         .iter()
@@ -608,25 +623,311 @@ fn format_key_sequence(sequence: &KeySequence, leader: &str) -> String {
     }
 }
 
-/// One help row: the keys, what the action does, and its settings.toml name, dimmed.
+/// One help row: the keys ("no key", dimmed, for an unbound action), what the action
+/// does, and its settings.toml name, dimmed.
 fn keybinding_help_row(
     keys: &str,
     description: &str,
     (key_width, width): (usize, usize),
     action: Action,
 ) -> Line<'static> {
+    let key_style = if keys == NO_KEY {
+        OneDarkTheme::dotfile()
+    } else {
+        Style::default()
+    };
     Line::from(vec![
-        Span::raw(format!("  {keys:<key_width$} {description:<width$}  ")),
+        Span::raw("  "),
+        Span::styled(format!("{keys:<key_width$}"), key_style),
+        Span::raw(format!(" {description:<width$}  ")),
         Span::styled(action.name(), OneDarkTheme::dotfile()),
     ])
 }
 
+/// Shown in place of the keys of an action nothing is bound to.
+const NO_KEY: &str = "no key";
+
 fn key_text(keys: &[String]) -> String {
     if keys.is_empty() {
-        "Unbound".to_string()
+        NO_KEY.to_string()
     } else {
         keys.join(" or ")
     }
+}
+
+/// Every action the palette offers, once each in the help's order, with what it does
+/// and its group: all but the motions and the palette itself.
+pub fn palette_actions() -> Vec<(Action, &'static str, &'static str)> {
+    let mut listed = HashSet::new();
+    HELP_SECTIONS
+        .iter()
+        .flat_map(|(group, rows)| {
+            rows.iter()
+                .map(move |(action, description)| (*action, *description, *group))
+        })
+        .filter(|(action, ..)| {
+            let motion = matches!(
+                action,
+                Action::NavDown | Action::NavUp | Action::NavTop | Action::NavBottom
+            );
+            !motion && *action != Action::Palette && listed.insert(*action)
+        })
+        .collect()
+}
+
+/// What `action` does, as the help first describes it.
+pub fn action_description(action: Action) -> &'static str {
+    HELP_SECTIONS
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .find(|(listed, _)| *listed == action)
+        .map_or("", |(_, description)| description)
+}
+
+/// Most matching actions the palette shows at once; it scrolls through the rest.
+const PALETTE_ROWS: usize = 12;
+
+/// Draw the command palette near the top: the typed filter and how many actions match,
+/// then the matches, each with its keys from the live keymap and its group, scrolled
+/// from `palette.scroll` just enough to show the highlight. Returns the scroll used.
+pub fn render_palette(
+    f: &mut Frame,
+    palette: &Palette,
+    keymap: &KeymapSettings,
+    theme: &ThemeColors,
+) -> usize {
+    let actions = palette_actions();
+    let matches = palette_matches(&palette.query);
+    let bindings = keymap.resolve();
+    let screen = f.size();
+    // Inside the borders: the prompt, a divider, the rows, a blank line and the footer.
+    // The box starts 2 rows down and leaves 2 free at the bottom.
+    let rows = PALETTE_ROWS
+        .min(actions.len())
+        .min(usize::from(screen.height.saturating_sub(10)));
+    let width = screen.width.saturating_sub(2).min(72);
+    let area = Rect {
+        x: screen.x + (screen.width - width) / 2,
+        y: screen.y + 2,
+        width,
+        height: u16::try_from(rows + 6).unwrap_or(u16::MAX),
+    }
+    .intersection(screen);
+    let inner = usize::from(width.saturating_sub(2));
+
+    let blue = Style::default().fg(theme.blue).add_modifier(Modifier::BOLD);
+    let hint = Style::default().fg(theme.light_gray);
+    let count = format!("{} of {} actions ", matches.len(), actions.len());
+    // Show the end of a query too long for the prompt, which leaves room for the cursor.
+    let room = inner.saturating_sub(count.chars().count() + 4);
+    let typed = palette.query.chars().count();
+    let query: String = palette
+        .query
+        .chars()
+        .skip(typed.saturating_sub(room))
+        .collect();
+    let query_width = query.chars().count();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(" › ", blue),
+            Span::styled(query, Style::default().fg(Color::White)),
+            Span::raw(" ".repeat(inner.saturating_sub(query_width + 3 + count.chars().count()))),
+            Span::styled(count, hint),
+        ]),
+        Line::styled("─".repeat(inner), Style::default().fg(theme.gray)),
+    ];
+
+    // Columns: "▌ ", the description, the key chips, the group and a margin.
+    let group_width = actions
+        .iter()
+        .map(|(.., group)| group.chars().count())
+        .max()
+        .unwrap_or(0);
+    let key_width = 11;
+    let description_width = inner.saturating_sub(group_width + key_width + 6);
+    let selected = palette.selected.min(matches.len().saturating_sub(1));
+    let scroll = if rows == 0 {
+        0
+    } else {
+        palette
+            .scroll
+            .min(selected)
+            .max((selected + 1).saturating_sub(rows))
+            .min(matches.len().saturating_sub(rows))
+    };
+    for (i, found) in matches.iter().enumerate().skip(scroll).take(rows) {
+        let base = if i == selected {
+            Style::default().bg(theme.selection)
+        } else {
+            Style::default()
+        };
+        let text = base.fg(if i == selected {
+            Color::White
+        } else {
+            theme.fg
+        });
+        let mut spans = vec![Span::styled(
+            if i == selected { "▌ " } else { "  " },
+            base.fg(theme.blue),
+        )];
+        let description: String = found.description.chars().take(description_width).collect();
+        let shown = description.chars().count();
+        spans.extend(underline_matches(
+            &description,
+            &found.positions,
+            text,
+            base.patch(blue).add_modifier(Modifier::UNDERLINED),
+        ));
+        spans.push(Span::styled(
+            " ".repeat(description_width - shown + 1),
+            base,
+        ));
+        let keys = action_key_labels(&bindings, found.action);
+        let chips_width: usize = keys.iter().map(|key| key.chars().count() + 3).sum();
+        let keys = if chips_width > key_width + 1 {
+            &keys[..1]
+        } else {
+            &keys[..]
+        };
+        let mut used = 0;
+        let chip = Style::default()
+            .bg(theme.gray)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        for key in keys {
+            if used > 0 {
+                spans.push(Span::styled(" ", base));
+                used += 1;
+            }
+            let label: String = key.chars().take(key_width - used - 2).collect();
+            used += label.chars().count() + 2;
+            spans.push(Span::styled(format!(" {label} "), chip));
+        }
+        if keys.is_empty() {
+            spans.push(Span::styled(NO_KEY, base.fg(theme.gray)));
+            used = NO_KEY.len();
+        }
+        spans.push(Span::styled(
+            format!(
+                "{:pad$} {:>group_width$}  ",
+                "",
+                found.group,
+                pad = key_width - used
+            ),
+            base.fg(theme.light_gray),
+        ));
+        lines.push(Line::from(spans));
+    }
+    if matches.is_empty() && rows > 0 {
+        lines.push(Line::styled(
+            "  No action matches",
+            Style::default().fg(theme.gray),
+        ));
+    }
+    lines.resize(rows + 3, Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("⏎", blue),
+        Span::styled(" run   ", hint),
+        Span::styled("↑/↓", blue),
+        Span::styled(" choose   ", hint),
+        Span::styled("Esc", blue),
+        Span::styled(" close", hint),
+    ]));
+
+    let popup = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(Style::default().fg(theme.blue))
+            .title(Span::styled(" Run an action ", blue)),
+    );
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
+    let cursor =
+        (usize::from(area.x) + 4 + query_width).min(usize::from(area.right()).saturating_sub(2));
+    f.set_cursor(u16::try_from(cursor).unwrap_or(area.x), area.y + 1);
+    scroll
+}
+
+/// `text` as spans, the characters at `positions` in `matched` style and the rest in
+/// `style`.
+fn underline_matches(
+    text: &str,
+    positions: &[usize],
+    style: Style,
+    matched: Style,
+) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (i, c) in text.chars().enumerate() {
+        let is_matched = positions.contains(&i);
+        if is_matched != run_matched && !run.is_empty() {
+            let run_style = if run_matched { matched } else { style };
+            spans.push(Span::styled(std::mem::take(&mut run), run_style));
+        }
+        run_matched = is_matched;
+        run.push(c);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_matched { matched } else { style }));
+    }
+    spans
+}
+
+/// Draw the box naming each key that can follow `title`'s key and what it does, near
+/// the bottom right, above the status bar.
+pub fn render_which_key(
+    f: &mut Frame,
+    title: &str,
+    keys: &[(String, Action)],
+    theme: &ThemeColors,
+) {
+    let blue = Style::default().fg(theme.blue).add_modifier(Modifier::BOLD);
+    let key_width = keys
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let lines: Vec<Line> = keys
+        .iter()
+        .map(|(key, action)| {
+            Line::from(vec![
+                Span::styled(format!("{key:<key_width$}  "), blue),
+                Span::styled(action_description(*action), Style::default().fg(theme.fg)),
+            ])
+        })
+        .collect();
+    // Borders and padding take 4 columns and 4 rows.
+    let width = lines
+        .iter()
+        .map(Line::width)
+        .max()
+        .unwrap_or(0)
+        .max(title.chars().count() + 2)
+        + 4;
+    let width = u16::try_from(width).unwrap_or(u16::MAX);
+    let height = u16::try_from(lines.len() + 4).unwrap_or(u16::MAX);
+    let screen = f.size();
+    // Two columns in from the right, above the status bar's 3 rows and the margin.
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width + 2),
+        y: screen.y + screen.height.saturating_sub(height + 4),
+        width,
+        height,
+    }
+    .intersection(screen);
+    let popup = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(Style::default().fg(theme.blue))
+            .padding(Padding::uniform(1))
+            .title(Span::styled(format!(" {title} "), blue)),
+    );
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
 }
 
 /// Split an area for vertical popup content with margins.
@@ -744,10 +1045,42 @@ mod tests {
         );
         assert!(lines.contains(&"  Esc             Visual mode: cancel the selection".to_string()));
         assert!(lines.contains(&"  Ctrl-C          Quit (always)".to_string()));
-        assert!(!lines.iter().any(|line| line.contains("Unbound")));
+        assert!(lines.contains(&"── Clipboard ──".to_string()));
+        assert!(has_row(&lines, "no key", "Copy path", "copy.path"));
+        assert!(has_row(&lines, "no key", "Copy name", "copy.name"));
+        assert!(has_row(
+            &lines,
+            "no key",
+            "Copy parent folder path",
+            "copy.parent"
+        ));
+        assert!(has_row(
+            &lines,
+            ":",
+            "Command palette: run any action",
+            "palette"
+        ));
+        // Only the copy actions have no key.
+        let unbound = lines.iter().filter(|line| line.contains("no key")).count();
+        assert_eq!(unbound, 3);
         for (_, name) in Action::ALL {
             assert!(lines.iter().any(|line| line.ends_with(name)), "{name}");
         }
+    }
+
+    #[test]
+    fn keybinding_help_dims_no_key() {
+        let lines = keybinding_help_lines(&KeymapSettings::default());
+        let row = lines
+            .iter()
+            .find(|line| {
+                line.spans
+                    .last()
+                    .is_some_and(|span| span.content == "copy.path")
+            })
+            .unwrap();
+        let keys = row.spans.iter().find(|span| span.content.trim() == NO_KEY);
+        assert_eq!(keys.unwrap().style, OneDarkTheme::dotfile());
     }
 
     #[test]
@@ -762,6 +1095,7 @@ mod tests {
             ("<C-d>", "nav.down"),
             ("q", "none"),
             ("<C-w>j", "nav.top"),
+            ("<leader>c", "copy.path"),
         ] {
             settings.normal.insert(key.to_string(), action.to_string());
         }
@@ -787,7 +1121,8 @@ mod tests {
             "search.root"
         ));
         assert!(has_row(&lines, "j or ↓ or Ctrl-d", "Move down", "nav.down"));
-        assert!(has_row(&lines, "Unbound", "Quit", "quit"));
+        assert!(has_row(&lines, "no key", "Quit", "quit"));
+        assert!(has_row(&lines, ", + c", "Copy path", "copy.path"));
         // Long custom keys widen the key column instead of shifting their row.
         assert_eq!(column(&lines, "Move down"), column(&lines, "Move up"));
         assert_eq!(column(&lines, "Move down"), column(&lines, "Quit (always)"));
@@ -835,6 +1170,150 @@ mod tests {
         assert_eq!(scroll, 0);
         assert!(all.contains("Keybindings (Esc to close)"));
         assert!(all.contains("── Navigation ──") && all.contains("Quit (always)"));
+    }
+
+    fn theme() -> ThemeColors {
+        crate::config::Theme::default().to_colors().unwrap()
+    }
+
+    /// Draw the palette for `query` with `selected` highlighted after `scroll`; the
+    /// screen's rows, the buffer and the scroll it used.
+    fn palette_screen(
+        keymap: &KeymapSettings,
+        query: &str,
+        (selected, scroll): (usize, usize),
+        height: u16,
+    ) -> (Vec<String>, ratatui::buffer::Buffer, usize) {
+        use ratatui::{backend::TestBackend, Terminal};
+        let palette = Palette {
+            query: query.into(),
+            selected,
+            scroll,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, height)).unwrap();
+        let mut used = 0;
+        terminal
+            .draw(|f| used = render_palette(f, &palette, keymap, &theme()))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rows = buffer
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+        (rows, buffer, used)
+    }
+
+    #[test]
+    fn palette_shows_the_count_and_each_match_with_its_live_keys_and_group() {
+        let mut keymap = KeymapSettings::default();
+        keymap.normal.insert("H".into(), "view.hidden".into());
+        keymap.normal.insert(".".into(), "none".into());
+        let (rows, buffer, _) = palette_screen(&keymap, "hid", (0, 0), 30);
+        let screen = rows.join("\n");
+
+        assert!(rows[2].contains("╭ Run an action ─"), "{screen}");
+        assert!(rows[3].contains("› hid") && rows[3].contains("1 of 26 actions"));
+        assert!(rows[4].contains("────"));
+        let row = &rows[5];
+        assert!(row.contains("▌ Toggle hidden files"), "{row}");
+        assert!(row.contains(" Shift+H ") && !row.contains(" . "), "{row}");
+        assert!(row.trim_end().ends_with("View & Sort  │"), "{row}");
+        assert!(screen.contains("⏎ run   ↑/↓ choose   Esc close"));
+        // The box fits 12 rows whatever matches, so it doesn't jump while typing.
+        assert!(
+            rows[18].contains("⏎ run") && rows[19].contains("╰"),
+            "{screen}"
+        );
+        // Exactly the matched letters are underlined.
+        let underlined: String = (0..100)
+            .map(|x| buffer.get(x, 5))
+            .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED))
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(underlined, "hid");
+
+        let (rows, ..) = palette_screen(&KeymapSettings::default(), "", (0, 0), 30);
+        let screen = rows.join("\n");
+        assert!(screen.contains("26 of 26 actions"), "{screen}");
+        // Every key when they fit, the first otherwise.
+        assert!(rows[5].contains("▌ Go to parent directory") && rows[5].contains(" h   ← "));
+        let (rows, ..) = palette_screen(&KeymapSettings::default(), "root", (0, 0), 30);
+        assert!(rows[5].contains("Search from root cache") && rows[5].contains(" Space + / "));
+        let (rows, ..) = palette_screen(&KeymapSettings::default(), "adjacent", (0, 0), 30);
+        assert!(rows[5].contains(" Shift+V ") && !rows[5].contains(" v "));
+
+        let (rows, ..) = palette_screen(&KeymapSettings::default(), "copy p", (0, 0), 30);
+        assert!(rows[5].contains("Copy path") && rows[5].contains("no key"));
+        assert!(rows[5].contains("Clipboard"));
+        assert!(rows[6].contains("Copy parent folder path") && rows[6].contains("no key"));
+
+        let (rows, ..) = palette_screen(&KeymapSettings::default(), "zzz", (0, 0), 30);
+        assert!(rows[3].contains("0 of 26 actions") && rows[5].contains("No action matches"));
+    }
+
+    #[test]
+    fn palette_scrolls_only_as_far_as_keeps_the_highlight_in_view() {
+        let keymap = KeymapSettings::default();
+        let highlighted = |rows: &[String]| {
+            rows.iter()
+                .find(|row| row.contains('▌'))
+                .map(|row| row.split("▌ ").nth(1).unwrap()[..20].to_string())
+        };
+
+        let (rows, _, scroll) = palette_screen(&keymap, "", (20, 0), 30);
+        assert_eq!(scroll, 9);
+        assert_eq!(highlighted(&rows).as_deref(), Some("Cycle view mode (Nor"));
+        assert!(rows[16].contains("▌"));
+        // Moving back up inside the view doesn't scroll it.
+        let (rows, _, scroll) = palette_screen(&keymap, "", (15, 9), 30);
+        assert_eq!(scroll, 9);
+        assert!(rows[11].contains("▌"));
+        let (_, _, scroll) = palette_screen(&keymap, "", (3, 9), 30);
+        assert_eq!(scroll, 3);
+        // A short terminal shows fewer rows.
+        let (rows, _, scroll) = palette_screen(&keymap, "", (25, 0), 16);
+        assert_eq!(scroll, 20);
+        assert!(rows.iter().any(|row| row.contains("▌ Quit")));
+        assert!(rows[12].contains("⏎ run"), "{rows:#?}");
+    }
+
+    #[test]
+    fn which_key_box_names_each_next_key_near_the_bottom_right() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let keys = [
+            ("/".to_string(), Action::SearchRoot),
+            ("c".to_string(), Action::CopyPath),
+        ];
+        terminal
+            .draw(|f| render_which_key(f, "Space …", &keys, &theme()))
+            .unwrap();
+        let rows: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect();
+
+        assert!(
+            rows[20].ends_with("╭ Space … ──────────────────╮  "),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[22].ends_with("│ /  Search from root cache │  "),
+            "{rows:#?}"
+        );
+        assert!(
+            rows[23].ends_with("│ c  Copy path              │  "),
+            "{rows:#?}"
+        );
+        // Just above the status bar's 3 rows and the margin.
+        assert!(
+            rows[25].ends_with("╰───────────────────────────╯  "),
+            "{rows:#?}"
+        );
     }
 
     #[test]

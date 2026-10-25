@@ -191,6 +191,7 @@ impl StatusBar {
             InputMode::PickFolder => ("PICK", theme.blue),
             InputMode::WatchInfo => ("INFO", theme.cyan),
             InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
+            InputMode::Palette => ("PALETTE", theme.blue),
         }
     }
 
@@ -369,6 +370,7 @@ impl StatusBar {
             InputMode::PickFolder => ("PCK", theme.blue),
             InputMode::WatchInfo => ("INFO", theme.cyan),
             InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
+            InputMode::Palette => ("PAL", theme.blue),
         }
     }
 
