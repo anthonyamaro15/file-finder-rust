@@ -292,10 +292,19 @@ impl DirectoryIndex {
 
     /// ff created, copied, moved, extracted or deleted `path`: re-read it and save.
     pub fn changed(&mut self, path: &Path) {
-        if self.is_refreshing() {
-            self.changed_during_refresh.push(path.to_path_buf());
+        self.changed_all([path]);
+    }
+
+    /// ff changed each of `paths`: re-read them, then save once.
+    pub fn changed_all<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
+        let mut changed = false;
+        for path in paths {
+            if self.is_refreshing() {
+                self.changed_during_refresh.push(path.to_path_buf());
+            }
+            changed |= self.resync(path);
         }
-        if self.resync(path) {
+        if changed {
             self.save();
         }
     }

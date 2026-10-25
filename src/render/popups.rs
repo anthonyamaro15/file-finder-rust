@@ -145,6 +145,60 @@ pub fn create_delete_confirmation_popup<'a>(
         .centered()
 }
 
+/// Draw a selection's Trash or permanent-delete prompt: how many items, the first few
+/// names (folders end in `/`) and how many more, sized to fit.
+pub fn render_batch_confirmation_popup(f: &mut Frame, targets: &[String], to_trash: bool) {
+    const SHOWN: usize = 5;
+    let count = match targets.len() {
+        1 => "1 item".to_string(),
+        n => format!("{n} items"),
+    };
+    let mut content = vec![
+        Line::from(""),
+        Line::from(if to_trash {
+            format!("Move {count} to Trash?")
+        } else {
+            format!("Permanently delete {count}?")
+        }),
+    ];
+    for target in targets.iter().take(SHOWN) {
+        let path = Path::new(target);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let slash = if path.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            "/"
+        } else {
+            ""
+        };
+        content.push(Line::from(format!("{name}{slash}")));
+    }
+    if targets.len() > SHOWN {
+        content.push(Line::from(format!("and {} more", targets.len() - SHOWN)));
+    }
+    if !to_trash {
+        content.push(Line::from("This can't be undone."));
+    }
+    content.push(Line::from(""));
+    content.push(Line::from("Press 'y' to confirm, 'n' to cancel"));
+
+    let height = u16::try_from(content.len() + 2).unwrap_or(u16::MAX);
+    let area = draw_fixed_height_popup(f.size(), 60, 50, height);
+    let popup = Paragraph::new(content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_set(border::ROUNDED)
+                .title(if to_trash {
+                    "Move to Trash"
+                } else {
+                    "Permanent Delete"
+                })
+                .style(OneDarkTheme::error()),
+        )
+        .centered();
+    f.render_widget(Clear, area);
+    f.render_widget(popup, area);
+}
+
 /// Create the create file/dir input popup widget.
 /// Shows "Create Folder" if input ends with `/`, or "Create File" otherwise.
 pub fn create_create_input_popup<'a>(
@@ -344,12 +398,14 @@ pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> 
 
 /// The help's sections: each action and what it does. Copy to/Move to appear twice
 /// because Dual Pane mode sends the item to the other pane instead.
-const HELP_SECTIONS: [(&str, &[(Action, &str)]); 6] = [
+const HELP_SECTIONS: [(&str, &[(Action, &str)]); 7] = [
     (
         "Navigation",
         &[
             (Action::NavDown, "Move down"),
             (Action::NavUp, "Move up"),
+            (Action::NavTop, "Go to the first item"),
+            (Action::NavBottom, "Go to the last item"),
             (Action::NavParent, "Go to parent directory"),
             (Action::NavEnter, "Enter directory"),
             (Action::NavChoose, "Open with IDE / copy path"),
@@ -369,6 +425,17 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 6] = [
             (Action::FileCompress, "Compress to ZIP archive"),
             (Action::FileOpen, "Open with system default"),
             (Action::FileInfo, "Get Info (size, dates, permissions)"),
+        ],
+    ),
+    (
+        "Visual Mode",
+        &[
+            (
+                Action::SelectVisual,
+                "Select adjacent items; move to extend",
+            ),
+            (Action::FileTrash, "Move the selected items to Trash"),
+            (Action::FileDelete, "Permanently delete the selected items"),
         ],
     ),
     (
@@ -400,9 +467,11 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 6] = [
     ),
 ];
 
-/// Keys inside popups, fixed so a keymap can never lock you out of one.
-const FIXED_KEYS: [(&str, &str); 10] = [
+/// Keys inside popups and visual mode, fixed so a keymap can never lock you out of one.
+const FIXED_KEYS: [(&str, &str); 12] = [
     ("y / n or Esc", "Trash/Delete prompt: confirm / cancel"),
+    ("o", "Visual mode: swap the selection's ends"),
+    ("Esc", "Visual mode: cancel the selection"),
     ("n s t / a d", "Sort menu: name, size, date / ASC, DESC"),
     ("q or Esc", "Close the sort menu"),
     ("Enter / Esc", "Text field: confirm / leave"),
@@ -489,7 +558,7 @@ fn keybinding_help_lines(keymap: &KeymapSettings) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(
-        "── Popup keys (can't be rebound) ──",
+        "── Fixed keys (can't be rebound) ──",
         OneDarkTheme::info(),
     ));
     for (keys, description) in FIXED_KEYS {
@@ -510,7 +579,7 @@ fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
         .filter(|(_, bound)| *bound == action)
         .map(|(sequence, _)| {
             let rank = match sequence {
-                KeySequence::Leader(_) => 3,
+                KeySequence::Leader(_) | KeySequence::Pair(..) => 3,
                 KeySequence::Single(key) if key.starts_with("<C-") => 2,
                 KeySequence::Single(key) if key.chars().count() > 1 => 1,
                 KeySequence::Single(_) => 0,
@@ -527,6 +596,15 @@ fn format_key_sequence(sequence: &KeySequence, leader: &str) -> String {
     match sequence {
         KeySequence::Leader(key) => format!("{} + {}", key_label(leader), key_label(key)),
         KeySequence::Single(key) => key_label(key),
+        // "gg", or "Ctrl-w j" when a key's label is longer than one character.
+        KeySequence::Pair(first, second) => {
+            let (first, second) = (key_label(first), key_label(second));
+            if first.chars().count() == 1 && second.chars().count() == 1 {
+                format!("{first}{second}")
+            } else {
+                format!("{first} {second}")
+            }
+        }
     }
 }
 
@@ -635,6 +713,36 @@ mod tests {
             "file.copy_to"
         ));
         assert!(has_row(&lines, "Tab", "Switch active pane", "pane.switch"));
+        assert!(has_row(&lines, "gg", "Go to the first item", "nav.top"));
+        assert!(has_row(
+            &lines,
+            "Shift+G",
+            "Go to the last item",
+            "nav.bottom"
+        ));
+        assert!(lines.contains(&"── Visual Mode ──".to_string()));
+        assert!(has_row(
+            &lines,
+            "Shift+V or v",
+            "Select adjacent items; move to extend",
+            "select.visual"
+        ));
+        assert!(has_row(
+            &lines,
+            "d",
+            "Move the selected items to Trash",
+            "file.trash"
+        ));
+        assert!(has_row(
+            &lines,
+            "Shift+D",
+            "Permanently delete the selected items",
+            "file.delete"
+        ));
+        assert!(
+            lines.contains(&"  o               Visual mode: swap the selection's ends".to_string())
+        );
+        assert!(lines.contains(&"  Esc             Visual mode: cancel the selection".to_string()));
         assert!(lines.contains(&"  Ctrl-C          Quit (always)".to_string()));
         assert!(!lines.iter().any(|line| line.contains("Unbound")));
         for (_, name) in Action::ALL {
@@ -653,11 +761,18 @@ mod tests {
             ("/", "search.root"),
             ("<C-d>", "nav.down"),
             ("q", "none"),
+            ("<C-w>j", "nav.top"),
         ] {
             settings.normal.insert(key.to_string(), action.to_string());
         }
 
         let lines = help_text(&settings);
+        assert!(has_row(
+            &lines,
+            "Ctrl-w j or gg",
+            "Go to the first item",
+            "nav.top"
+        ));
 
         assert!(has_row(
             &lines,
@@ -827,6 +942,51 @@ mod tests {
         assert!(screen.contains("'y' to confirm, 'n' to cancel"));
         assert!(!screen.contains("can't be undone"));
         assert!(!screen.contains("Permanently delete"));
+    }
+
+    fn batch_prompt(targets: &[String], to_trash: bool) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|f| render_batch_confirmation_popup(f, targets, to_trash))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn selection_prompts_count_the_items_and_name_the_first_five() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("photos")).unwrap();
+        let targets: Vec<String> = ["notes.txt", "photos", "todo.md"]
+            .iter()
+            .map(|name| dir.path().join(name).to_string_lossy().into_owned())
+            .collect();
+
+        let trash = batch_prompt(&targets, true);
+        assert!(trash.contains("Move to Trash"));
+        assert!(trash.contains("Move 3 items to Trash?"));
+        for name in ["notes.txt", "photos/", "todo.md"] {
+            assert!(trash.contains(name), "{name}");
+        }
+        assert!(!trash.contains("more") && !trash.contains("can't be undone"));
+        assert!(trash.contains("'y' to confirm, 'n' to cancel"));
+
+        let many: Vec<String> = (1..=8).map(|i| format!("/w/file{i}.txt")).collect();
+        let delete = batch_prompt(&many, false);
+        assert!(delete.contains("Permanently delete 8 items?"));
+        assert!(delete.contains("file1.txt") && delete.contains("file5.txt"));
+        assert!(!delete.contains("file6.txt"));
+        assert!(delete.contains("and 3 more"));
+        assert!(delete.contains("This can't be undone."));
+        assert!(delete.contains("'y' to confirm, 'n' to cancel"));
+
+        assert!(batch_prompt(&many[..1], true).contains("Move 1 item to Trash?"));
     }
 
     #[test]

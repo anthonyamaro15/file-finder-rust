@@ -190,6 +190,17 @@ impl StatusBar {
             InputMode::CacheLoading => ("LOADING", theme.yellow),
             InputMode::PickFolder => ("PICK", theme.blue),
             InputMode::WatchInfo => ("INFO", theme.cyan),
+            InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
+        }
+    }
+
+    /// The mode's label, with the selection's size in visual mode: "VISUAL · 5 selected".
+    fn mode_label(app: &App, label: &str) -> String {
+        match &app.visual {
+            Some(visual) if app.input_mode == InputMode::Visual => {
+                format!("{label} · {} selected", visual.paths.len())
+            }
+            _ => label.to_string(),
         }
     }
 
@@ -202,21 +213,24 @@ impl StatusBar {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
+        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
+        let mode_text = Self::mode_label(app, mode_text);
+        // Wide enough for "VISUAL · 5 selected" inside its borders.
+        let mode_width = u16::try_from(mode_text.chars().count() + 4).map_or(15, |w| w.max(15));
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(15), // Mode indicator
-                Constraint::Length(14), // View mode indicator
-                Constraint::Min(20),    // Directory path
-                Constraint::Length(25), // File counts
-                Constraint::Length(15), // Total size
-                Constraint::Length(20), // System info
+                Constraint::Length(mode_width), // Mode indicator
+                Constraint::Length(14),         // View mode indicator
+                Constraint::Min(20),            // Directory path
+                Constraint::Length(25),         // File counts
+                Constraint::Length(15),         // Total size
+                Constraint::Length(20),         // System info
             ])
             .split(area);
 
         // Mode indicator with rounded borders
-        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
         let mode_widget = Paragraph::new(mode_text)
             .block(
                 Block::default()
@@ -298,6 +312,7 @@ impl StatusBar {
     /// Format:  NOR  ~/path  position  size  permissions
     pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
         let (mode_text, mode_color) = Self::get_mode_indicator_short(&app.input_mode, theme);
+        let mode_text = Self::mode_label(app, mode_text);
 
         // Calculate position indicator
         let position = Self::get_position_indicator(app);
@@ -353,6 +368,7 @@ impl StatusBar {
             InputMode::CacheLoading => ("...", theme.yellow),
             InputMode::PickFolder => ("PCK", theme.blue),
             InputMode::WatchInfo => ("INFO", theme.cyan),
+            InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
         }
     }
 
@@ -534,6 +550,37 @@ fn is_right_pane(app: &App) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_styles_show_visual_mode_with_the_selection_size() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new(vec!["/w/a".into(), "/w/b".into(), "/w/c".into()]);
+        app.start_visual(Some(0)).unwrap();
+        app.move_visual_cursor(Some(1));
+        let status_bar = StatusBar::new();
+        for minimal in [false, true] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+            terminal
+                .draw(|f| {
+                    if minimal {
+                        status_bar.render_minimal(f, f.size(), &app, &app.theme_colors);
+                    } else {
+                        status_bar.render(f, f.size(), &app, &app.theme_colors);
+                    }
+                })
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(screen.contains("VISUAL · 2 selected"), "{screen}");
+        }
+        app.end_visual();
+        assert_eq!(StatusBar::mode_label(&app, "NORMAL"), "NORMAL");
+    }
 
     fn shown_for(status_bar: &mut StatusBar, elapsed: Duration) -> bool {
         status_bar.error_display_time = Some(Instant::now() - elapsed);

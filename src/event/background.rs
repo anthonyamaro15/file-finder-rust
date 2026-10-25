@@ -1,7 +1,10 @@
 //! Per-iteration polling of background work: previews, images, copies, moves,
 //! deletes, file system events and the directory cache build.
 
-use std::{path::Path, sync::mpsc};
+use std::{
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 
 use log::{debug, warn};
 use ratatui::widgets::ListState;
@@ -411,9 +414,7 @@ pub fn poll_job(
 ) {
     let select = app.job.as_ref().and_then(|job| job.select.clone());
     if let Some((result, changes)) = app.poll_job() {
-        for path in &changes {
-            index.changed(path);
-        }
+        index.changed_all(changes.iter().map(PathBuf::as_path));
         let (select_left, select_right) = match select.filter(|_| result.is_ok()) {
             Some((PanePosition::Right, path)) => (None, Some(path)),
             other => (other.map(|(_, path)| path), None),

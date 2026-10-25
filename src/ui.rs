@@ -93,7 +93,10 @@ impl Ui {
         let list_title = self.generate_list_title(app, settings);
 
         // Generate list items based on search mode
-        let filtered_read_only_items = self.generate_list_items(app, settings);
+        let mut filtered_read_only_items = self.generate_list_items(app, settings);
+        if !(app.view_mode == ViewMode::DualPane && app.is_right_pane_active()) {
+            filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
+        }
 
         // Dynamic layout based on view mode
         let inner_constraints = match app.view_mode {
@@ -113,7 +116,7 @@ impl Ui {
                 .title(list_title.as_str())
                 .style(match app.input_mode {
                     _ if app.searching_right_pane() => OneDarkTheme::inactive_border(),
-                    InputMode::Normal => {
+                    InputMode::Normal | InputMode::Visual => {
                         if app.view_mode == ViewMode::DualPane && app.is_right_pane_active() {
                             OneDarkTheme::inactive_border()
                         } else {
@@ -153,7 +156,7 @@ impl Ui {
             .highlight_style(OneDarkTheme::selected())
             .highlight_symbol(if settings.show_borders { "❯" } else { " " })
             .style(match app.input_mode {
-                InputMode::Normal => OneDarkTheme::normal(),
+                InputMode::Normal | InputMode::Visual => OneDarkTheme::normal(),
                 InputMode::Editing => OneDarkTheme::normal(),
                 InputMode::WatchDelete => OneDarkTheme::disabled(),
                 InputMode::WatchCreate => OneDarkTheme::disabled(),
@@ -454,6 +457,28 @@ impl Ui {
             ListItem::from(ratatui::text::Line::from(spans))
         }
     }
+}
+
+/// Mark the active pane's selected rows (visual mode) in the theme's selection colour,
+/// names in the visual mode colour; the highlighted row keeps its own style on top.
+pub fn style_visual_rows<'a>(items: Vec<ListItem<'a>>, app: &App) -> Vec<ListItem<'a>> {
+    let Some(rows) = app.visual_rows() else {
+        return items;
+    };
+    let style = Style::default()
+        .bg(app.theme_colors.selection)
+        .fg(app.theme_colors.statusbar_mode_visual);
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(row, item)| {
+            if rows.contains(&row) {
+                item.style(style)
+            } else {
+                item
+            }
+        })
+        .collect()
 }
 
 /// The search box's query to highlight in a pane's rows while it's typed there:

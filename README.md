@@ -186,6 +186,8 @@ For files, the path is copied to your clipboard.
 | --------- | ---------------------- |
 | `↑` / `k` | Move up                |
 | `↓` / `j` | Move down              |
+| `gg`      | Go to the first item   |
+| `G` (Shift+G) | Go to the last item |
 | `←` / `h` | Parent directory       |
 | `→` / `l` | Enter/open             |
 | `Enter`   | Open file or copy path |
@@ -218,6 +220,25 @@ The `?` help popup shows the live keybindings, custom ones included.
 | `o`       | Open with the system default app |
 | `I` (Shift+I) | Get Info: size, dates, permissions, owner |
 | `.`       | Toggle hidden files        |
+
+### ✅ Select Several Items (Visual Mode)
+
+| Key                  | Action                                          |
+| -------------------- | ----------------------------------------------- |
+| `V` or `v`           | Start selecting at the highlighted item         |
+| `j` `k` `gg` `G`     | Move the cursor end and stretch the selection   |
+| `o`                  | Swap the selection's ends                       |
+| `d`                  | Move the selected items to Trash (with confirmation) |
+| `D` (Shift+D)        | Permanently delete the selected items (with confirmation) |
+| `Esc`, `V` or `v`    | Cancel the selection                            |
+
+The selection is the run of items from where you pressed `V` to the highlighted one,
+in the active pane's folder listing (not in search results). The prompt names the
+first few items and how many more, and acts on exactly those, one at a time, in the
+background: if some can't be moved or deleted, the rest still are and the status bar
+says what failed (all of it is logged to `~/.config/ff/ff.log`). Other keys do
+nothing while selecting, so leaving the folder can't lose the selection. If an end of
+the selection disappears, or a new item appears inside it, the selection is cancelled.
 
 ### 🖼️ View Modes
 
@@ -278,9 +299,12 @@ included, with each action's name.
 | ---------------- | ------------------- | ----------------------------------------- |
 | `nav.down`       | `j`, `<Down>`       | Move down                                 |
 | `nav.up`         | `k`, `<Up>`         | Move up                                   |
+| `nav.top`        | `gg`                | Go to the first item                      |
+| `nav.bottom`     | `G`                 | Go to the last item                       |
 | `nav.parent`     | `h`, `<Left>`       | Parent directory                          |
 | `nav.enter`      | `l`, `<Right>`      | Enter directory                           |
 | `nav.choose`     | `<Enter>`           | Open in the editor, or copy/print the path |
+| `select.visual`  | `V`, `v`            | Start or end selecting adjacent items     |
 | `file.create`    | `a`                 | Create file (end with / for a folder)     |
 | `file.rename`    | `r`                 | Rename                                    |
 | `file.duplicate` | `c`                 | Copy beside the item                      |
@@ -310,6 +334,11 @@ Key syntax (names inside `<…>` are case-insensitive):
 - Leader sequences: `"<leader>/"` is the leader key, then `/`. `leader` defaults to
   Space (`" "` or `"<Space>"`). After the leader, a key without a leader binding does
   what it does alone.
+- Two-key sequences: `"gg"` is `g`, then `g` (also `"g<Down>"`, `"<C-w>j"`). After a key
+  that starts one, ff waits for the next key; a key that doesn't finish a sequence is
+  dropped, as in Neovim. A key bound alone (or the leader) acts at once, so sequences
+  starting with it are ignored and named in the startup warning: binding `"g"` turns
+  off the default `"gg"` (add `"gg" = "none"` to silence the warning).
 - Alt chords aren't supported.
 
 Examples:
@@ -327,8 +356,10 @@ leader = " "
 
 - `"none"` removes a default binding. An action can have several keys.
 - `Ctrl-C` always quits and can't be rebound. Keys inside popups (confirm prompts,
-  the sort menu, text fields, the Copy/Move to… picker, Get Info and the help) are
-  fixed, so a keymap can never lock you out of one; `?` lists them too.
+  the sort menu, text fields, the Copy/Move to… picker, Get Info and the help) and
+  visual mode's `o` and `Esc` are fixed, so a keymap can never lock you out of one;
+  `?` lists them too. In visual mode the rebound `nav.*`, `select.visual`,
+  `file.trash` and `file.delete` keys apply.
 - Bad entries (unknown action, bad key, `<C-c>`) never stop ff from starting: they're
   ignored, named in one warning at startup and logged to `~/.config/ff/ff.log`.
 

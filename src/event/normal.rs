@@ -1,5 +1,5 @@
 //! Key handling for Normal mode: navigation, file operations, view changes and
-//! leaving ff.
+//! leaving ff; and for visual mode, which selects a run of items.
 
 use std::{
     io,
@@ -8,14 +8,14 @@ use std::{
 };
 
 use crossterm::{
-    event::{DisableMouseCapture, KeyEvent},
+    event::{DisableMouseCapture, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 
 use crate::{
-    app::{InputMode, PanePosition, SearchScope, TransferKind, ViewMode},
+    app::{App, InputMode, PanePosition, SearchScope, TransferKind, ViewMode},
     config::Action,
     event::{
         file_actions::{
@@ -23,7 +23,10 @@ use crate::{
             rename_target,
         },
         keymap::{pressed_key_label, KeymapRuntime},
-        navigation::{next_index_wrapping, parent_listing_directory, previous_index_wrapping},
+        navigation::{
+            next_index, next_index_wrapping, parent_listing_directory, previous_index,
+            previous_index_wrapping,
+        },
         transfer::{open_folder_picker, start_transfer},
         LoopControl, LoopState,
     },
@@ -82,30 +85,12 @@ pub fn handle_normal_key(
                 return Ok(LoopControl::Break);
             }
         }
-        Action::NavDown => {
-            // In DualPane mode with right pane active, navigate right pane
-            if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                app.right_pane.navigate_down();
-            } else {
-                let list_len = app.get_list_length();
-
-                if let Some(i) = next_index_wrapping(state.selected(), list_len) {
-                    state.select(Some(i));
-                    app.curr_index = Some(i);
-                }
-            }
+        Action::NavDown | Action::NavUp | Action::NavTop | Action::NavBottom => {
+            move_highlight(app, state, action, true);
         }
-        Action::NavUp => {
-            // In DualPane mode with right pane active, navigate right pane
-            if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
-                app.right_pane.navigate_up();
-            } else {
-                let list_len = app.get_list_length();
-
-                if let Some(i) = previous_index_wrapping(state.selected(), list_len) {
-                    state.select(Some(i));
-                    app.curr_index = Some(i);
-                }
+        Action::SelectVisual => {
+            if let Err(message) = app.start_visual(state.selected()) {
+                status_bar.show_warning(message.to_string(), None);
             }
         }
         Action::NavParent => {
@@ -454,4 +439,65 @@ pub fn handle_normal_key(
         }
     }
     Ok(LoopControl::Continue)
+}
+
+/// Move the active pane's highlight: `nav.down`/`nav.up` by a row, wrapping around
+/// when `wrap`; `nav.top`/`nav.bottom` to the first/last row.
+fn move_highlight(app: &mut App, state: &mut ListState, action: Action, wrap: bool) {
+    let (current, len) = if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
+        (
+            app.right_pane.selected_index,
+            app.right_pane.get_list_length(),
+        )
+    } else {
+        (state.selected(), app.get_list_length())
+    };
+    let row = match action {
+        Action::NavDown if wrap => next_index_wrapping(current, len),
+        Action::NavDown => next_index(current, len),
+        Action::NavUp if wrap => previous_index_wrapping(current, len),
+        Action::NavUp => previous_index(current, len),
+        Action::NavTop => (len > 0).then_some(0),
+        Action::NavBottom => len.checked_sub(1),
+        _ => None,
+    };
+    if let Some(row) = row {
+        app.select_active_row(state, row);
+    }
+}
+
+/// Handle a key in visual mode. The motions (without wrapping around) move the
+/// cursor end and stretch the range, `o` swaps its ends, the Trash and delete keys
+/// open their prompt for it, and Esc or the visual key ends it. Every other key does
+/// nothing, so leaving the folder can't lose the selection.
+pub fn handle_visual_key(
+    key: KeyEvent,
+    loop_state: &mut LoopState,
+    keymap_runtime: &mut KeymapRuntime,
+) {
+    let LoopState {
+        app,
+        state,
+        status_bar,
+        ..
+    } = loop_state;
+    // Esc and `o` are fixed here, unless they finish a sequence.
+    if !keymap_runtime.is_pending() {
+        match key.code {
+            KeyCode::Esc => return app.end_visual(),
+            KeyCode::Char('o') => return app.swap_visual_ends(state),
+            _ => {}
+        }
+    }
+    match keymap_runtime.resolve_normal(key) {
+        Some(action @ (Action::NavDown | Action::NavUp | Action::NavTop | Action::NavBottom)) => {
+            move_highlight(app, state, action, false);
+            app.move_visual_cursor(state.selected());
+        }
+        Some(Action::SelectVisual) => app.end_visual(),
+        Some(Action::FileTrash) => app.prepare_batch_removal(true),
+        Some(Action::FileDelete) => app.prepare_batch_removal(false),
+        None if keymap_runtime.is_pending() => {}
+        _ => status_bar.show_info(keymap_runtime.selection_hint().to_string(), None),
+    }
 }

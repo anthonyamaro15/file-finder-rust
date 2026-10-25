@@ -8,9 +8,12 @@ use serde::{Deserialize, Serialize};
 pub enum Action {
     NavDown,
     NavUp,
+    NavTop,
+    NavBottom,
     NavParent,
     NavEnter,
     NavChoose,
+    SelectVisual,
     FileCreate,
     FileRename,
     FileDuplicate,
@@ -34,12 +37,15 @@ pub enum Action {
 
 impl Action {
     /// Every action with its name in settings.toml.
-    pub const ALL: [(Self, &'static str); 24] = [
+    pub const ALL: [(Self, &'static str); 27] = [
         (Self::NavDown, "nav.down"),
         (Self::NavUp, "nav.up"),
+        (Self::NavTop, "nav.top"),
+        (Self::NavBottom, "nav.bottom"),
         (Self::NavParent, "nav.parent"),
         (Self::NavEnter, "nav.enter"),
         (Self::NavChoose, "nav.choose"),
+        (Self::SelectVisual, "select.visual"),
         (Self::FileCreate, "file.create"),
         (Self::FileRename, "file.rename"),
         (Self::FileDuplicate, "file.duplicate"),
@@ -76,27 +82,44 @@ impl Action {
     }
 }
 
-/// A bound key in its canonical spelling (see [`parse_key`]), alone or after the leader.
+/// A bound key in its canonical spelling (see [`parse_key`]): alone, after the leader,
+/// or two keys in a row such as `gg`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KeySequence {
     Single(String),
     Leader(String),
+    Pair(String, String),
 }
 
 impl KeySequence {
     pub fn parse(value: &str) -> Option<Self> {
         match value.get(..8) {
             Some(prefix) if prefix.eq_ignore_ascii_case("<leader>") => {
-                Some(Self::Leader(parse_key(&value[8..])?))
+                return Some(Self::Leader(parse_key(&value[8..])?));
             }
-            _ => Some(Self::Single(parse_key(value)?)),
+            _ => {}
         }
+        if let Some(key) = parse_key(value) {
+            return Some(Self::Single(key));
+        }
+        // Two keys: the first is one character or one `<…>` name.
+        let split = if value.starts_with('<') {
+            value.find('>')? + 1
+        } else {
+            value.chars().next()?.len_utf8()
+        };
+        Some(Self::Pair(
+            parse_key(&value[..split])?,
+            parse_key(&value[split..])?,
+        ))
     }
 
-    /// The key pressed alone, or the one pressed after the leader.
-    pub fn last_key(&self) -> &str {
-        let (Self::Single(key) | Self::Leader(key)) = self;
-        key
+    /// The keys pressed, not counting the leader.
+    pub fn keys(&self) -> Vec<&str> {
+        match self {
+            Self::Single(key) | Self::Leader(key) => vec![key],
+            Self::Pair(first, second) => vec![first, second],
+        }
     }
 }
 
@@ -181,7 +204,7 @@ pub fn key_label(key: &str) -> String {
 /// `Err` says why the entry is ignored.
 pub fn parse_binding(key: &str, action: &str) -> Result<(KeySequence, Option<Action>), String> {
     let sequence = KeySequence::parse(key).ok_or_else(|| format!("{key:?} (bad key)"))?;
-    if sequence.last_key() == RESERVED_KEY {
+    if sequence.keys().contains(&RESERVED_KEY) {
         return Err(format!("{key:?} (Ctrl-C always quits)"));
     }
     if action == UNBOUND {
@@ -224,7 +247,9 @@ impl Default for KeymapSettings {
 
 impl KeymapSettings {
     /// Resolve the configured entries; a default stays bound unless its key is
-    /// configured. An ignored entry acts as if it weren't written.
+    /// configured. An ignored entry acts as if it weren't written. A key that acts
+    /// alone (or is the leader) can't also start a two-key sequence, so such a
+    /// sequence is ignored, defaults included.
     pub fn resolve(&self) -> Bindings {
         let mut ignored = Vec::new();
         let mut normal: HashMap<KeySequence, Option<Action>> = HashMap::new();
@@ -247,12 +272,37 @@ impl KeymapSettings {
                 default_leader()
             }
         };
+        // A key that acts alone, or the leader, never waits for a second key.
+        let shadowed = |first: &String| {
+            if *first == leader {
+                Some("is the leader")
+            } else {
+                let alone = normal.get(&KeySequence::Single(first.clone()));
+                matches!(alone, Some(Some(_))).then_some("is bound alone")
+            }
+        };
+        let mut bound = Vec::new();
+        let mut shadowed_pairs = Vec::new();
+        for (sequence, action) in &normal {
+            let Some(action) = action else {
+                continue;
+            };
+            if let KeySequence::Pair(first, second) = sequence {
+                if let Some(reason) = shadowed(first) {
+                    let key = format!("{first}{second}");
+                    let label = key_label(first);
+                    shadowed_pairs
+                        .push(format!("{key:?} = {:?} ({label} {reason})", action.name()));
+                    continue;
+                }
+            }
+            bound.push((sequence.clone(), *action));
+        }
+        shadowed_pairs.sort();
+        ignored.extend(shadowed_pairs);
         Bindings {
             leader,
-            normal: normal
-                .into_iter()
-                .filter_map(|(sequence, action)| Some((sequence, action?)))
-                .collect(),
+            normal: bound,
             ignored,
         }
     }
@@ -266,17 +316,22 @@ fn default_leader() -> String {
     " ".to_string()
 }
 
-/// Every Normal-mode key ff has always had; the README's "Keyboard Shortcuts" lists them.
-const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 29] = [
+/// Every default Normal-mode key; the README's "Keyboard Shortcuts" and keymap table
+/// list them.
+const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 33] = [
     ("j", "nav.down"),
     ("<Down>", "nav.down"),
     ("k", "nav.up"),
     ("<Up>", "nav.up"),
+    ("gg", "nav.top"),
+    ("G", "nav.bottom"),
     ("h", "nav.parent"),
     ("<Left>", "nav.parent"),
     ("l", "nav.enter"),
     ("<Right>", "nav.enter"),
     ("<Enter>", "nav.choose"),
+    ("V", "select.visual"),
+    ("v", "select.visual"),
     ("a", "file.create"),
     ("r", "file.rename"),
     ("c", "file.duplicate"),
@@ -353,9 +408,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_two_key_sequences() {
+        let pair = |first: &str, second: &str| {
+            Some(KeySequence::Pair(first.to_string(), second.to_string()))
+        };
+        assert_eq!(KeySequence::parse("gg"), pair("g", "g"));
+        assert_eq!(KeySequence::parse("jj"), pair("j", "j"));
+        assert_eq!(KeySequence::parse("g<down>"), pair("g", "<Down>"));
+        assert_eq!(KeySequence::parse("<C-W>j"), pair("<C-w>", "j"));
+        assert_eq!(KeySequence::parse("<Space><Space>"), pair(" ", " "));
+        assert_eq!(pair("g", "<Down>").unwrap().keys(), ["g", "<Down>"]);
+    }
+
+    #[test]
     fn rejects_bad_keys() {
         for bad in [
-            "", "jj", "<C-q", "<C->", "<C-ab>", "<A-x>", "<Foo>", "<>", "<leader>", "Down",
+            "",
+            "ggg",
+            "<C-q",
+            "<C->",
+            "<C-ab>",
+            "<A-x>",
+            "<Foo>",
+            "<>",
+            "<leader>",
+            "Down",
+            "<leader>gg",
+            "g<Foo>",
+            "<Foo>g",
+            "<<",
         ] {
             assert_eq!(KeySequence::parse(bad), None, "{bad:?}");
         }
@@ -383,6 +464,7 @@ mod tests {
         settings
             .normal
             .insert("<leader><c-C>".into(), "quit".into());
+        settings.normal.insert("g<C-c>".into(), "quit".into());
         settings.leader = "ab".into();
 
         let bindings = settings.resolve();
@@ -406,6 +488,7 @@ mod tests {
                 r#""<C-c>" (Ctrl-C always quits)"#,
                 r#""<C-q" (bad key)"#,
                 r#""<leader><c-C>" (Ctrl-C always quits)"#,
+                r#""g<C-c>" (Ctrl-C always quits)"#,
                 r#""x" = "file.trsh" (unknown action)"#,
                 r#"leader = "ab" (bad key)"#,
             ]
@@ -424,7 +507,7 @@ mod tests {
                 .normal
                 .iter()
                 .filter(|(_, bound)| *bound == action)
-                .map(|(sequence, _)| sequence.last_key().to_string())
+                .map(|(sequence, _)| sequence.keys().concat())
                 .collect();
             keys.sort();
             keys
@@ -433,5 +516,70 @@ mod tests {
         assert_eq!(keys_for(Action::NavDown), ["j"]);
         assert_eq!(keys_for(Action::FileTrash), ["d", "x"]);
         assert!(bindings.ignored.is_empty());
+    }
+
+    fn bound_in(bindings: &Bindings, key: &str) -> Option<Action> {
+        let sequence = KeySequence::parse(key).unwrap();
+        bindings
+            .normal
+            .iter()
+            .find(|(bound, _)| *bound == sequence)
+            .map(|(_, action)| *action)
+    }
+
+    #[test]
+    fn a_key_bound_alone_or_as_leader_ignores_the_sequences_it_starts() {
+        let mut settings = KeymapSettings::default();
+        settings.normal.insert("g".into(), "view.cycle".into());
+        settings.normal.insert("gt".into(), "pane.switch".into());
+        settings.normal.insert(",x".into(), "quit".into());
+        settings
+            .normal
+            .insert("<C-w>j".into(), "pane.switch".into());
+        settings.leader = ",".into();
+
+        let bindings = settings.resolve();
+        assert_eq!(bound_in(&bindings, "g"), Some(Action::ViewCycle));
+        assert_eq!(bound_in(&bindings, "gg"), None);
+        assert_eq!(bound_in(&bindings, "gt"), None);
+        assert_eq!(bound_in(&bindings, ",x"), None);
+        assert_eq!(bound_in(&bindings, "<C-w>j"), Some(Action::PaneSwitch));
+        assert_eq!(
+            bindings.ignored,
+            [
+                r#"",x" = "quit" (, is the leader)"#,
+                r#""gg" = "nav.top" (g is bound alone)"#,
+                r#""gt" = "pane.switch" (g is bound alone)"#,
+            ]
+        );
+
+        // Unbinding the single key frees it to start sequences again.
+        settings.normal.insert("g".into(), "none".into());
+        let bindings = settings.resolve();
+        assert_eq!(bound_in(&bindings, "g"), None);
+        assert_eq!(bound_in(&bindings, "gg"), Some(Action::NavTop));
+        assert_eq!(bound_in(&bindings, "gt"), Some(Action::PaneSwitch));
+        assert_eq!(bindings.ignored, [r#"",x" = "quit" (, is the leader)"#]);
+    }
+
+    #[test]
+    fn readme_keymap_table_lists_every_action_with_its_default_keys() {
+        let readme = include_str!("../../README.md");
+        let rows: Vec<&str> = readme
+            .lines()
+            .filter(|line| {
+                Action::ALL
+                    .iter()
+                    .any(|(_, name)| line.starts_with(&format!("| `{name}`")))
+            })
+            .collect();
+        assert_eq!(rows.len(), Action::ALL.len(), "{rows:#?}");
+        for (key, name) in DEFAULT_NORMAL_KEYMAP {
+            let row = rows
+                .iter()
+                .find(|row| row.starts_with(&format!("| `{name}` ")))
+                .unwrap_or_else(|| panic!("{name} has no README row"));
+            assert!(row.contains(&format!("`{key}`")), "{name}: {key}");
+        }
     }
 }
