@@ -258,7 +258,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .chain(keymap_warning)
         .collect();
     if !notices.is_empty() {
-        status_bar.show_warning(notices.join(" · "), None);
+        // Long enough to read a list of ignored keymap entries; ff.log has it too.
+        status_bar.show_warning(notices.join(" · "), Some(10));
     }
 
     debug!("{:?}", widgets_ui.files_list);
