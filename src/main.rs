@@ -17,7 +17,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use ratatui::{backend::CrosstermBackend, widgets::ListState, Terminal};
 use syntect::{highlighting::ThemeSet, parsing::SyntaxSet};
 
@@ -177,11 +177,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.print_path = effective_config.print_path;
 
     let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
-    let root_search_keys = configured_action_key_labels(&settings.keymap, Action::SearchRoot);
-    let find_hint = match root_search_keys.first() {
-        Some(root_key) => format!(" find (i)  global ({})", root_key),
-        None => " find (i)".to_string(),
+    // "Exit (q)", " find (/)  global (Space + /)": the first live key of each action.
+    let key_hint = |label: &str, action| {
+        configured_action_key_labels(&settings.keymap, action)
+            .first()
+            .map(|key| format!("{label} ({key})"))
     };
+    let exit_hint = key_hint("Exit", Action::Quit).unwrap_or_default();
+    let find_hint: String = [
+        ("find", Action::SearchCurrent),
+        ("global", Action::SearchRoot),
+    ]
+    .into_iter()
+    .filter_map(|(label, action)| key_hint(label, action))
+    .map(|hint| format!(" {hint}"))
+    .collect::<Vec<_>>()
+    .join(" ");
 
     let cache_path = PathBuf::from(&settings.cache_directory);
     let loaded = if !cli_args.rebuild_cache && cache_path.exists() {
@@ -237,8 +248,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
-    if let Some(notice) = effective_config.start_notice {
-        status_bar.show_warning(notice, None);
+    let keymap_warning = keymap_runtime.warning();
+    if let Some(warning) = &keymap_warning {
+        warn!("{warning}");
+    }
+    let notices: Vec<String> = effective_config
+        .start_notice
+        .into_iter()
+        .chain(keymap_warning)
+        .collect();
+    if !notices.is_empty() {
+        status_bar.show_warning(notices.join(" · "), None);
     }
 
     debug!("{:?}", widgets_ui.files_list);
@@ -310,6 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state,
             &settings,
             &widgets_ui,
+            &exit_hint,
             &find_hint,
         )?;
 
@@ -361,7 +382,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(available) = crossterm_event::poll(timeout) {
             if available {
                 if let Event::Key(key) = crossterm_event::read()? {
-                    match handle_modifier_key(key, &mut loop_state, &mut terminal) {
+                    match handle_modifier_key(key, &keymap_runtime, &mut loop_state, &mut terminal)
+                    {
                         Some(LoopControl::Break) => break,
                         Some(_) => continue,
                         None => {}

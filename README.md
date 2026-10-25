@@ -200,7 +200,7 @@ For files, the path is copied to your clipboard.
 
 Starting a current-directory search with a space or `/` (e.g. `i` then ` foo`) also switches to root search.
 
-The `?` help popup reflects configured search keybindings.
+The `?` help popup shows the live keybindings, custom ones included.
 
 ### 📁 File Operations
 
@@ -213,8 +213,9 @@ The `?` help popup reflects configured search keybindings.
 | `c`       | Copy                       |
 | `Shift+C` | Copy to… (pick a folder)   |
 | `Shift+M` | Move to… (pick a folder)   |
+| `y`       | Extract a ZIP archive      |
 | `z`       | Compress to ZIP beside the item |
-| `o`       | Open in file explorer      |
+| `o`       | Open with the system default app |
 | `I` (Shift+I) | Get Info: size, dates, permissions, owner |
 | `.`       | Toggle hidden files        |
 
@@ -241,6 +242,8 @@ with `↑`/`↓` and `Enter` (`Esc` cancels).
 | `?`            | Show keybindings  |
 | `q` / `Ctrl-C` | Quit              |
 
+Every key above can be rebound; see [Keybindings](#keybindings).
+
 ---
 
 ## 🎨 Theme & Customization
@@ -266,33 +269,68 @@ Colors are used for file types, syntax highlighting, and modal dialogs (🟢 cre
 
 ### Keybindings
 
-Search keybindings can be configured in `~/.config/ff/settings.toml`.
+Every Normal-mode key can be rebound in `~/.config/ff/settings.toml` under
+`[keymap.normal]`, as `"key" = "action"`. An entry replaces only that key's default;
+every other default stays. Press `?` in ff to see the live bindings, custom ones
+included, with each action's name.
 
-Default bindings:
+| Action           | Default keys        | What it does                              |
+| ---------------- | ------------------- | ----------------------------------------- |
+| `nav.down`       | `j`, `<Down>`       | Move down                                 |
+| `nav.up`         | `k`, `<Up>`         | Move up                                   |
+| `nav.parent`     | `h`, `<Left>`       | Parent directory                          |
+| `nav.enter`      | `l`, `<Right>`      | Enter directory                           |
+| `nav.choose`     | `<Enter>`           | Open in the editor, or copy/print the path |
+| `file.create`    | `a`                 | Create file/directory                     |
+| `file.rename`    | `r`                 | Rename                                    |
+| `file.duplicate` | `c`                 | Copy beside the item                      |
+| `file.copy_to`   | `C`                 | Copy to… (the other pane in Dual Pane)    |
+| `file.move_to`   | `M`                 | Move to… (the other pane in Dual Pane)    |
+| `file.trash`     | `d`                 | Move to Trash                             |
+| `file.delete`    | `D`                 | Permanently delete                        |
+| `file.extract`   | `y`                 | Extract a ZIP archive                     |
+| `file.compress`  | `z`                 | Compress to ZIP                           |
+| `file.open`      | `o`                 | Open with the system default app          |
+| `file.info`      | `I`                 | Get Info                                  |
+| `search.current` | `/`, `i`            | Search current directory                  |
+| `search.root`    | `<leader>/`         | Root search                               |
+| `view.cycle`     | `p`                 | Cycle view mode                           |
+| `view.sort`      | `s`                 | Sort options menu                         |
+| `view.hidden`    | `.`                 | Toggle hidden files                       |
+| `pane.switch`    | `<Tab>`             | Switch active pane                        |
+| `help`           | `?`                 | Show keybindings                          |
+| `quit`           | `q`                 | Quit                                      |
+
+Key syntax (names inside `<…>` are case-insensitive):
+
+- One character: `"j"`, `"D"` (uppercase means Shift+letter), `"."`, `"?"`, `"/"`.
+- Ctrl chords: `"<C-d>"`.
+- Named keys: `<Up>` `<Down>` `<Left>` `<Right>` `<Enter>` `<Tab>` `<Space>` `<Esc>`
+  `<Backspace>` `<PageUp>` `<PageDown>` `<Home>` `<End>`.
+- Leader sequences: `"<leader>/"` is the leader key, then `/`. `leader` defaults to
+  Space (`" "` or `"<Space>"`). After the leader, a key without a leader binding does
+  what it does alone.
+- Alt chords aren't supported.
+
+Examples:
 
 ```toml
 [keymap]
 leader = " "
 
 [keymap.normal]
-"/" = "search.current"
-"i" = "search.current"
-"<leader>/" = "search.root"
+"x" = "file.trash"   # x also moves to Trash
+"d" = "none"         # d does nothing
+"<C-d>" = "nav.down"
+"<C-u>" = "nav.up"
 ```
 
-Example with comma as leader and `f` for current-directory search:
-
-```toml
-[keymap]
-leader = ","
-
-[keymap.normal]
-"f" = "search.current"
-"/" = "search.root"
-"<leader>/" = "search.root"
-```
-
-Open `?` inside ff to see the active search bindings.
+- `"none"` removes a default binding. An action can have several keys.
+- `Ctrl-C` always quits and can't be rebound. Keys inside popups (confirm prompts,
+  the sort menu, text fields, the Copy/Move to… picker, Get Info and the help) are
+  fixed, so a keymap can never lock you out of one; `?` lists them too.
+- Bad entries (unknown action, bad key, `<C-c>`) never stop ff from starting: they're
+  ignored, named in one warning at startup and logged to `~/.config/ff/ff.log`.
 
 ### Terminal Image Support
 

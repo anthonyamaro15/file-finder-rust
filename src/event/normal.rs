@@ -8,7 +8,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{DisableMouseCapture, KeyCode, KeyEvent},
+    event::{DisableMouseCapture, KeyEvent},
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
@@ -22,7 +22,7 @@ use crate::{
             containing_directory_or_current, current_refresh_directory, enter_directory,
             rename_target,
         },
-        keymap::KeymapRuntime,
+        keymap::{pressed_key_label, KeymapRuntime},
         navigation::{next_index_wrapping, parent_listing_directory, previous_index_wrapping},
         transfer::{open_folder_picker, start_transfer},
         LoopControl, LoopState,
@@ -53,29 +53,36 @@ pub fn handle_normal_key(
         quit_error,
         ..
     } = loop_state;
-    if let Some(action) = keymap_runtime.resolve_normal(key) {
-        match action {
-            Action::SearchCurrent => {
-                app.enter_search(SearchScope::CurrentDirectory);
-                file_reader_content.file_type = FileType::NotAvailable;
-                image_renderer.clear();
-            }
-            Action::SearchRoot => {
-                app.enter_search(SearchScope::Root);
-                file_reader_content.file_type = FileType::NotAvailable;
-                image_renderer.clear();
-            }
-        }
+    let Some(action) = keymap_runtime.resolve_normal(key) else {
         return Ok(LoopControl::Continue);
-    }
+    };
+    // Names the key in "press … again to quit anyway".
+    let key_label = pressed_key_label(key);
 
-    match key.code {
-        KeyCode::Char('q') => {
-            if may_exit(app, status_bar, "q", copy_receiver, terminal, quit_error) {
+    match action {
+        Action::SearchCurrent => {
+            app.enter_search(SearchScope::CurrentDirectory);
+            file_reader_content.file_type = FileType::NotAvailable;
+            image_renderer.clear();
+        }
+        Action::SearchRoot => {
+            app.enter_search(SearchScope::Root);
+            file_reader_content.file_type = FileType::NotAvailable;
+            image_renderer.clear();
+        }
+        Action::Quit => {
+            if may_exit(
+                app,
+                status_bar,
+                &key_label,
+                copy_receiver,
+                terminal,
+                quit_error,
+            ) {
                 return Ok(LoopControl::Break);
             }
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        Action::NavDown => {
             // In DualPane mode with right pane active, navigate right pane
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 app.right_pane.navigate_down();
@@ -88,7 +95,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        Action::NavUp => {
             // In DualPane mode with right pane active, navigate right pane
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 app.right_pane.navigate_up();
@@ -101,7 +108,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('h') | KeyCode::Left => {
+        Action::NavParent => {
             // In DualPane mode with right pane active, navigate right pane to parent
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 let current_dir = app.right_pane.current_directory.clone();
@@ -135,7 +142,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('l') | KeyCode::Right => {
+        Action::NavEnter => {
             // In DualPane mode with right pane active, enter directory in right pane
             if app.view_mode.is_dual_pane() && app.is_right_pane_active() {
                 if let Some(selected) = app.right_pane.get_selected_path() {
@@ -161,10 +168,17 @@ pub fn handle_normal_key(
             }
         }
 
-        KeyCode::Char('o') => {
+        Action::FileOpen => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Opening leaves ff, so it waits for confirmation during an operation.
-                if !may_exit(app, status_bar, "o", copy_receiver, terminal, quit_error) {
+                if !may_exit(
+                    app,
+                    status_bar,
+                    &key_label,
+                    copy_receiver,
+                    terminal,
+                    quit_error,
+                ) {
                     return Ok(LoopControl::Continue);
                 }
                 // Spawn without waiting; null stdio keeps opener output off the TUI.
@@ -183,16 +197,16 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('d') => {
+        Action::FileTrash => {
             app.prepare_trash(state.selected());
         }
-        KeyCode::Char('D') => {
+        Action::FileDelete => {
             app.prepare_delete(state.selected());
         }
-        KeyCode::Char('a') => {
+        Action::FileCreate => {
             app.input_mode = InputMode::WatchCreate;
         }
-        KeyCode::Char('p') => {
+        Action::ViewCycle => {
             // Cycle through view modes: Normal -> FullList -> DualPane -> Normal
             let new_mode = app.view_mode.next();
 
@@ -209,14 +223,14 @@ pub fn handle_normal_key(
 
             app.view_mode = new_mode;
         }
-        KeyCode::Tab => {
+        Action::PaneSwitch => {
             // Switch active pane in dual-pane mode
             if app.view_mode.is_dual_pane() {
                 app.toggle_active_pane();
             }
         }
-        KeyCode::Char(c @ ('C' | 'M')) => {
-            let kind = if c == 'C' {
+        Action::FileCopyTo | Action::FileMoveTo => {
+            let kind = if action == Action::FileCopyTo {
                 TransferKind::Copy
             } else {
                 TransferKind::Move
@@ -241,7 +255,7 @@ pub fn handle_normal_key(
                 open_folder_picker(app, status_bar, state.selected(), kind);
             }
         }
-        KeyCode::Char('y') => {
+        Action::FileExtract => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 let file_type = file_reader_content.get_file_extension(selected.clone());
                 if let FileType::ZIP = file_type {
@@ -263,7 +277,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('z') => {
+        Action::FileCompress => {
             // Compress the highlighted item into a ZIP beside it, like Finder's "Compress".
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Check first so a busy app doesn't create an archive just to remove it.
@@ -311,7 +325,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('r') => {
+        Action::FileRename => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 if let Some((parent, placeholder_name)) = rename_target(Path::new(&selected)) {
                     app.current_path_to_edit = parent.to_string_lossy().to_string();
@@ -322,7 +336,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('.') => {
+        Action::ViewHidden => {
             app.show_hidden_files = !app.show_hidden_files;
             app.right_pane.show_hidden_files = app.show_hidden_files;
             if app.view_mode.is_dual_pane() {
@@ -346,7 +360,7 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('c') => {
+        Action::FileDuplicate => {
             // Copy the highlighted item beside its source.
             if let Some(warning) = app.busy_warning() {
                 status_bar.show_warning(warning, None);
@@ -364,15 +378,16 @@ pub fn handle_normal_key(
             }
         }
 
-        KeyCode::Char('s') => {
+        Action::ViewSort => {
             app.input_mode = InputMode::WatchSort;
         }
 
-        KeyCode::Char('?') => {
+        Action::Help => {
+            app.help_scroll = 0;
             app.input_mode = InputMode::WatchKeyBinding;
         }
 
-        KeyCode::Char('I') => {
+        Action::FileInfo => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 // Read-only, so it never waits for (or blocks) a running operation.
                 match ItemInfo::read(Path::new(&selected)) {
@@ -387,7 +402,7 @@ pub fn handle_normal_key(
             }
         }
 
-        KeyCode::Enter => {
+        Action::NavChoose => {
             // The active pane's item, from search results or the listing
             let selected_path = app.active_selected_path(state.selected());
 
@@ -396,7 +411,7 @@ pub fn handle_normal_key(
                 if !may_exit(
                     app,
                     status_bar,
-                    "Enter",
+                    &key_label,
                     copy_receiver,
                     terminal,
                     quit_error,
@@ -437,7 +452,6 @@ pub fn handle_normal_key(
                 return Ok(LoopControl::Break);
             }
         }
-        _ => {}
     }
     Ok(LoopControl::Continue)
 }

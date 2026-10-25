@@ -4,8 +4,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::{backend::Backend, widgets::ListState, Terminal};
 
 use crate::{
-    app::App,
+    app::{App, InputMode},
     directory_store::DirectoryIndex,
+    event::keymap::KeymapRuntime,
     exit::may_exit,
     file_reader_content::FileContent,
     operations::{CopyMessage, DeleteMessage},
@@ -51,10 +52,12 @@ pub enum LoopControl {
 }
 
 /// Runs before every mode's handler. Ctrl-C quits like `q`; any other Ctrl or Alt
-/// character is swallowed so it never acts as, or types, the plain character.
+/// character is swallowed so it never acts as, or types, the plain character, except
+/// a Ctrl chord the keymap binds, which goes on to Normal mode (never to a popup).
 /// Shift passes through. Returns `None` for keys the current mode should handle.
 pub fn handle_modifier_key<B: Backend>(
     key: KeyEvent,
+    keymap: &KeymapRuntime,
     loop_state: &mut LoopState,
     terminal: &mut Terminal<B>,
 ) -> Option<LoopControl> {
@@ -85,6 +88,12 @@ pub fn handle_modifier_key<B: Backend>(
         )
     {
         return Some(LoopControl::Break);
+    }
+    if app.input_mode == InputMode::Normal
+        && !key.modifiers.contains(KeyModifiers::ALT)
+        && keymap.binds(key)
+    {
+        return None;
     }
     Some(LoopControl::Continue)
 }

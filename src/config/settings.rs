@@ -193,21 +193,13 @@ impl Settings {
             ),
         })?;
 
-        let mut settings: Self = toml::from_str(&content).map_err(|e| AppError::Configuration {
+        toml::from_str(&content).map_err(|e| AppError::Configuration {
             message: format!(
                 "Failed to parse TOML settings file '{}': {}",
                 path.as_ref().display(),
                 e
             ),
-        })?;
-
-        settings.normalize();
-
-        Ok(settings)
-    }
-
-    fn normalize(&mut self) {
-        self.keymap.merge_missing_defaults();
+        })
     }
 
     /// Save settings to a specific TOML file path
@@ -258,6 +250,8 @@ mod tests {
 
     #[test]
     fn load_from_file_merges_partial_keymap_overrides_with_defaults() {
+        use crate::config::{Action, KeySequence};
+
         let mut file = NamedTempFile::new().unwrap();
         write!(
             file,
@@ -271,23 +265,48 @@ theme = "onedark"
 
 [keymap.normal]
 "/" = "search.root"
+"x" = "file.trsh"
+"<C-q" = "quit"
 "#
         )
         .unwrap();
 
-        let settings = Settings::load_from_file(file.path()).unwrap();
+        // Bad entries never stop ff from starting.
+        let bindings = Settings::load_from_file(file.path())
+            .unwrap()
+            .keymap
+            .resolve();
+        let bound = |key: &str| {
+            let sequence = KeySequence::parse(key).unwrap();
+            bindings
+                .normal
+                .iter()
+                .find(|(bound, _)| *bound == sequence)
+                .map(|(_, action)| *action)
+        };
 
-        assert_eq!(
-            settings.keymap.normal.get("/"),
-            Some(&"search.root".to_string())
-        );
-        assert_eq!(
-            settings.keymap.normal.get("<leader>/"),
-            Some(&"search.root".to_string())
-        );
-        assert_eq!(
-            settings.keymap.normal.get("i"),
-            Some(&"search.current".to_string())
+        assert_eq!(bound("/"), Some(Action::SearchRoot));
+        assert_eq!(bound("<leader>/"), Some(Action::SearchRoot));
+        assert_eq!(bound("i"), Some(Action::SearchCurrent));
+        assert_eq!(bound("q"), Some(Action::Quit));
+        assert_eq!(bindings.ignored.len(), 2);
+    }
+
+    #[test]
+    fn first_run_settings_list_the_default_keymap_sorted() {
+        let toml = toml::to_string_pretty(&Settings::default()).unwrap();
+        let keymap = toml.split("[keymap.normal]\n").nth(1).unwrap();
+        let keys: Vec<&str> = keymap
+            .lines()
+            .take_while(|line| !line.is_empty() && !line.starts_with('['))
+            .map(|line| line.split(" = ").next().unwrap().trim_matches('"'))
+            .collect();
+
+        assert_eq!(keys.len(), 29);
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{keys:?}");
+        assert!(
+            keymap.contains(r#""<leader>/" = "search.root""#),
+            "{keymap}"
         );
     }
 }
