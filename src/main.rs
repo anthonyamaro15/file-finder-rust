@@ -32,8 +32,8 @@ use file_finder::{
         build_directory_from_store_async, DirectoryIndex, DirectoryStore, REFRESH_THREADS,
     },
     event::{
-        keymap::KeymapRuntime, search::handle_search_key, transfer::handle_folder_picker_key,
-        LoopControl, LoopState,
+        handle_modifier_key, keymap::KeymapRuntime, search::handle_search_key,
+        transfer::handle_folder_picker_key, LoopControl, LoopState,
     },
     file_reader_content::FileContent,
     render::{configured_action_key_labels, image_renderer::ImageRenderer},
@@ -361,6 +361,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(available) = crossterm_event::poll(timeout) {
             if available {
                 if let Event::Key(key) = crossterm_event::read()? {
+                    match handle_modifier_key(key, &mut loop_state, &mut terminal) {
+                        Some(LoopControl::Break) => break,
+                        Some(_) => continue,
+                        None => {}
+                    }
                     match loop_state.app.input_mode {
                         InputMode::Normal => match normal::handle_normal_key(
                             key,

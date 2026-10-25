@@ -235,11 +235,11 @@ with `↑`/`↓` and `Enter` (`Esc` cancels).
 
 ### 🔧 Tools
 
-| Key | Action            |
-| --- | ----------------- |
-| `s` | Sort options menu |
-| `?` | Show keybindings  |
-| `q` | Quit              |
+| Key            | Action            |
+| -------------- | ----------------- |
+| `s`            | Sort options menu |
+| `?`            | Show keybindings  |
+| `q` / `Ctrl-C` | Quit              |
 
 ---
 
