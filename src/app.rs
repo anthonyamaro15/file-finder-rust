@@ -346,6 +346,53 @@ pub fn global_search_results(
     search_results
 }
 
+/// Fuzzy search of a folder listing with scoring, best match first.
+pub fn local_search_results(files: &[String], query: &str) -> Vec<SearchResult> {
+    let matcher = SkimMatcherV2::default();
+    let mut search_results: Vec<SearchResult> = Vec::new();
+
+    for (index, file_path) in files.iter().enumerate() {
+        let path = Path::new(file_path);
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(file_path);
+
+        // Try fuzzy matching on filename first (higher priority)
+        let filename_score = matcher.fuzzy_match(file_name, query);
+
+        // Also try matching on full path (lower priority)
+        let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 2); // Reduce path match score
+
+        // Use the best score
+        if let Some(score) = filename_score.or(path_score) {
+            let is_directory = path.is_dir();
+
+            // Boost directory scores slightly for better organization
+            let adjusted_score = if is_directory { score + 10 } else { score };
+
+            search_results.push(SearchResult {
+                file_path: file_path.clone(),
+                display_name: file_name.to_string(),
+                score: adjusted_score,
+                is_directory,
+                original_index: index,
+            });
+        }
+    }
+
+    // Sort by score (descending) then by name
+    search_results.sort_by(|a, b| {
+        b.score.cmp(&a.score).then_with(|| {
+            a.display_name
+                .to_lowercase()
+                .cmp(&b.display_name.to_lowercase())
+        })
+    });
+
+    search_results
+}
+
 #[derive(Debug)]
 pub struct App {
     pub input: String,
@@ -696,12 +743,46 @@ impl App {
         self.search_scope = scope;
         self.input.clear();
         self.character_index = 0;
+        if self.searching_right_pane() {
+            // The right pane keeps its own results; the left listing stays as it is.
+            self.right_pane.clear_search();
+            self.right_pane.global_search_mode = matches!(scope, SearchScope::Root);
+            return;
+        }
         self.filtered_indexes = (0..self.files.len()).collect();
         self.search_results.clear();
         self.global_search_mode = matches!(scope, SearchScope::Root);
     }
 
+    /// Whether the search box is filtering the right pane: a search started there is
+    /// being typed. Otherwise its query and results belong to the left listing.
+    pub fn searching_right_pane(&self) -> bool {
+        self.input_mode == InputMode::Editing
+            && self.view_mode.is_dual_pane()
+            && self.is_right_pane_active()
+    }
+
+    /// The query and global flag the search box shows: the active pane's search.
+    pub fn search_box(&self) -> (&str, bool) {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            let query = if self.input_mode == InputMode::Editing {
+                &self.input
+            } else {
+                &self.right_pane.search_input
+            };
+            (query, self.right_pane.global_search_mode)
+        } else {
+            (&self.input, self.global_search_mode)
+        }
+    }
+
     pub fn filter_files(&mut self, input: String, store: DirectoryStore) {
+        if self.searching_right_pane() {
+            self.right_pane
+                .search(&input, &store, self.max_search_results);
+            return;
+        }
+
         if input.is_empty() {
             // Show all files when no search input
             self.filtered_indexes = (0..self.files.len()).collect();
@@ -723,47 +804,7 @@ impl App {
 
     /// Perform fuzzy search in current directory with scoring
     pub fn perform_local_search(&mut self, query: &str) {
-        let matcher = SkimMatcherV2::default();
-        let mut search_results: Vec<SearchResult> = Vec::new();
-
-        for (index, file_path) in self.files.iter().enumerate() {
-            let path = Path::new(file_path);
-            let file_name = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(file_path);
-
-            // Try fuzzy matching on filename first (higher priority)
-            let filename_score = matcher.fuzzy_match(file_name, query);
-
-            // Also try matching on full path (lower priority)
-            let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 2); // Reduce path match score
-
-            // Use the best score
-            if let Some(score) = filename_score.or(path_score) {
-                let is_directory = path.is_dir();
-
-                // Boost directory scores slightly for better organization
-                let adjusted_score = if is_directory { score + 10 } else { score };
-
-                search_results.push(SearchResult {
-                    file_path: file_path.clone(),
-                    display_name: file_name.to_string(),
-                    score: adjusted_score,
-                    is_directory,
-                    original_index: index,
-                });
-            }
-        }
-
-        // Sort by score (descending) then by name
-        search_results.sort_by(|a, b| {
-            b.score.cmp(&a.score).then_with(|| {
-                a.display_name
-                    .to_lowercase()
-                    .cmp(&b.display_name.to_lowercase())
-            })
-        });
+        let search_results = local_search_results(&self.files, query);
 
         // Update filtered indexes based on search results
         self.filtered_indexes = search_results
@@ -915,8 +956,10 @@ impl App {
     /// `search_results` and `filtered_indexes` stay consistent.
     pub fn refresh_files_from_watcher(&mut self, files: Vec<String>, state: &mut ListState) {
         let selected_path = self.get_selected_path(state.selected());
+        // A query typed for the right pane isn't the left listing's.
         let local_query = (!self.global_search_mode
             && !self.input.is_empty()
+            && !self.searching_right_pane()
             && (self.input_mode == InputMode::Editing || !self.search_results.is_empty()))
         .then(|| self.input.clone());
         if local_query.is_none() && !self.global_search_mode {
@@ -1503,6 +1546,9 @@ impl App {
         self.right_pane =
             crate::pane::Pane::new(self.current_directory.clone(), self.files.clone());
         self.right_pane.show_hidden_files = self.show_hidden_files;
+        self.right_pane.sort_by = self.sort_by.clone();
+        self.right_pane.sort_type = self.sort_type.clone();
+        self.right_pane.watch_directory();
     }
 
     /// Request a preview update with debouncing

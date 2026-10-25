@@ -8,7 +8,7 @@ use ratatui::{
 };
 use std::{path::Path, rc::Rc};
 
-use crate::app::{App, InputMode, ViewMode};
+use crate::app::{App, InputMode, SearchResult, ViewMode};
 use crate::config::Settings;
 use crate::icons::IconProvider;
 use crate::render::{create_size_text, get_file_size};
@@ -112,6 +112,7 @@ impl Ui {
                 .border_set(border::ROUNDED)
                 .title(list_title.as_str())
                 .style(match app.input_mode {
+                    _ if app.searching_right_pane() => OneDarkTheme::inactive_border(),
                     InputMode::Normal => {
                         if app.view_mode == ViewMode::DualPane && app.is_right_pane_active() {
                             OneDarkTheme::inactive_border()
@@ -236,7 +237,10 @@ impl Ui {
             return "Loading...".to_string();
         }
 
-        if app.input_mode == InputMode::Editing && !app.input.is_empty() {
+        if app.input_mode == InputMode::Editing
+            && !app.input.is_empty()
+            && !app.searching_right_pane()
+        {
             let count = if app.global_search_mode {
                 app.search_results.len()
             } else {
@@ -285,78 +289,14 @@ impl Ui {
     /// Generate list items based on current search state (optimized with pagination)
     fn generate_list_items(&self, app: &App, settings: &Settings) -> Vec<ListItem<'_>> {
         let show_file_sizes = settings.show_size_bars;
-        let search_term = if app.input_mode == InputMode::Editing && !app.input.is_empty() {
-            let term = app.input.trim();
-            // Remove leading search indicators for highlighting
-            if term.starts_with(' ') || term.starts_with('/') {
-                term.trim_start_matches(' ').trim_start_matches('/')
-            } else {
-                term
-            }
-        } else {
-            ""
-        };
+        let search_term = highlight_term(app, false);
 
         if app.global_search_mode && !app.search_results.is_empty() {
             // Show global search results with highlighted search terms
             app.search_results
                 .iter()
                 .take(50) // Limit to top 50 results for performance
-                .map(|result| {
-                    let colored_icon = self.icon_provider.get_colored_for_path(
-                        Path::new(&result.file_path),
-                        result.is_directory,
-                        &app.theme_colors,
-                    );
-
-                    if !search_term.is_empty() {
-                        // Create highlighted filename with search term
-                        let highlighted_line = highlight_search_term(
-                            &result.display_name,
-                            search_term,
-                            OneDarkTheme::normal(),
-                            OneDarkTheme::search_highlight(),
-                        );
-
-                        // Add colored icon and score to the highlighted line
-                        let mut spans = vec![ratatui::text::Span::styled(
-                            format!("{} ", colored_icon.icon),
-                            Style::default().fg(colored_icon.color),
-                        )];
-                        spans.extend(highlighted_line.spans);
-                        spans.push(ratatui::text::Span::styled(
-                            format!(" ({})", result.score),
-                            OneDarkTheme::info(),
-                        ));
-
-                        // Add file size for files (not directories)
-                        if show_file_sizes && !result.is_directory {
-                            let file_size = get_file_size(&result.file_path);
-                            spans.push(Span::raw(" "));
-                            spans.push(create_size_text(file_size));
-                        }
-
-                        ListItem::from(ratatui::text::Line::from(spans))
-                    } else {
-                        // Fallback with colored icon
-                        let mut spans = vec![
-                            Span::styled(
-                                format!("{} ", colored_icon.icon),
-                                Style::default().fg(colored_icon.color),
-                            ),
-                            Span::raw(format!("{} ({})", result.display_name, result.score)),
-                        ];
-
-                        // Add file size for files (not directories)
-                        if show_file_sizes && !result.is_directory {
-                            let file_size = get_file_size(&result.file_path);
-                            spans.push(Span::raw(" "));
-                            spans.push(create_size_text(file_size));
-                        }
-
-                        ListItem::from(ratatui::text::Line::from(spans))
-                    }
-                })
+                .map(|result| self.search_result_item(result, search_term, app, show_file_sizes))
                 .collect()
         } else {
             // Use all filtered indexes (or all files if no filter)
@@ -449,5 +389,87 @@ impl Ui {
                 })
                 .collect()
         }
+    }
+
+    /// A search result row: colored icon, name with `search_term` highlighted, score,
+    /// and the size of a file.
+    pub fn search_result_item(
+        &self,
+        result: &SearchResult,
+        search_term: &str,
+        app: &App,
+        show_file_sizes: bool,
+    ) -> ListItem<'static> {
+        let colored_icon = self.icon_provider.get_colored_for_path(
+            Path::new(&result.file_path),
+            result.is_directory,
+            &app.theme_colors,
+        );
+
+        if !search_term.is_empty() {
+            // Create highlighted filename with search term
+            let highlighted_line = highlight_search_term(
+                &result.display_name,
+                search_term,
+                OneDarkTheme::normal(),
+                OneDarkTheme::search_highlight(),
+            );
+
+            // Add colored icon and score to the highlighted line
+            let mut spans = vec![ratatui::text::Span::styled(
+                format!("{} ", colored_icon.icon),
+                Style::default().fg(colored_icon.color),
+            )];
+            spans.extend(highlighted_line.spans);
+            spans.push(ratatui::text::Span::styled(
+                format!(" ({})", result.score),
+                OneDarkTheme::info(),
+            ));
+
+            // Add file size for files (not directories)
+            if show_file_sizes && !result.is_directory {
+                let file_size = get_file_size(&result.file_path);
+                spans.push(Span::raw(" "));
+                spans.push(create_size_text(file_size));
+            }
+
+            ListItem::from(ratatui::text::Line::from(spans))
+        } else {
+            // Fallback with colored icon
+            let mut spans = vec![
+                Span::styled(
+                    format!("{} ", colored_icon.icon),
+                    Style::default().fg(colored_icon.color),
+                ),
+                Span::raw(format!("{} ({})", result.display_name, result.score)),
+            ];
+
+            // Add file size for files (not directories)
+            if show_file_sizes && !result.is_directory {
+                let file_size = get_file_size(&result.file_path);
+                spans.push(Span::raw(" "));
+                spans.push(create_size_text(file_size));
+            }
+
+            ListItem::from(ratatui::text::Line::from(spans))
+        }
+    }
+}
+
+/// The search box's query to highlight in a pane's rows while it's typed there:
+/// the left listing's, or the right pane's when `right_pane`.
+pub fn highlight_term(app: &App, right_pane: bool) -> &str {
+    if app.input_mode != InputMode::Editing
+        || app.input.is_empty()
+        || app.searching_right_pane() != right_pane
+    {
+        return "";
+    }
+    let term = app.input.trim();
+    // Remove leading search indicators for highlighting
+    if term.starts_with(' ') || term.starts_with('/') {
+        term.trim_start_matches(' ').trim_start_matches('/')
+    } else {
+        term
     }
 }

@@ -33,9 +33,9 @@ pub struct StatusBar {
     pub error_display_time: Option<Instant>,
     pub notification_kind: NotificationKind,
     pub notification_duration: Duration,
-    // Cache tracking - only recalculate when directory changes
-    cached_directory: String,
-    cache_valid: bool,
+    // Cache tracking - only recalculate when the active pane or its directory changes:
+    // (right pane active, directory); None when invalidated
+    cached_listing: Option<(bool, String)>,
 }
 
 impl Default for StatusBar {
@@ -57,35 +57,29 @@ impl StatusBar {
             error_display_time: None,
             notification_kind: NotificationKind::Error,
             notification_duration: Duration::from_secs(DEFAULT_NOTIFICATION_SECS),
-            cached_directory: String::new(),
-            cache_valid: false,
+            cached_listing: None,
         }
     }
 
     pub fn update(&mut self, app: &App) {
-        // Determine current directory first
-        let current_dir = if !app.files.is_empty() {
-            Path::new(&app.files[0])
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
+        // Describe the active pane: its directory (even when empty) and listing
+        let right_pane = is_right_pane(app);
+        let current_dir = app.current_directory_path().to_string_lossy().to_string();
+        let files = if right_pane {
+            &app.right_pane.files
         } else {
-            env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
+            &app.files
         };
 
         // Check if we need to recalculate expensive metadata operations
-        let needs_recalc = !self.cache_valid
-            || self.cached_directory != current_dir
-            || self.file_count + self.directory_count != app.files.len();
+        let listing = (right_pane, current_dir.clone());
+        let needs_recalc = self.cached_listing.as_ref() != Some(&listing)
+            || self.file_count + self.directory_count != files.len();
 
         if needs_recalc {
-            self.update_file_counts(app);
-            self.calculate_total_size(app);
-            self.cached_directory = current_dir.clone();
-            self.cache_valid = true;
+            self.update_file_counts(files);
+            self.calculate_total_size(files);
+            self.cached_listing = Some(listing);
         }
 
         // These are cheap operations - always update
@@ -96,14 +90,14 @@ impl StatusBar {
 
     /// Invalidate cache - call this after file operations (create, delete, rename)
     pub fn invalidate_cache(&mut self) {
-        self.cache_valid = false;
+        self.cached_listing = None;
     }
 
-    fn update_file_counts(&mut self, app: &App) {
+    fn update_file_counts(&mut self, files: &[String]) {
         let mut file_count = 0;
         let mut directory_count = 0;
 
-        for path in &app.files {
+        for path in files {
             if let Ok(metadata) = fs::metadata(path) {
                 if metadata.is_file() {
                     file_count += 1;
@@ -118,43 +112,38 @@ impl StatusBar {
     }
 
     fn update_selected_item_info(&mut self, app: &App) {
-        if let Some(index) = app.curr_index {
-            if index < app.files.len() {
-                let selected_path = &app.files[index];
-                let path = Path::new(selected_path);
+        if let Some(selected_path) = app.active_selected_path(app.curr_index) {
+            let path = Path::new(&selected_path);
 
-                if let Some(file_name) = path.file_name() {
-                    let name = file_name.to_string_lossy();
+            if let Some(file_name) = path.file_name() {
+                let name = file_name.to_string_lossy();
 
-                    if let Ok(metadata) = fs::metadata(selected_path) {
-                        let file_type = if metadata.is_file() {
-                            "File"
-                        } else if metadata.is_dir() {
-                            "Directory"
-                        } else {
-                            "Other"
-                        };
-
-                        let size = Self::format_file_size(metadata.len());
-                        self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
+                if let Ok(metadata) = fs::metadata(&selected_path) {
+                    let file_type = if metadata.is_file() {
+                        "File"
+                    } else if metadata.is_dir() {
+                        "Directory"
                     } else {
-                        self.selected_item_info = format!("{} | Unknown", name);
-                    }
+                        "Other"
+                    };
+
+                    let size = Self::format_file_size(metadata.len());
+                    self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
                 } else {
-                    self.selected_item_info = "No selection".to_string();
+                    self.selected_item_info = format!("{} | Unknown", name);
                 }
             } else {
-                self.selected_item_info = "Invalid selection".to_string();
+                self.selected_item_info = "No selection".to_string();
             }
         } else {
             self.selected_item_info = "No selection".to_string();
         }
     }
 
-    fn calculate_total_size(&mut self, app: &App) {
+    fn calculate_total_size(&mut self, files: &[String]) {
         let mut total = 0u64;
 
-        for path in &app.files {
+        for path in files {
             if let Ok(metadata) = fs::metadata(path) {
                 if metadata.is_file() {
                     total += metadata.len();
@@ -369,17 +358,20 @@ impl StatusBar {
 
     /// Get position indicator: "Top", "Bot", or "N/M"
     fn get_position_indicator(app: &App) -> String {
-        let total = if app.global_search_mode && !app.search_results.is_empty() {
-            app.search_results.len()
+        let (index, total) = if is_right_pane(app) {
+            (
+                app.right_pane.selected_index,
+                app.right_pane.get_list_length(),
+            )
         } else {
-            app.files.len()
+            (app.curr_index, app.get_list_length())
         };
 
         if total == 0 {
             return "Empty".to_string();
         }
 
-        let current = app.curr_index.unwrap_or(0) + 1; // 1-indexed for display
+        let current = index.unwrap_or(0) + 1; // 1-indexed for display
 
         if current == 1 {
             "Top".to_string()
@@ -403,19 +395,11 @@ impl StatusBar {
 
     /// Get size and permissions for selected file
     fn get_selected_file_info(&self, app: &App) -> (String, String) {
-        if let Some(index) = app.curr_index {
-            let file_path = if app.global_search_mode && !app.search_results.is_empty() {
-                app.search_results.get(index).map(|r| r.file_path.as_str())
-            } else {
-                app.files.get(index).map(|s| s.as_str())
-            };
-
-            if let Some(path) = file_path {
-                if let Ok(metadata) = fs::metadata(path) {
-                    let size = Self::format_file_size(metadata.len());
-                    let perms = Self::format_permissions(&metadata);
-                    return (size, perms);
-                }
+        if let Some(path) = app.active_selected_path(app.curr_index) {
+            if let Ok(metadata) = fs::metadata(path) {
+                let size = Self::format_file_size(metadata.len());
+                let perms = Self::format_permissions(&metadata);
+                return (size, perms);
             }
         }
         ("--".to_string(), "----------".to_string())
@@ -542,6 +526,11 @@ impl StatusBar {
     }
 }
 
+/// Whether the status bar describes the right pane: it's active in dual pane.
+fn is_right_pane(app: &App) -> bool {
+    app.view_mode.is_dual_pane() && app.is_right_pane_active()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,5 +569,58 @@ mod tests {
         status_bar.show_error("failed".to_string(), None);
         assert_eq!(status_bar.notification_kind, NotificationKind::Error);
         assert_eq!(status_bar.error_message.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn update_describes_the_active_right_pane() {
+        use crate::app::PanePosition;
+        use crate::utils::{get_file_path_data, SortBy, SortType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let folder = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let (left, right) = (folder("left"), folder("right"));
+        std::fs::create_dir_all(Path::new(&right).join("sub")).unwrap();
+        std::fs::create_dir(&left).unwrap();
+        std::fs::write(Path::new(&left).join("left.txt"), "1").unwrap();
+        std::fs::write(Path::new(&right).join("a.txt"), "12345").unwrap();
+        std::fs::write(Path::new(&right).join("b.txt"), "1234567").unwrap();
+        let mut app = App::new(
+            get_file_path_data(left.clone(), false, SortBy::Name, &SortType::ASC).unwrap(),
+        );
+        app.current_directory = left.clone();
+        app.view_mode = ViewMode::DualPane;
+        app.right_pane = crate::pane::Pane::new(right.clone(), Vec::new());
+        app.right_pane.sort_by = SortBy::Name;
+        app.right_pane.refresh_files();
+        app.right_pane
+            .select_path(&Path::new(&right).join("b.txt").to_string_lossy());
+        let mut status_bar = StatusBar::new();
+
+        status_bar.update(&app);
+        assert_eq!(status_bar.current_directory, left);
+        assert_eq!((status_bar.file_count, status_bar.directory_count), (1, 0));
+        assert!(status_bar.selected_item_info.starts_with("left.txt | File"));
+
+        app.active_pane = PanePosition::Right;
+        status_bar.update(&app);
+        assert_eq!(status_bar.current_directory, right);
+        assert_eq!((status_bar.file_count, status_bar.directory_count), (2, 1));
+        assert_eq!(status_bar.total_size, 12);
+        assert_eq!(status_bar.selected_item_info, "b.txt | File | 7 B");
+        assert_eq!(StatusBar::get_position_indicator(&app), "2/3");
+        assert_eq!(status_bar.get_selected_file_info(&app).0, "7 B");
+    }
+
+    #[test]
+    fn update_shows_an_empty_folder_being_browsed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new(Vec::new());
+        app.current_directory = dir.path().to_string_lossy().into_owned();
+        let mut status_bar = StatusBar::new();
+
+        status_bar.update(&app);
+
+        assert_eq!(status_bar.current_directory, app.current_directory);
+        assert_eq!(StatusBar::get_position_indicator(&app), "Empty");
     }
 }

@@ -68,11 +68,13 @@ pub fn draw(
             )
             .split(f.size());
 
+        // The search box shows the active pane's search
+        let (search_query, global_search) = app.search_box();
         let (msg, style) = match app.input_mode {
             InputMode::Normal => {
-                let search_indicator = if app.global_search_mode {
+                let search_indicator = if global_search {
                     " [Global Search]".bold()
-                } else if !app.input.is_empty() {
+                } else if !search_query.is_empty() {
                     " [Local Search]".bold()
                 } else {
                     find_hint.bold()
@@ -81,14 +83,14 @@ pub fn draw(
                     vec![
                         "Exit (q)".bold(),
                         search_indicator,
-                        app.input.clone().bold(),
+                        search_query.to_string().bold(),
                         " Enter to select file (enter)".bold(),
                     ],
                     OneDarkTheme::normal(),
                 )
             },
             InputMode::Editing => {
-                let mode_text = if app.global_search_mode {
+                let mode_text = if global_search {
                     "Global Search Mode (Esc to exit)".bold()
                 } else {
                     "Local Search Mode (Esc to exit)".bold()
@@ -143,21 +145,21 @@ pub fn draw(
             .split(chunks[2]);
 
         // Input field with OneDark theming
-        let search_title = if app.global_search_mode {
+        let search_title = if global_search {
             "🔍 Global Search"
         } else if app.input_mode == InputMode::Editing {
             "🔍 Local Search"
         } else {
             "🔍 Search"
         };
-        let input_block = Paragraph::new(app.input.clone()).block(
+        let input_block = Paragraph::new(search_query.to_string()).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(search_title)
                     .style(match app.input_mode {
                         InputMode::Normal => OneDarkTheme::inactive_border(),
                         InputMode::Editing => {
-                            if app.global_search_mode {
+                            if global_search {
                                 OneDarkTheme::global_search()
                             } else {
                                 OneDarkTheme::local_search()
@@ -330,14 +332,9 @@ pub fn draw(
             let is_right_active = app.is_right_pane_active();
 
             // Generate list items for right pane using icon provider (with dotfile dimming)
-            let right_items: Vec<ListItem> = right_pane.file_labels.iter().enumerate().map(|(idx, label)| {
-                let is_dir = right_pane.files.get(idx)
-                    .map(|p| std::path::Path::new(p).is_dir())
-                    .unwrap_or(false);
-                let path = right_pane.files.get(idx)
-                    .map(std::path::Path::new)
-                    .unwrap_or(std::path::Path::new(""));
-                let icon = widgets_ui.icon_provider.get_for_path(path, is_dir);
+            let listing_item = |path: &str, label: &str| {
+                let path = std::path::Path::new(path);
+                let icon = widgets_ui.icon_provider.get_for_path(path, path.is_dir());
 
                 // Check if this is a dotfile (hidden file)
                 let is_dotfile = label.starts_with('.');
@@ -353,7 +350,24 @@ pub fn draw(
                 } else {
                     ListItem::new(format!("{} {}", icon, label))
                 }
-            }).collect();
+            };
+            // A search shows its results, highlighted like the left listing's
+            let search_term = crate::ui::highlight_term(app, true);
+            let right_items: Vec<ListItem> = if right_pane.is_searching()
+                && (right_pane.global_search_mode || !search_term.is_empty())
+            {
+                right_pane.search_results.iter()
+                    .map(|result| widgets_ui.search_result_item(result, search_term, app, settings.show_size_bars))
+                    .collect()
+            } else if right_pane.is_searching() {
+                right_pane.search_results.iter()
+                    .map(|result| listing_item(&result.file_path, &result.display_name))
+                    .collect()
+            } else {
+                right_pane.files.iter().zip(&right_pane.file_labels)
+                    .map(|(path, label)| listing_item(path, label))
+                    .collect()
+            };
 
             // Create title with directory info and active indicator
             let dir_name = std::path::Path::new(&right_pane.current_directory)
@@ -377,7 +391,13 @@ pub fn draw(
 
             // Create block based on settings
             let block = if settings.show_borders {
-                let right_border_style = if is_right_active {
+                let right_border_style = if app.searching_right_pane() {
+                    if right_pane.global_search_mode {
+                        OneDarkTheme::global_search()
+                    } else {
+                        OneDarkTheme::local_search()
+                    }
+                } else if is_right_active {
                     OneDarkTheme::active_border()
                 } else {
                     OneDarkTheme::inactive_border()
