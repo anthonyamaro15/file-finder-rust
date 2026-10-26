@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use log::debug;
+use ratatui::style::Color;
 use ratatui::widgets::ListState;
 use rayon::prelude::*;
 
@@ -847,6 +848,33 @@ impl App {
             (query, self.right_pane.global_search_mode)
         } else {
             (&self.input, self.global_search_mode)
+        }
+    }
+
+    /// The mode's color, for its badge, prompt and popup: a search from the root has
+    /// its own.
+    pub fn mode_color(&self) -> Color {
+        let theme = &self.theme_colors;
+        match self.input_mode {
+            InputMode::Editing if self.search_box().1 => theme.mode_global,
+            InputMode::Editing => theme.mode_search,
+            InputMode::Visual => theme.mode_visual,
+            InputMode::WatchDelete | InputMode::WatchTrash => theme.mode_delete,
+            InputMode::WatchCreate => theme.mode_create,
+            InputMode::WatchRename => theme.mode_rename,
+            InputMode::WatchSort => theme.mode_sort,
+            _ => theme.mode_normal,
+        }
+    }
+
+    /// The color of the active pane's cursor mark: the mode's, or a search's while its
+    /// results are shown.
+    pub fn cursor_color(&self) -> Color {
+        let (query, global) = self.search_box();
+        match self.input_mode {
+            InputMode::Normal if global => self.theme_colors.mode_global,
+            InputMode::Normal if !query.is_empty() => self.theme_colors.mode_search,
+            _ => self.mode_color(),
         }
     }
 
@@ -1974,6 +2002,37 @@ mod tests {
             .map(|r| r.file_path.as_str())
             .collect();
         assert_eq!(shown, results);
+    }
+
+    #[test]
+    fn each_mode_takes_its_theme_color() {
+        let mut app = App::new(vec!["/w/a".into()]);
+        let theme = app.theme_colors.clone();
+        for (mode, global, color) in [
+            (InputMode::Normal, false, theme.mode_normal),
+            (InputMode::Editing, false, theme.mode_search),
+            (InputMode::Editing, true, theme.mode_global),
+            (InputMode::Visual, false, theme.mode_visual),
+            (InputMode::WatchTrash, false, theme.mode_delete),
+            (InputMode::WatchDelete, false, theme.mode_delete),
+            (InputMode::WatchCreate, false, theme.mode_create),
+            (InputMode::WatchRename, false, theme.mode_rename),
+            (InputMode::WatchSort, false, theme.mode_sort),
+        ] {
+            app.input_mode = mode.clone();
+            app.global_search_mode = global;
+            assert_eq!(app.mode_color(), color, "{mode:?} global: {global}");
+            assert_eq!(app.cursor_color(), color, "{mode:?} global: {global}");
+        }
+
+        // Browsing a search's results keeps its color on the cursor, not the badge.
+        app.input_mode = InputMode::Normal;
+        app.global_search_mode = false;
+        app.input = "a".into();
+        assert_eq!(app.mode_color(), theme.mode_normal);
+        assert_eq!(app.cursor_color(), theme.mode_search);
+        app.global_search_mode = true;
+        assert_eq!(app.cursor_color(), theme.mode_global);
     }
 
     #[test]

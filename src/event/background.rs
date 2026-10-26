@@ -114,7 +114,11 @@ pub fn poll_preview_result(
                                 }
                                 FileType::Markdown => {
                                     // Render markdown with formatting
-                                    file_reader_content.render_markdown_content(&content, &path);
+                                    file_reader_content.render_markdown_content(
+                                        &content,
+                                        &path,
+                                        &app.theme_colors,
+                                    );
                                     app.preview_file_content.clear();
                                 }
                                 FileType::Image => {

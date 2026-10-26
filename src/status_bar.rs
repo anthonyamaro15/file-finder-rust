@@ -136,21 +136,33 @@ impl StatusBar {
         }
     }
 
-    fn get_mode_indicator(input_mode: &InputMode, theme: &ThemeColors) -> (&'static str, Color) {
-        match input_mode {
-            InputMode::Normal => ("NORMAL", theme.green),
-            InputMode::Editing => ("SEARCH", theme.blue),
-            InputMode::WatchDelete => ("DELETE", theme.red),
-            InputMode::WatchTrash => ("TRASH", theme.red),
-            InputMode::WatchCreate => ("CREATE", theme.yellow),
-            InputMode::WatchRename => ("RENAME", theme.cyan),
-            InputMode::WatchSort => ("SORT", theme.purple),
-            InputMode::WatchKeyBinding => ("HELP", theme.fg),
-            InputMode::CacheLoading => ("LOADING", theme.yellow),
-            InputMode::PickFolder => ("PICK", theme.blue),
-            InputMode::WatchInfo => ("INFO", theme.cyan),
-            InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
-            InputMode::Palette => ("PALETTE", theme.blue),
+    fn get_mode_indicator(app: &App, theme: &ThemeColors) -> (&'static str, Color) {
+        let label = match app.input_mode {
+            InputMode::Normal => "NORMAL",
+            InputMode::Editing => "SEARCH",
+            InputMode::WatchDelete => "DELETE",
+            InputMode::WatchTrash => "TRASH",
+            InputMode::WatchCreate => "CREATE",
+            InputMode::WatchRename => "RENAME",
+            InputMode::WatchSort => "SORT",
+            InputMode::WatchKeyBinding => "HELP",
+            InputMode::CacheLoading => "LOADING",
+            InputMode::PickFolder => "PICK",
+            InputMode::WatchInfo => "INFO",
+            InputMode::Visual => "VISUAL",
+            InputMode::Palette => "PALETTE",
+        };
+        (label, Self::mode_color(app, theme))
+    }
+
+    /// The badge's color: the mode's, for the modes that have one.
+    fn mode_color(app: &App, theme: &ThemeColors) -> Color {
+        match app.input_mode {
+            InputMode::WatchKeyBinding => theme.fg,
+            InputMode::CacheLoading => theme.yellow,
+            InputMode::PickFolder | InputMode::Palette => theme.blue,
+            InputMode::WatchInfo => theme.cyan,
+            _ => app.mode_color(),
         }
     }
 
@@ -173,7 +185,7 @@ impl StatusBar {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
-        let (mode_text, mode_color) = Self::get_mode_indicator(&app.input_mode, theme);
+        let (mode_text, mode_color) = Self::get_mode_indicator(app, theme);
         let mode_text = Self::mode_label(app, mode_text);
         // Wide enough for "VISUAL · 5 selected" inside its borders.
         let mode_width = u16::try_from(mode_text.chars().count() + 4).map_or(15, |w| w.max(15));
@@ -195,15 +207,23 @@ impl StatusBar {
                 Constraint::Length(20),         // System info
             ])
             .split(area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(theme.statusbar_bg)),
+            area,
+        );
 
-        // Mode indicator with rounded borders
-        let mode_widget = Paragraph::new(mode_text)
+        // Mode indicator with rounded borders, its name black on the mode's color
+        let badge = Style::default()
+            .fg(theme.black)
+            .bg(mode_color)
+            .add_modifier(Modifier::BOLD);
+        let mode_widget = Paragraph::new(Line::styled(format!(" {mode_text} "), badge))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_set(border::ROUNDED),
+                    .border_set(border::ROUNDED)
+                    .border_style(Style::default().fg(mode_color)),
             )
-            .style(Style::default().fg(mode_color).add_modifier(Modifier::BOLD))
             .alignment(Alignment::Center);
         frame.render_widget(mode_widget, chunks[0]);
 
@@ -232,7 +252,7 @@ impl StatusBar {
                     .border_set(border::ROUNDED)
                     .title("Directory"),
             )
-            .style(Style::default().fg(theme.fg));
+            .style(Style::default().fg(theme.statusbar_fg));
         frame.render_widget(dir_widget, chunks[2]);
 
         // File and directory counts
@@ -276,7 +296,7 @@ impl StatusBar {
     /// Render minimal status bar - single clean line with essential info
     /// Format:  NOR  ~/path  position  size  permissions
     pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
-        let (mode_text, mode_color) = Self::get_mode_indicator_short(&app.input_mode, theme);
+        let (mode_text, mode_color) = Self::get_mode_indicator_short(app, theme);
         let mode_text = Self::mode_label(app, mode_text);
 
         // Calculate position indicator
@@ -300,7 +320,7 @@ impl StatusBar {
             ),
             Span::raw("  "),
             // Path
-            Span::styled(path, Style::default().fg(theme.fg)),
+            Span::styled(path, Style::default().fg(theme.statusbar_fg)),
             Span::raw("  "),
             // Position
             Span::styled(position, Style::default().fg(theme.gray)), // Muted
@@ -324,30 +344,36 @@ impl StatusBar {
             None => spans,
         };
 
-        let paragraph = Paragraph::new(Line::from(spans));
-        frame.render_widget(paragraph, area);
+        // A bar along the line it's drawn on.
+        let paragraph =
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.statusbar_bg));
+        frame.render_widget(
+            paragraph,
+            Rect {
+                height: area.height.min(1),
+                ..area
+            },
+        );
     }
 
     /// Get short mode indicator for minimal status bar
-    fn get_mode_indicator_short(
-        input_mode: &InputMode,
-        theme: &ThemeColors,
-    ) -> (&'static str, Color) {
-        match input_mode {
-            InputMode::Normal => ("NOR", theme.green),
-            InputMode::Editing => ("SRC", theme.blue),
-            InputMode::WatchDelete => ("DEL", theme.red),
-            InputMode::WatchTrash => ("TRASH", theme.red),
-            InputMode::WatchCreate => ("NEW", theme.yellow),
-            InputMode::WatchRename => ("REN", theme.cyan),
-            InputMode::WatchSort => ("SRT", theme.purple),
-            InputMode::WatchKeyBinding => ("HLP", theme.fg),
-            InputMode::CacheLoading => ("...", theme.yellow),
-            InputMode::PickFolder => ("PCK", theme.blue),
-            InputMode::WatchInfo => ("INFO", theme.cyan),
-            InputMode::Visual => ("VISUAL", theme.statusbar_mode_visual),
-            InputMode::Palette => ("PAL", theme.blue),
-        }
+    fn get_mode_indicator_short(app: &App, theme: &ThemeColors) -> (&'static str, Color) {
+        let label = match app.input_mode {
+            InputMode::Normal => "NOR",
+            InputMode::Editing => "SRC",
+            InputMode::WatchDelete => "DEL",
+            InputMode::WatchTrash => "TRASH",
+            InputMode::WatchCreate => "NEW",
+            InputMode::WatchRename => "REN",
+            InputMode::WatchSort => "SRT",
+            InputMode::WatchKeyBinding => "HLP",
+            InputMode::CacheLoading => "...",
+            InputMode::PickFolder => "PCK",
+            InputMode::WatchInfo => "INFO",
+            InputMode::Visual => "VISUAL",
+            InputMode::Palette => "PAL",
+        };
+        (label, Self::mode_color(app, theme))
     }
 
     /// Get position indicator: "Top", "Bot", or "N/M"
@@ -471,7 +497,7 @@ impl StatusBar {
     }
 
     /// Render error notification as an overlay
-    pub fn render_error_notification(&self, frame: &mut Frame, area: Rect) {
+    pub fn render_error_notification(&self, frame: &mut Frame, area: Rect, theme: &ThemeColors) {
         if let Some(ref error_msg) = self.error_message {
             // Calculate popup size (60% width, minimum height for message)
             let popup_width = (area.width * 6) / 10;
@@ -492,9 +518,9 @@ impl StatusBar {
             frame.render_widget(clear_widget, popup_area);
 
             let (title, color) = match self.notification_kind {
-                NotificationKind::Error => ("❌ Error", Color::Red),
-                NotificationKind::Warning => ("⚠ Warning", Color::Yellow),
-                NotificationKind::Info => ("ℹ Info", Color::Green),
+                NotificationKind::Error => ("❌ Error", theme.red),
+                NotificationKind::Warning => ("⚠ Warning", theme.yellow),
+                NotificationKind::Info => ("ℹ Info", theme.green),
             };
             let error_block = Paragraph::new(error_msg.clone())
                 .block(
@@ -503,7 +529,7 @@ impl StatusBar {
                         .title(title)
                         .style(Style::default().fg(color)),
                 )
-                .style(Style::default().fg(Color::White).bg(Color::DarkGray))
+                .style(Style::default().fg(theme.bright).bg(theme.gray))
                 .wrap(ratatui::widgets::Wrap { trim: true });
 
             frame.render_widget(error_block, popup_area);
@@ -549,6 +575,48 @@ mod tests {
         }
         app.end_visual();
         assert_eq!(StatusBar::mode_label(&app, "NORMAL"), "NORMAL");
+    }
+
+    #[test]
+    fn both_styles_show_the_badge_black_on_the_mode_color() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new(vec!["/w/a".into()]);
+        let status_bar = StatusBar::new();
+        let theme = app.theme_colors.clone();
+        for (mode, global, label, color) in [
+            (InputMode::Normal, false, "NOR", theme.mode_normal),
+            (InputMode::Editing, false, "SRC", theme.mode_search),
+            (InputMode::Editing, true, "SRC", theme.mode_global),
+            (InputMode::WatchTrash, false, "TRASH", theme.mode_delete),
+            (InputMode::WatchRename, false, "REN", theme.mode_rename),
+        ] {
+            app.input_mode = mode;
+            app.global_search_mode = global;
+            for minimal in [false, true] {
+                let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+                terminal
+                    .draw(|f| {
+                        if minimal {
+                            status_bar.render_minimal(f, f.size(), &app, &app.theme_colors);
+                        } else {
+                            status_bar.render(f, f.size(), &app, &app.theme_colors);
+                        }
+                    })
+                    .unwrap();
+                // The badge's first letter, inside the classic style's border: "NORMAL"
+                // there, "NOR" in the minimal one.
+                let row = usize::from(!minimal);
+                let cell = terminal.backend().buffer().content()[row * 120..]
+                    .iter()
+                    .find(|cell| cell.symbol() == &label[..1])
+                    .unwrap();
+                assert_eq!(
+                    (cell.fg, cell.bg, cell.modifier.contains(Modifier::BOLD)),
+                    (theme.black, color, true),
+                    "{label} minimal: {minimal}"
+                );
+            }
+        }
     }
 
     fn shown_for(status_bar: &mut StatusBar, elapsed: Duration) -> bool {
