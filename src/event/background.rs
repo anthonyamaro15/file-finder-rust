@@ -844,12 +844,11 @@ pub(crate) mod tests {
             // The main loop synchronizes previews after refreshing all operation results.
             app.sync_preview_with_selection(state.selected());
             assert_eq!(app.take_ready_preview(0), Some(expected));
-            status.update(&app);
-            assert!(status.selected_item_info.starts_with(if fail {
-                "zulu.txt |"
-            } else {
-                "copy_zulu.txt |"
-            }));
+            let today = crate::utils::format::LocalStamp::default();
+            assert_eq!(
+                crate::status_bar::item_text(&app, today).0,
+                if fail { "zulu.txt" } else { "copy_zulu.txt" }
+            );
         }
     }
 
@@ -1461,8 +1460,9 @@ pub(crate) mod tests {
             Some(spelled(&dir.path().join("small")))
         );
         // The status line shows the folder's total, not the folder entry's size.
-        let mut status_bar = StatusBar::new();
-        status_bar.update(&app);
-        assert_eq!(status_bar.selected_item_info, "small | Directory | 3.0 GB");
+        let today = crate::utils::format::LocalStamp::default();
+        let (name, details) = crate::status_bar::item_text(&app, today);
+        assert_eq!(name, "small/");
+        assert!(details.starts_with("folder · 3.0 GB · "), "{details}");
     }
 }

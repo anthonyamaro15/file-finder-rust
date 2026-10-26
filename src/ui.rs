@@ -1,4 +1,5 @@
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::border,
@@ -6,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
-use std::{ops::RangeInclusive, path::Path, rc::Rc};
+use std::{ops::RangeInclusive, path::Path};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, InputMode, SearchResult, ViewMode};
@@ -87,18 +88,17 @@ impl Ui {
         }
     }
 
+    /// Draw the left listing on the left part of `area`, and return its rows' area and
+    /// how many rows it has, for its scrollbar.
     pub fn render_list_preview(
         &mut self,
         f: &mut Frame<'_>,
-        chunks: &Rc<[Rect]>,
+        area: Rect,
         state: &mut ListState,
         app: &App,
         settings: &Settings,
         today: LocalStamp,
-    ) {
-        // Create enhanced title with search feedback
-        let list_title = self.generate_list_title(app, settings);
-
+    ) -> (Rect, usize) {
         // Dynamic layout based on view mode
         let inner_constraints = match app.view_mode {
             ViewMode::FullList => vec![Constraint::Percentage(100)],
@@ -107,7 +107,7 @@ impl Ui {
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(inner_constraints)
-            .split(chunks[2]);
+            .split(area);
 
         // Create block with or without borders based on settings
         let theme = &app.theme_colors;
@@ -115,7 +115,6 @@ impl Ui {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .title(list_title.as_str())
                 .style(match app.input_mode {
                     _ if app.searching_right_pane() => theme.inactive_border,
                     InputMode::Normal | InputMode::Visual => {
@@ -132,27 +131,28 @@ impl Ui {
                 })
         } else {
             // Modern mode: no borders, clean look
-            // Use active/inactive title style in dual pane mode
-            let title_style = if app.view_mode == ViewMode::DualPane {
-                if app.is_right_pane_active() {
+            Block::default()
+                .borders(Borders::NONE)
+                .padding(ratatui::widgets::Padding::horizontal(1))
+        };
+        // In dual pane a title tells the panes apart; the top bar names the folder.
+        let block = match dual_pane_title(app, settings) {
+            Some(title) => {
+                let title_style = if app.is_right_pane_active() {
                     theme.inactive_border
                 } else {
                     theme.active_border
-                }
-            } else {
-                Style::default().fg(theme.muted) // Default muted title
-            };
-            Block::default()
-                .borders(Borders::NONE)
-                .title(list_title.as_str())
-                .title_style(title_style)
-                .padding(ratatui::widgets::Padding::horizontal(1))
+                };
+                block.title(title).title_style(title_style)
+            }
+            None => block,
         };
 
         // Generate list items based on search mode, as wide as the list.
-        let width = block.inner(inner_layout[0]).width;
+        let rows = block.inner(inner_layout[0]);
         let filtered_read_only_items =
-            self.generate_list_items(app, settings, width.into(), today, state.selected());
+            self.generate_list_items(app, settings, rows.width.into(), today, state.selected());
+        let count = filtered_read_only_items.len();
 
         let list_block =
             List::new(filtered_read_only_items)
@@ -163,13 +163,13 @@ impl Ui {
                 });
 
         f.render_stateful_widget(list_block, inner_layout[0], state);
+        (rows, count)
     }
 
     pub fn render_preview_window(
         &self,
         f: &mut Frame<'_>,
-        chunks: &Rc<[Rect]>,
-        state: &mut ListState,
+        area: Rect,
         app: &App,
         settings: &Settings,
         today: LocalStamp,
@@ -177,7 +177,7 @@ impl Ui {
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[2]);
+            .split(area);
 
         // Create block with or without borders based on settings
         let theme = &app.theme_colors;
@@ -221,84 +221,10 @@ impl Ui {
             })
             .collect();
 
+        // From its top: the left list's state would scroll it, and it would move that
+        // list's scroll position in turn.
         let list_preview_block = List::new(items).block(block).style(theme.normal);
-
-        f.render_stateful_widget(list_preview_block, inner_layout[1], state);
-    }
-
-    /// Generate an enhanced title that shows search feedback
-    fn generate_list_title(&self, app: &App, settings: &Settings) -> String {
-        if app.copy_in_progress {
-            if !app.copy_progress_message.is_empty() {
-                return app.copy_progress_message.clone();
-            } else {
-                return "Preparing copy...".to_string();
-            }
-        }
-
-        if app.delete_in_progress {
-            if !app.delete_progress_message.is_empty() {
-                return app.delete_progress_message.clone();
-            } else {
-                return "Preparing delete...".to_string();
-            }
-        }
-
-        if let Some(job) = &app.job {
-            return job.status.clone();
-        }
-
-        if app.loading {
-            return "Loading...".to_string();
-        }
-
-        if app.input_mode == InputMode::Editing
-            && !app.input.is_empty()
-            && !app.searching_right_pane()
-        {
-            let count = if app.global_search_mode {
-                app.search_results.len()
-            } else {
-                app.filtered_indexes.len()
-            };
-
-            if settings.show_borders {
-                if app.global_search_mode {
-                    format!("Global Search: {} results", count)
-                } else {
-                    format!("Search: {} results", count)
-                }
-            } else {
-                // Modern mode - simpler title, position in status bar
-                format!("{} matches", count)
-            }
-        } else {
-            let total = app.files.len();
-            let is_left_active = !app.is_right_pane_active();
-            if settings.show_borders {
-                // Classic mode with borders
-                if app.view_mode == ViewMode::DualPane {
-                    if is_left_active {
-                        format!("▸ Left: Files ({})", total)
-                    } else {
-                        format!("  Left: Files ({})", total)
-                    }
-                } else {
-                    format!("Files ({})", total)
-                }
-            } else {
-                // Modern mode - minimal title, position in status bar
-                if app.view_mode == ViewMode::DualPane {
-                    if is_left_active {
-                        format!("▸ {} items", total)
-                    } else {
-                        format!("{} items", total)
-                    }
-                } else {
-                    format!("{} items", total)
-                }
-            }
-        }
+        f.render_widget(list_preview_block, inner_layout[1]);
     }
 
     /// The left listing's rows, `width` columns wide with `cursor` highlighted: its
@@ -398,6 +324,47 @@ impl Ui {
                 .map(|(i, ((path, label), info))| rows.row(i, path, label, info, None))
                 .collect()
         }
+    }
+}
+
+/// The left pane's title in dual pane, which tells it from the right one: ▸ while it's
+/// active.
+fn dual_pane_title(app: &App, settings: &Settings) -> Option<String> {
+    if app.view_mode != ViewMode::DualPane {
+        return None;
+    }
+    let total = app.files.len();
+    let active = !app.is_right_pane_active();
+    Some(match (settings.show_borders, active) {
+        (true, true) => format!("▸ Left: Files ({total})"),
+        (true, false) => format!("  Left: Files ({total})"),
+        (false, true) => format!("▸ {total} items"),
+        (false, false) => format!("{total} items"),
+    })
+}
+
+/// Draw a scrollbar's thumb in `color` on column `x` beside `rows`, for a list of
+/// `total` rows scrolled down `offset`, when they don't all fit: as tall as the share
+/// shown, and as far down as the scroll.
+pub fn draw_scrollbar(
+    buffer: &mut Buffer,
+    x: u16,
+    rows: Rect,
+    total: usize,
+    offset: usize,
+    color: Color,
+) {
+    let height = usize::from(rows.height);
+    if total <= height || x >= buffer.area.right() {
+        return;
+    }
+    let thumb = ((height * height + total / 2) / total).clamp(2.min(height), height);
+    let start = ((offset * height + total / 2) / total).min(height - thumb);
+    for y in start..start + thumb {
+        buffer
+            .get_mut(x, rows.y + y as u16)
+            .set_symbol("┃")
+            .set_fg(color);
     }
 }
 
@@ -621,7 +588,7 @@ impl<'a> Rows<'a> {
 }
 
 /// `name` cut to `width` columns, ending in … when it doesn't fit.
-fn truncate(name: &str, width: usize) -> String {
+pub(crate) fn truncate(name: &str, width: usize) -> String {
     if name.width() <= width {
         return name.to_string();
     }
@@ -642,7 +609,7 @@ fn truncate(name: &str, width: usize) -> String {
 }
 
 /// `text` cut to `width` columns from the start, beginning with … when it doesn't fit.
-fn truncate_start(text: &str, width: usize) -> String {
+pub(crate) fn truncate_start(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.to_string();
     }
@@ -839,10 +806,8 @@ mod tests {
         selected: Option<usize>,
     ) -> Buffer {
         draw_buffer(width, |f| {
-            let area = f.size();
-            let chunks: Rc<[Rect]> = vec![area, area, area].into();
             let mut state = ListState::default().with_selected(selected);
-            ui.render_list_preview(f, &chunks, &mut state, app, settings, TODAY);
+            ui.render_list_preview(f, f.size(), &mut state, app, settings, TODAY);
         })
     }
 
@@ -855,10 +820,8 @@ mod tests {
         let mut state = ListState::default();
         let mut draw_left = |app: &App| {
             draw(100, |f| {
-                let area = f.size();
-                let chunks: Rc<[Rect]> = vec![area, area, area].into();
                 let mut state = ListState::default();
-                ui.render_list_preview(f, &chunks, &mut state, app, &settings, now());
+                ui.render_list_preview(f, f.size(), &mut state, app, &settings, now());
             })
         };
 
@@ -939,10 +902,7 @@ mod tests {
         // The folder preview, in the screen's right half.
         app.preview_files = fixture();
         let preview = draw(100, |f| {
-            let area = f.size();
-            let chunks: Rc<[Rect]> = vec![area, area, area].into();
-            let mut state = ListState::default();
-            ui.render_preview_window(f, &chunks, &mut state, &app, &settings, TODAY);
+            ui.render_preview_window(f, f.size(), &app, &settings, TODAY);
         });
         assert_columns(&preview, 99, &names);
         assert!(!preview.iter().any(|row| row.contains("photos/")));
@@ -1046,8 +1006,8 @@ mod tests {
         app.input = "o".into();
         app.perform_local_search("o");
         let buffer = draw_left(&mut ui, &app, &settings, 60, Some(0));
-        // Below the list's title.
-        assert_eq!(buffer.get(1, 1).fg, theme.mode_search);
+        // On the first row: the top bar names the search, so the list has no title.
+        assert_eq!(buffer.get(1, 0).fg, theme.mode_search);
     }
 
     #[test]

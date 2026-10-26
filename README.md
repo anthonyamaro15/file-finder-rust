@@ -61,7 +61,11 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 
 - OneDark theme (lazygit-inspired)
 - Rounded borders and polished visual hierarchy
-- Status bar with mode indicators
+- A top bar with the folder, its order, hidden files and item count, and anything
+  running; a search is typed there, tinted in its color
+- A status line about the highlighted item (a folder's item count, a file's type and
+  size, when it was modified, its permissions) and where it is in the list (`12/36`)
+- The divider beside the list doubles as its scrollbar
 - Modal dialogs for confirmations
 - Custom themes via TOML
 - Configurable syntax highlighting theme
@@ -319,7 +323,7 @@ syntax_theme = "base16-ocean.dark"
 
 A theme file (`~/.config/ff/themes/<name>.toml`) needs only the colors you change. Each
 mode has one color under `[statusbar]`, for its status bar badge, the cursor's `▌` mark,
-its prompt in the hint line and its popup or search box:
+its prompt in the top bar and the hint line, and its popup:
 
 | Key           | Mode                                       | Default              |
 | ------------- | ------------------------------------------ | -------------------- |
@@ -333,11 +337,12 @@ its prompt in the hint line and its popup or search box:
 | `mode_sort`   | Sort                                       | foreground `#a0a8b7` |
 
 Search matches are underlined in the search's color. The cursor's band and the
-selection's are tints of `[palette] bg`, toward `fg` and `mode_visual`. In `[palette]`,
-`bright` colors the cursor's name, `muted` sizes and dates, `gray` dotfiles and `dim` the
-pane separators. `[ui] active_border` and `inactive_border` color pane borders and
-titles, `[statusbar] background` and `foreground` the status bar, and `[markdown]` the
-markdown preview. Code previews use `syntax_theme` instead of `[syntax]`.
+selection's are tints of `[palette] bg`, toward `fg` and `mode_visual`, and so is the top
+bar while a search is typed, toward its color. In `[palette]`, `bright` colors the
+cursor's name, `muted` sizes and dates, `light_gray` the bars' details and the
+scrollbar, `gray` dotfiles and `dim` the pane separators. `[ui] active_border` and
+`inactive_border` color pane borders and titles, `[statusbar] background` the top bar
+and the status bar, and `[markdown]` the markdown preview. Code previews use `syntax_theme` instead of `[syntax]`.
 
 Older files' `[ui] selected_bg`, `selected_fg`, `search_match_bg`, `search_match_fg` and
 `[statusbar] mode_insert`, `mode_command` are ignored.
