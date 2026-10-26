@@ -574,7 +574,8 @@ pub const QUIT_CONFIRM_WINDOW: Duration = Duration::from_secs(3);
 /// Result of async image loading
 pub struct ImageLoadResult {
     pub path: String,
-    pub result: Result<(image::DynamicImage, String), String>, // (image, format) or error message
+    /// The decoded image, or why it couldn't be.
+    pub result: Result<image::DynamicImage, String>,
 }
 
 /// One-shot background operation (move, trash, ZIP extraction or compression) that
@@ -1946,7 +1947,22 @@ impl App {
         let loaded = !self.preview_loading
             && self.preview_loading_path.as_deref() == Some(path)
             && self.preview_file_content.is_empty();
-        loaded.then_some(self.preview_files.files.len())
+        loaded.then(|| self.preview_items().count())
+    }
+
+    /// The folder preview's items, leaving out what `.` hides, as the list does.
+    pub fn preview_items(&self) -> impl Iterator<Item = (&String, &EntryInfo)> {
+        let preview = &self.preview_files;
+        preview
+            .files
+            .iter()
+            .zip(&preview.info)
+            .filter(|(path, info)| self.show_hidden_files || !info.is_hidden(Path::new(path)))
+    }
+
+    /// How many of the folder preview's items `.` hides.
+    pub fn preview_hidden(&self) -> usize {
+        self.preview_files.files.len() - self.preview_items().count()
     }
 
     /// Check if a pending preview is ready to load (debounce period elapsed)

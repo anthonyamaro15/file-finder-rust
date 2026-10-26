@@ -8,9 +8,8 @@ use std::{
 };
 
 use log::debug;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::{style::Color, widgets::Paragraph};
 
 use crate::config::ThemeColors;
 use crate::utils::files::{EntryInfo, Listing};
@@ -26,7 +25,7 @@ const DEFAULT_CACHE_SIZE: usize = 50;
 const MAX_PREVIEW_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
 /// Maximum lines to display in preview
-const MAX_PREVIEW_LINES: usize = 100;
+pub(crate) const MAX_PREVIEW_LINES: usize = 100;
 
 /// Maximum archive entries to display in preview
 const MAX_ARCHIVE_ENTRIES: usize = 100;
@@ -296,29 +295,22 @@ pub fn load_image_async(
     use image::ImageReader;
 
     let result = match ImageReader::open(&path) {
-        Ok(reader) => {
-            let format = reader
-                .format()
-                .map(|f| format!("{:?}", f))
-                .unwrap_or_else(|| "Unknown".to_string());
+        Ok(reader) => match reader.decode() {
+            Ok(decoded_image) => {
+                let width = decoded_image.width();
+                let height = decoded_image.height();
 
-            match reader.decode() {
-                Ok(decoded_image) => {
-                    let width = decoded_image.width();
-                    let height = decoded_image.height();
-
-                    if width > MAX_IMAGE_DIMENSION_ASYNC || height > MAX_IMAGE_DIMENSION_ASYNC {
-                        Err(format!(
-                            "Image too large for preview ({}x{}, max {})",
-                            width, height, MAX_IMAGE_DIMENSION_ASYNC
-                        ))
-                    } else {
-                        Ok((decoded_image, format))
-                    }
+                if width > MAX_IMAGE_DIMENSION_ASYNC || height > MAX_IMAGE_DIMENSION_ASYNC {
+                    Err(format!(
+                        "Image too large for preview ({}x{}, max {})",
+                        width, height, MAX_IMAGE_DIMENSION_ASYNC
+                    ))
+                } else {
+                    Ok(decoded_image)
                 }
-                Err(e) => Err(format!("Failed to decode: {}", e)),
             }
-        }
+            Err(e) => Err(format!("Failed to decode: {}", e)),
+        },
         Err(e) => Err(format!("Failed to open: {}", e)),
     };
 
@@ -825,7 +817,8 @@ pub struct FileContent<'a> {
     pub curr_extension_tpe: Option<String>,
     pub syntax_set: SyntaxSet,
     pub theme_set: ThemeSet,
-    pub hightlighted_content: Option<Paragraph<'a>>,
+    /// The text, code or markdown preview, highlighted or formatted.
+    pub hightlighted_content: Option<Text<'a>>,
     /// LRU cache for highlighted file previews
     preview_cache: PreviewCache,
     /// Configured syntax highlighting theme name
@@ -873,9 +866,7 @@ impl FileContent<'_> {
     pub fn try_use_cached_preview(&mut self, path: &str) -> bool {
         self.curr_selected_path = path.to_string();
         if let Some(cached_lines) = self.preview_cache.get(path) {
-            let text = Text::from(cached_lines);
-            let paragraph = Paragraph::new(text);
-            self.hightlighted_content = Some(paragraph);
+            self.hightlighted_content = Some(Text::from(cached_lines));
             true
         } else {
             false
@@ -900,9 +891,7 @@ impl FileContent<'_> {
 
         // Check cache first - if we have a valid cached version, use it
         if let Some(cached_lines) = self.preview_cache.get(&current_path) {
-            let text = Text::from(cached_lines);
-            let paragraph = Paragraph::new(text);
-            self.hightlighted_content = Some(paragraph);
+            self.hightlighted_content = Some(Text::from(cached_lines));
             return String::new(); // Return value is unused, just return empty
         }
 
@@ -956,12 +945,10 @@ impl FileContent<'_> {
                 spans.push(Line::from(line_spans));
             }
 
-            // Store in cache before creating the Paragraph
+            // Store in cache before keeping the text
             self.preview_cache.insert(current_path, spans.clone());
 
-            let text = Text::from(spans);
-            let paragraph = Paragraph::new(text);
-            self.hightlighted_content = Some(paragraph);
+            self.hightlighted_content = Some(Text::from(spans));
             String::new() // Return value is unused
         } else {
             // If no syntax found, return content as-is and don't set highlighted_content
@@ -978,9 +965,7 @@ impl FileContent<'_> {
 
         // Check cache first
         if let Some(cached_lines) = self.preview_cache.get(path) {
-            let text = Text::from(cached_lines);
-            let paragraph = Paragraph::new(text);
-            self.hightlighted_content = Some(paragraph);
+            self.hightlighted_content = Some(Text::from(cached_lines));
             return;
         }
 
@@ -990,9 +975,7 @@ impl FileContent<'_> {
         // Store in cache
         self.preview_cache.insert(path.to_string(), lines.clone());
 
-        let text = Text::from(lines);
-        let paragraph = Paragraph::new(text);
-        self.hightlighted_content = Some(paragraph);
+        self.hightlighted_content = Some(Text::from(lines));
     }
 
     /// Format file size for display

@@ -32,15 +32,20 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 
 - **Normal**: File list + preview pane (50/50 split)
 - **FullList**: Full-width file list (no preview)
-- **DualPane**: Side-by-side file management with independent navigation
+- **DualPane**: Side-by-side file management with independent navigation, a path
+  header over each pane (`●` marks the active one, with anything running beside it)
 - Press `p` to cycle through modes
-- `Tab` to switch active pane (highlighted border)
+- `Tab` to switch active pane
 - Full navigation in both panes (`j`/`k`/`h`/`l`)
 - Bidirectional copy/move between panes (`Shift+C` / `Shift+M`)
 
 ### 👀 **Previews**
 
-- Syntax highlighting for code (configurable theme)
+- A header naming the item, with a folder's item count (and how many `.` hides) or a
+  file's type and size
+- Folder previews list what the folder's list would, following `.`
+- Syntax highlighting and line numbers for code (configurable theme)
+- In visual mode, the selection: exactly what `d` and `D` act on
 - **Terminal image rendering** (Kitty, iTerm2, Sixel protocols)
 - **PDF text extraction**
 - **Hex view for binary files**
@@ -346,8 +351,8 @@ Search matches are underlined in the search's color. The cursor's band and the
 selection's are tints of `[palette] bg`, toward `fg` and `mode_visual`, and so is the top
 bar while a search is typed, toward its color. In `[palette]`, `bright` colors the
 cursor's name, `muted` sizes and dates, `light_gray` the bars' details and the
-scrollbar, `gray` dotfiles and `dim` the pane separators. `[ui] active_border` and
-`inactive_border` color pane borders and titles, `[statusbar] background` the top bar
+scrollbar, `gray` dotfiles and `dim` the pane separators and line numbers. `[ui] active_border` and
+`inactive_border` color pane borders, `[statusbar] background` the top bar
 and the status bar, and `[markdown]` the markdown preview. Code previews use `syntax_theme` instead of `[syntax]`.
 
 Older files' `[ui] selected_bg`, `selected_fg`, `search_match_bg`, `search_match_fg` and
