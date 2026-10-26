@@ -3,26 +3,13 @@ use ratatui::text::Span;
 
 use crate::config::ThemeColors;
 use crate::sizes::{total_text, RowSize};
-use crate::utils::format::format_file_size;
 
-/// Very muted gray for sizes (yazi-style).
-const SIZE_COLOR: Color = Color::Rgb(92, 99, 112);
+/// Very muted gray for sizes, dates and locations (yazi-style).
+pub const SIZE_COLOR: Color = Color::Rgb(92, 99, 112);
 /// Columns of a size bar.
 pub const BAR_WIDTH: usize = 10;
 /// Columns of a size, wide enough for "≥ 1023.9 GB".
 pub const SIZE_WIDTH: usize = 11;
-
-/// Create a formatted file size text span
-///
-/// Returns a styled span showing the human-readable file size (e.g., "1.5 MB")
-pub fn create_size_text(file_size: u64) -> Span<'static> {
-    if file_size == 0 {
-        return Span::raw("");
-    }
-
-    let size_str = format_file_size(file_size);
-    Span::styled(size_str, Style::default().fg(SIZE_COLOR))
-}
 
 /// A bar's colour: red from 1 GB, yellow from 100 MB, green below.
 pub fn bar_color(bytes: u64, theme: &ThemeColors) -> Color {
@@ -53,73 +40,42 @@ pub fn bar(bytes: u64, largest: u64) -> String {
     format!("{bar:<BAR_WIDTH$}")
 }
 
-/// The size column of a row sorted by size: the bar against `largest` (unless
-/// `with_bar` is false), then the size, right-aligned.
+/// A row's size column: the bar against `largest` (when `with_bar`), then the size,
+/// right-aligned.
 pub fn size_column(
     size: RowSize,
     largest: u64,
     with_bar: bool,
     theme: &ThemeColors,
 ) -> Vec<Span<'static>> {
-    let (bar_text, color, text) = match size {
-        RowSize::Known(total) => (
-            bar(total.bytes, largest),
-            bar_color(total.bytes, theme),
-            total_text(total),
-        ),
-        RowSize::Sizing => (" ".repeat(BAR_WIDTH), SIZE_COLOR, "sizing…".to_string()),
-        RowSize::Unsized => (" ".repeat(BAR_WIDTH), SIZE_COLOR, String::new()),
+    let text = match size {
+        RowSize::Known(total) => total_text(total),
+        RowSize::Sizing => "sizing…".to_string(),
+        RowSize::Unsized => String::new(),
     };
     let text = Span::styled(
         format!("{text:>SIZE_WIDTH$}"),
         Style::default().fg(SIZE_COLOR),
     );
-    if with_bar {
-        vec![
-            Span::styled(bar_text, Style::default().fg(color)),
-            Span::raw(" "),
-            text,
-        ]
-    } else {
-        vec![text]
+    if !with_bar {
+        return vec![text];
     }
+    let (bar_text, color) = match size {
+        RowSize::Known(total) => (bar(total.bytes, largest), bar_color(total.bytes, theme)),
+        _ => (" ".repeat(BAR_WIDTH), SIZE_COLOR),
+    };
+    vec![
+        Span::styled(bar_text, Style::default().fg(color)),
+        Span::raw(" "),
+        text,
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sizes::FolderTotal;
-
-    #[test]
-    fn test_create_size_text_bytes() {
-        let span = create_size_text(512);
-        assert_eq!(span.content, "512 B");
-    }
-
-    #[test]
-    fn test_create_size_text_kilobytes() {
-        let span = create_size_text(1536);
-        assert_eq!(span.content, "1.5 KB");
-    }
-
-    #[test]
-    fn test_create_size_text_megabytes() {
-        let span = create_size_text(1048576);
-        assert_eq!(span.content, "1.0 MB");
-    }
-
-    #[test]
-    fn test_create_size_text_zero() {
-        let span = create_size_text(0);
-        assert_eq!(span.content, "");
-    }
-
-    #[test]
-    fn test_create_size_text_color() {
-        let span = create_size_text(1024);
-        // Muted gray color for file sizes
-        assert!(matches!(span.style.fg, Some(Color::Rgb(92, 99, 112))));
-    }
+    use crate::utils::format::format_file_size;
 
     #[test]
     fn bar_colour_turns_yellow_at_100_mb_and_red_at_1_gb() {

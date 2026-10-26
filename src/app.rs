@@ -32,8 +32,8 @@ pub enum PreviewMessage {
         /// Pre-highlighted content for source code files
         highlighted_content: Option<String>,
     },
-    /// Directory contents loaded
-    DirectoryListing { path: String, entries: Vec<String> },
+    /// Directory contents loaded: every item, sorted by name, beside its details
+    DirectoryListing { path: String, listing: Listing },
     /// Preview loading failed
     Error { path: String, message: String },
 }
@@ -464,7 +464,8 @@ pub struct App {
     pub loading: bool,
     pub curr_index: Option<usize>,
 
-    pub preview_files: Vec<String>,
+    /// The previewed folder's items, beside their details.
+    pub preview_files: Listing,
     pub preview_file_content: String,
 
     pub filtered_indexes: Vec<usize>,
@@ -701,7 +702,7 @@ impl App {
             loading: false,
             curr_index: Some(0),
 
-            preview_files: Vec::new(),
+            preview_files: Listing::default(),
             preview_file_content: String::new(),
 
             filtered_indexes: all_indexes,
@@ -1905,7 +1906,7 @@ impl App {
                 self.preview_requested_path = None;
                 self.clear_pending_preview();
                 self.cancel_preview_loads();
-                self.preview_files.clear();
+                self.preview_files = Listing::default();
                 self.preview_file_content.clear();
                 true
             }
@@ -2613,9 +2614,9 @@ mod tests {
         assert_eq!(app.take_ready_preview(0).as_deref(), Some("dir/a.zip"));
 
         app.files.clear();
-        app.preview_files = vec!["stale".into()];
+        app.preview_files = Listing::from(vec!["stale".to_string()]);
         assert!(app.sync_preview_with_selection(None));
-        assert!(app.preview_files.is_empty());
+        assert!(app.preview_files.files.is_empty());
         assert!(!app.sync_preview_with_selection(None));
     }
 

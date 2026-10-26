@@ -12,10 +12,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{App, InputMode, SearchResult, ViewMode};
 use crate::config::{Settings, ThemeColors};
 use crate::icons::IconProvider;
-use crate::render::create_size_text;
-use crate::render::size_bar::{size_column, BAR_WIDTH, SIZE_WIDTH};
-use crate::sizes::{FolderSizes, RowSize};
+use crate::render::size_bar::{size_column, BAR_WIDTH, SIZE_COLOR, SIZE_WIDTH};
+use crate::sizes::{FolderSizes, FolderTotal, RowSize};
 use crate::utils::files::{EntryInfo, SortBy};
+use crate::utils::format::{date_label, replace_home_with_tilde, LocalStamp};
 pub mod theme;
 use self::theme::OneDarkTheme;
 use crate::highlight::highlight_search_term;
@@ -92,6 +92,7 @@ impl Ui {
         state: &mut ListState,
         app: &App,
         settings: &Settings,
+        today: LocalStamp,
     ) {
         // Create enhanced title with search feedback
         let list_title = self.generate_list_title(app, settings);
@@ -152,12 +153,13 @@ impl Ui {
         // Generate list items based on search mode, as wide as the rows beside the
         // highlight symbol.
         let width = block.inner(inner_layout[0]).width.saturating_sub(1);
-        let mut filtered_read_only_items = self.generate_list_items(app, settings, width.into());
+        let mut filtered_read_only_items =
+            self.generate_list_items(app, settings, width.into(), today);
         if !(app.view_mode == ViewMode::DualPane && app.is_right_pane_active()) {
             filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
         }
 
-        let list_block = List::new(filtered_read_only_items.clone())
+        let list_block = List::new(filtered_read_only_items)
             .block(block)
             .highlight_style(OneDarkTheme::selected())
             .highlight_symbol(if settings.show_borders { "❯" } else { " " })
@@ -171,7 +173,7 @@ impl Ui {
                 _ => OneDarkTheme::disabled(),
             });
 
-        f.render_stateful_widget(list_block.clone(), inner_layout[0], state);
+        f.render_stateful_widget(list_block, inner_layout[0], state);
     }
 
     pub fn render_preview_window(
@@ -181,17 +183,12 @@ impl Ui {
         state: &mut ListState,
         app: &App,
         settings: &Settings,
+        today: LocalStamp,
     ) {
         let inner_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(chunks[2]);
-
-        let filtered_curr_read_only_items: Vec<ListItem> = app
-            .preview_files
-            .iter()
-            .map(|file| ListItem::from(file.clone()))
-            .collect();
 
         // Create block with or without borders based on settings
         let block = if settings.show_borders {
@@ -213,9 +210,27 @@ impl Ui {
                 .title_style(Style::default().fg(Color::Rgb(92, 99, 112)))
         };
 
-        let list_preview_block = List::new(filtered_curr_read_only_items)
-            .block(block)
-            .style(Style::default().fg(Color::Rgb(92, 99, 112))); // Muted preview text
+        let rows = Rows::new(
+            self,
+            app,
+            settings,
+            block.inner(inner_layout[1]).width.into(),
+            today,
+        );
+        let items: Vec<ListItem> = app
+            .preview_files
+            .files
+            .iter()
+            .zip(&app.preview_files.info)
+            .map(|(path, info)| {
+                let name = Path::new(path)
+                    .file_name()
+                    .map_or_else(|| path.into(), |name| name.to_string_lossy());
+                rows.row(path, &name, info, None)
+            })
+            .collect();
+
+        let list_preview_block = List::new(items).block(block).style(OneDarkTheme::normal());
 
         f.render_stateful_widget(list_preview_block, inner_layout[1], state);
     }
@@ -295,150 +310,58 @@ impl Ui {
         }
     }
 
-    /// Generate list items based on current search state (optimized with pagination),
-    /// `width` columns wide.
+    /// The left listing's rows, `width` columns wide: its items, or a global search's
+    /// results.
     fn generate_list_items(
         &self,
         app: &App,
         settings: &Settings,
         width: usize,
-    ) -> Vec<ListItem<'_>> {
-        let show_file_sizes = settings.show_size_bars;
-        let search_term = highlight_term(app, false);
-
+        today: LocalStamp,
+    ) -> Vec<ListItem<'static>> {
+        let term = highlight_term(app, false);
         if app.global_search_mode && !app.search_results.is_empty() {
-            // Show global search results with highlighted search terms
-            app.search_results
+            let rows = Rows {
+                term,
+                ..Rows::new(self, app, settings, width, today)
+            };
+            return app
+                .search_results
                 .iter()
                 .take(50) // Limit to top 50 results for performance
-                .map(|result| self.search_result_item(result, search_term, app, show_file_sizes))
-                .collect()
-        } else if app.sort_by == SortBy::Size
-            && show_file_sizes
-            && app.search_results.is_empty()
-            && search_term.is_empty()
-        {
-            let sizes = row_sizes(&app.files, &app.file_info, &app.folder_sizes);
-            let largest = largest(&sizes);
-            app.file_read_only_label_list
-                .iter()
-                .zip(&app.files)
-                .zip(&app.file_info)
-                .zip(sizes)
-                .map(|(((file_name, file_path), info), size)| {
-                    let colored_icon = self.icon_provider.get_colored_for_path(
-                        Path::new(file_path),
-                        info.is_dir(),
-                        &app.theme_colors,
-                    );
-                    // Dotfiles are dimmed, as in the other orders.
-                    let (icon_style, name_style) = if file_name.starts_with('.') {
-                        (OneDarkTheme::dotfile(), OneDarkTheme::dotfile())
-                    } else {
-                        (Style::default().fg(colored_icon.color), Style::default())
-                    };
-                    let prefix = Span::styled(format!("{} ", colored_icon.icon), icon_style);
-                    size_order_row(
-                        prefix,
-                        file_name,
-                        name_style,
-                        size,
-                        largest,
-                        width,
-                        &app.theme_colors,
-                    )
-                })
-                .collect()
-        } else {
-            // Use all filtered indexes (or all files if no filter)
-            let indexes: Vec<usize> = if !app.filtered_indexes.is_empty() {
-                app.filtered_indexes.clone()
-            } else {
-                (0..app.files.len()).collect()
-            };
-
-            indexes
-                .iter()
-                .map(|&file_index| {
-                    // Use pre-computed file name from app
-                    let file_name = &app.file_read_only_label_list[file_index];
-                    let file_path = &app.files[file_index];
-                    let info = app.file_info[file_index];
-                    let path = Path::new(file_path);
-                    let is_dir = info.is_dir();
-                    let colored_icon =
-                        self.icon_provider
-                            .get_colored_for_path(path, is_dir, &app.theme_colors);
-
-                    if app.input_mode == InputMode::Editing && !search_term.is_empty() {
-                        // Local search with highlighting
-                        let score = app
-                            .search_results
-                            .iter()
-                            .find(|r| r.original_index == file_index)
-                            .map(|r| r.score)
-                            .unwrap_or(0);
-
-                        // Create highlighted filename with search term
-                        let highlighted_line = highlight_search_term(
-                            file_name,
-                            search_term,
-                            OneDarkTheme::normal(),
-                            OneDarkTheme::search_highlight(),
-                        );
-
-                        // Add colored icon and score to the highlighted line
-                        let mut spans = vec![ratatui::text::Span::styled(
-                            format!("{} ", colored_icon.icon),
-                            Style::default().fg(colored_icon.color),
-                        )];
-                        spans.extend(highlighted_line.spans);
-                        spans.push(ratatui::text::Span::styled(
-                            format!(" ({})", score),
-                            OneDarkTheme::info(),
-                        ));
-
-                        // Add file size for files (not directories)
-                        if show_file_sizes && !is_dir {
-                            spans.push(Span::raw(" "));
-                            spans.push(create_size_text(info.file_size()));
-                        }
-
-                        ListItem::from(ratatui::text::Line::from(spans))
-                    } else {
-                        // Check if this is a dotfile (hidden file)
-                        let is_dotfile = file_name.starts_with('.');
-
-                        // Normal display with colored icon (dimmed for dotfiles)
-                        let mut spans = if is_dotfile {
-                            vec![
-                                Span::styled(
-                                    format!("{} ", colored_icon.icon),
-                                    OneDarkTheme::dotfile(),
-                                ),
-                                Span::styled(file_name.to_string(), OneDarkTheme::dotfile()),
-                            ]
-                        } else {
-                            vec![
-                                Span::styled(
-                                    format!("{} ", colored_icon.icon),
-                                    Style::default().fg(colored_icon.color),
-                                ),
-                                Span::raw(file_name.to_string()),
-                            ]
-                        };
-
-                        // Add file size for files (not directories)
-                        if show_file_sizes && !is_dir {
-                            spans.push(Span::raw(" "));
-                            spans.push(create_size_text(info.file_size()));
-                        }
-
-                        ListItem::from(ratatui::text::Line::from(spans))
-                    }
-                })
-                .collect()
+                .map(|result| rows.result(result, true))
+                .collect();
         }
+        let size_order = app.sort_by == SortBy::Size
+            && settings.show_size_bars
+            && app.search_results.is_empty()
+            && term.is_empty();
+        let rows = Rows {
+            term,
+            size_order: size_order.then(|| {
+                let largest = largest(&app.files, &app.file_info, &app.folder_sizes);
+                (&app.folder_sizes, largest)
+            }),
+            ..Rows::new(self, app, settings, width, today)
+        };
+
+        // Use all filtered indexes (or all files if no filter)
+        let indexes: Vec<usize> = if !app.filtered_indexes.is_empty() {
+            app.filtered_indexes.clone()
+        } else {
+            (0..app.files.len()).collect()
+        };
+        indexes
+            .iter()
+            .map(|&index| {
+                rows.row(
+                    &app.files[index],
+                    &app.file_read_only_label_list[index],
+                    &app.file_info[index],
+                    None,
+                )
+            })
+            .collect()
     }
 
     /// The right pane's rows, `width` columns wide: its listing, or its search's
@@ -448,168 +371,50 @@ impl Ui {
         app: &App,
         settings: &Settings,
         width: usize,
+        today: LocalStamp,
     ) -> Vec<ListItem<'static>> {
-        let right_pane = &app.right_pane;
-        // Generate list items for right pane using icon provider (with dotfile dimming)
-        let listing_item = |path: &str, label: &str, is_dir: bool| {
-            let icon = self.icon_provider.get_for_path(Path::new(path), is_dir);
-
-            // Check if this is a dotfile (hidden file)
-            let is_dotfile = label.starts_with('.');
-
-            if is_dotfile {
-                // Dim dotfiles, with `crate::theme`'s dimmer colour rather than this module's
-                ListItem::new(ratatui::text::Line::from(vec![Span::styled(
-                    format!("{} {}", icon, label),
-                    crate::theme::OneDarkTheme::dotfile(),
-                )]))
-            } else {
-                ListItem::new(format!("{} {}", icon, label))
-            }
+        let pane = &app.right_pane;
+        let size_order =
+            pane.sort_by == SortBy::Size && settings.show_size_bars && !pane.is_searching();
+        let rows = Rows {
+            term: highlight_term(app, true),
+            size_order: size_order.then(|| {
+                let largest = largest(&pane.files, &pane.file_info, &app.folder_sizes);
+                (&app.folder_sizes, largest)
+            }),
+            // Dim dotfiles with `crate::theme`'s dimmer colour rather than this module's
+            dotfile: crate::theme::OneDarkTheme::dotfile(),
+            ..Rows::new(self, app, settings, width, today)
         };
-        // A search shows its results, highlighted like the left listing's
-        let search_term = highlight_term(app, true);
-        if right_pane.is_searching() && (right_pane.global_search_mode || !search_term.is_empty()) {
-            right_pane
-                .search_results
+        if pane.is_searching() {
+            pane.search_results
                 .iter()
-                .map(|result| {
-                    self.search_result_item(result, search_term, app, settings.show_size_bars)
-                })
-                .collect()
-        } else if right_pane.is_searching() {
-            right_pane
-                .search_results
-                .iter()
-                .map(|result| {
-                    listing_item(
-                        &result.file_path,
-                        &result.display_name,
-                        result.info.is_dir(),
-                    )
-                })
-                .collect()
-        } else if right_pane.sort_by == SortBy::Size && settings.show_size_bars {
-            let sizes = row_sizes(&right_pane.files, &right_pane.file_info, &app.folder_sizes);
-            let largest = largest(&sizes);
-            right_pane
-                .files
-                .iter()
-                .zip(&right_pane.file_labels)
-                .zip(&right_pane.file_info)
-                .zip(sizes)
-                .map(|(((path, label), info), size)| {
-                    let icon = self
-                        .icon_provider
-                        .get_for_path(Path::new(path), info.is_dir());
-                    let style = if label.starts_with('.') {
-                        crate::theme::OneDarkTheme::dotfile()
-                    } else {
-                        Style::default()
-                    };
-                    let prefix = Span::styled(format!("{icon} "), style);
-                    size_order_row(
-                        prefix,
-                        label,
-                        style,
-                        size,
-                        largest,
-                        width,
-                        &app.theme_colors,
-                    )
-                })
+                .map(|result| rows.result(result, pane.global_search_mode))
                 .collect()
         } else {
-            right_pane
-                .files
+            pane.files
                 .iter()
-                .zip(&right_pane.file_labels)
-                .zip(&right_pane.file_info)
-                .map(|((path, label), info)| listing_item(path, label, info.is_dir()))
+                .zip(&pane.file_labels)
+                .zip(&pane.file_info)
+                .map(|((path, label), info)| rows.row(path, label, info, None))
                 .collect()
-        }
-    }
-
-    /// A search result row: colored icon, name with `search_term` highlighted, score,
-    /// and the size of a file.
-    pub fn search_result_item(
-        &self,
-        result: &SearchResult,
-        search_term: &str,
-        app: &App,
-        show_file_sizes: bool,
-    ) -> ListItem<'static> {
-        let colored_icon = self.icon_provider.get_colored_for_path(
-            Path::new(&result.file_path),
-            result.info.is_dir(),
-            &app.theme_colors,
-        );
-
-        if !search_term.is_empty() {
-            // Create highlighted filename with search term
-            let highlighted_line = highlight_search_term(
-                &result.display_name,
-                search_term,
-                OneDarkTheme::normal(),
-                OneDarkTheme::search_highlight(),
-            );
-
-            // Add colored icon and score to the highlighted line
-            let mut spans = vec![ratatui::text::Span::styled(
-                format!("{} ", colored_icon.icon),
-                Style::default().fg(colored_icon.color),
-            )];
-            spans.extend(highlighted_line.spans);
-            spans.push(ratatui::text::Span::styled(
-                format!(" ({})", result.score),
-                OneDarkTheme::info(),
-            ));
-
-            // Add file size for files (not directories)
-            if show_file_sizes && !result.info.is_dir() {
-                spans.push(Span::raw(" "));
-                spans.push(create_size_text(result.info.file_size()));
-            }
-
-            ListItem::from(ratatui::text::Line::from(spans))
-        } else {
-            // Fallback with colored icon
-            let mut spans = vec![
-                Span::styled(
-                    format!("{} ", colored_icon.icon),
-                    Style::default().fg(colored_icon.color),
-                ),
-                Span::raw(format!("{} ({})", result.display_name, result.score)),
-            ];
-
-            // Add file size for files (not directories)
-            if show_file_sizes && !result.info.is_dir() {
-                spans.push(Span::raw(" "));
-                spans.push(create_size_text(result.info.file_size()));
-            }
-
-            ListItem::from(ratatui::text::Line::from(spans))
         }
     }
 }
 
-/// Fewest columns a name keeps before its row gives up the size bar.
+/// Fewest columns a name keeps before its row gives up the date, the bar, then the size.
 const MIN_NAME_WIDTH: usize = 12;
+/// Most columns an icon and the space after it take.
+const ICON_WIDTH: usize = 3;
+/// Columns of a modified date, wide enough for "Oct 21".
+const DATE_WIDTH: usize = 6;
 
-/// What each item of a listing sorted by size shows.
-fn row_sizes(files: &[String], info: &[EntryInfo], sizes: &FolderSizes) -> Vec<RowSize> {
+/// The largest known size of a listing sorted by size, which the bars are relative to.
+fn largest(files: &[String], info: &[EntryInfo], sizes: &FolderSizes) -> u64 {
     files
         .iter()
         .zip(info)
-        .map(|(file, info)| sizes.row_size(file, info))
-        .collect()
-}
-
-/// The largest known size, which the bars are relative to.
-fn largest(sizes: &[RowSize]) -> u64 {
-    sizes
-        .iter()
-        .filter_map(|size| match size {
+        .filter_map(|(file, info)| match sizes.row_size(file, info) {
             RowSize::Known(total) => Some(total.bytes),
             _ => None,
         })
@@ -617,33 +422,141 @@ fn largest(sizes: &[RowSize]) -> u64 {
         .unwrap_or(0)
 }
 
-/// A row of a listing sorted by size, `width` columns wide: `prefix` (its icon) and
-/// `name`, then the size column at the right edge, so the bars line up. A long name is
-/// cut short with …, and the bar goes when the list is too narrow for it.
-fn size_order_row(
-    prefix: Span<'static>,
-    name: &str,
-    name_style: Style,
-    size: RowSize,
-    largest: u64,
+/// What every row of one list shares, so that the same item looks the same in any list.
+struct Rows<'a> {
+    icons: &'a IconProvider,
+    theme: &'a ThemeColors,
     width: usize,
-    theme: &ThemeColors,
-) -> ListItem<'static> {
-    let prefix_width = prefix.width();
-    let with_bar = width >= prefix_width + MIN_NAME_WIDTH + BAR_WIDTH + SIZE_WIDTH + 2;
-    let column = size_column(size, largest, with_bar, theme);
-    let column_width: usize = column.iter().map(Span::width).sum();
-    // The name's room, keeping a space before the column.
-    let room = width.saturating_sub(prefix_width + column_width + 1);
-    let name = truncate(name, room);
-    let gap = room - name.width() + 1;
-    let mut spans = vec![
-        prefix,
-        Span::styled(name, name_style),
-        Span::raw(" ".repeat(gap)),
-    ];
-    spans.extend(column);
-    ListItem::from(Line::from(spans))
+    /// Show sizes, and bars in size order.
+    sizes: bool,
+    /// In size order, the folder totals and the largest size, which bars are relative to.
+    size_order: Option<(&'a FolderSizes, u64)>,
+    today: LocalStamp,
+    /// The query highlighted in names.
+    term: &'a str,
+    dotfile: Style,
+}
+
+impl<'a> Rows<'a> {
+    /// Rows `width` columns wide outside size order, with nothing highlighted and
+    /// dotfiles dimmed as in the left listing.
+    fn new(ui: &'a Ui, app: &'a App, settings: &Settings, width: usize, today: LocalStamp) -> Self {
+        Self {
+            icons: &ui.icon_provider,
+            theme: &app.theme_colors,
+            width,
+            sizes: settings.show_size_bars,
+            size_order: None,
+            today,
+            term: "",
+            dotfile: OneDarkTheme::dotfile(),
+        }
+    }
+
+    /// A search result's row, showing where the folder lives when `global`.
+    fn result(&self, result: &SearchResult, global: bool) -> ListItem<'static> {
+        let location = Path::new(&result.file_path)
+            .parent()
+            .filter(|_| global)
+            .map(|parent| replace_home_with_tilde(&parent.to_string_lossy()));
+        self.row(
+            &result.file_path,
+            &result.display_name,
+            &result.info,
+            location.as_deref(),
+        )
+    }
+
+    /// A row of the item at `path`: its icon and `name`, cut short with … and with the
+    /// query highlighted, then `location` dimmed, and the size and date columns at the
+    /// right edge, so they line up down the list.
+    fn row(
+        &self,
+        path: &str,
+        name: &str,
+        info: &EntryInfo,
+        location: Option<&str>,
+    ) -> ListItem<'static> {
+        let icon = self
+            .icons
+            .get_colored_for_path(Path::new(path), info.is_dir(), self.theme);
+        let (icon_style, name_style) = if name.starts_with('.') {
+            (self.dotfile, self.dotfile)
+        } else {
+            (Style::default().fg(icon.color), Style::default())
+        };
+        let icon = Span::styled(icon.icon, icon_style);
+        let columns = self.columns(path, info);
+        let columns_width: usize = columns.iter().map(Span::width).sum();
+        // The name's room, keeping a space before the columns.
+        let room = self
+            .width
+            .saturating_sub(icon.width() + 1 + columns_width + usize::from(columns_width > 0));
+        let name = truncate(name, room);
+        let mut used = name.width();
+        let mut spans = vec![icon, Span::raw(" ")];
+        if self.term.is_empty() {
+            spans.push(Span::styled(name, name_style));
+        } else {
+            let highlight = OneDarkTheme::search_highlight();
+            spans.extend(highlight_search_term(&name, self.term, name_style, highlight).spans);
+        }
+        // Where it lives gets what the name leaves, cut from the start.
+        if let Some(location) = location.filter(|_| room > used + 2) {
+            let location = truncate_start(location, room - used - 1);
+            used += location.width() + 1;
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(location, Style::default().fg(SIZE_COLOR)));
+        }
+        if !columns.is_empty() {
+            spans.push(Span::raw(" ".repeat(room - used + 1)));
+            spans.extend(columns);
+        }
+        ListItem::from(Line::from(spans))
+    }
+
+    /// The bar, size and date columns that fit, for the item at `path`. Outside size
+    /// order a folder shows only its date.
+    fn columns(&self, path: &str, info: &EntryInfo) -> Vec<Span<'static>> {
+        let needed = |bar: bool, size: bool, date: bool| {
+            ICON_WIDTH
+                + MIN_NAME_WIDTH
+                + usize::from(bar) * (BAR_WIDTH + 1)
+                + usize::from(size) * (SIZE_WIDTH + 1)
+                + usize::from(date) * (DATE_WIDTH + 1)
+        };
+        let (bar, size) = (self.sizes && self.size_order.is_some(), self.sizes);
+        let date = needed(bar, size, true) <= self.width;
+        let bar = bar && needed(bar, size, date) <= self.width;
+        let size = size && needed(bar, size, date) <= self.width;
+
+        let mut spans = Vec::new();
+        if size {
+            let (row_size, largest) = match self.size_order {
+                Some((sizes, largest)) => (sizes.row_size(path, info), largest),
+                None if info.is_file() => {
+                    let total = FolderTotal {
+                        bytes: info.size,
+                        partial: false,
+                    };
+                    (RowSize::Known(total), 0)
+                }
+                None => (RowSize::Unsized, 0),
+            };
+            spans.extend(size_column(row_size, largest, bar, self.theme));
+        }
+        if date {
+            if size {
+                spans.push(Span::raw(" "));
+            }
+            let label = date_label(info.modified_local, self.today);
+            spans.push(Span::styled(
+                format!("{label:>DATE_WIDTH$}"),
+                Style::default().fg(SIZE_COLOR),
+            ));
+        }
+        spans
+    }
 }
 
 /// `name` cut to `width` columns, ending in … when it doesn't fit.
@@ -665,6 +578,24 @@ fn truncate(name: &str, width: usize) -> String {
         cut.push('…');
     }
     cut
+}
+
+/// `text` cut to `width` columns from the start, beginning with … when it doesn't fit.
+fn truncate_start(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 1;
+    for c in text.chars().rev() {
+        let c_width = c.width().unwrap_or(0);
+        if used + c_width > width {
+            break;
+        }
+        used += c_width;
+        kept.push(c);
+    }
+    std::iter::once('…').chain(kept.into_iter().rev()).collect()
 }
 
 /// Mark the active pane's selected rows (visual mode) in the theme's selection colour,
@@ -710,9 +641,83 @@ pub fn highlight_term(app: &App, right_pane: bool) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::VisualSelection;
+    use crate::config::settings::NerdFontSetting;
+    use crate::pane::Pane;
+    use crate::utils::files::{EntryKind, Listing};
+    use crate::utils::format::local_stamp;
     use crate::utils::{read_listing, SortBy, SortType};
-    use ratatui::{backend::TestBackend, Terminal};
-    use std::fs;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+    use std::{fs, time::SystemTime};
+
+    /// What the fixture's dates are judged against.
+    const TODAY: LocalStamp = LocalStamp {
+        year: 2026,
+        month: 9,
+        day: 25,
+        hour: 14,
+        minute: 30,
+    };
+
+    /// The fixture's size and date columns, by name. A folder shows only its date.
+    const FIXTURE_COLUMNS: [(&str, &str, &str); 4] = [
+        ("notes.txt", "5 B", "09:15"),
+        ("photos", "", "Oct 21"),
+        (".zshrc", "2.0 KB", "2024"),
+        ("old.bin", "3.0 MB", ""),
+    ];
+
+    /// `/w`'s items as read: a 5-byte notes.txt from this morning, a photos folder from
+    /// Oct 21, a 2 KB .zshrc from 2024 and a 3 MB old.bin without a modified time.
+    fn fixture() -> Listing {
+        let entry = |kind, size, at: Option<(i32, u8, u8, u8, u8)>| EntryInfo {
+            kind: Some(kind),
+            size,
+            modified_local: at.map(|(year, month, day, hour, minute)| LocalStamp {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+            }),
+            ..EntryInfo::default()
+        };
+        Listing {
+            files: FIXTURE_COLUMNS
+                .map(|(name, _, _)| format!("/w/{name}"))
+                .to_vec(),
+            info: vec![
+                entry(EntryKind::File, 5, Some((2026, 9, 25, 9, 15))),
+                entry(EntryKind::Folder, 96, Some((2026, 9, 21, 18, 0))),
+                entry(EntryKind::File, 2048, Some((2024, 2, 3, 0, 0))),
+                entry(EntryKind::File, 3 * 1024 * 1024, None),
+            ],
+        }
+    }
+
+    /// Nerd font icons are one character in one column.
+    fn nerd_settings() -> Settings {
+        Settings {
+            use_nerd_fonts: NerdFontSetting::Always,
+            ..Settings::default()
+        }
+    }
+
+    /// The size and date columns of `row`, one character a column, ending at `end`.
+    fn columns_at(row: &str, end: usize) -> String {
+        let start = end + 1 - (SIZE_WIDTH + 1 + DATE_WIDTH);
+        row.chars().skip(start).take(end + 1 - start).collect()
+    }
+
+    /// Fail unless the rows of each of `names` end their fixture size and date at `end`.
+    fn assert_columns(rows: &[String], end: usize, names: &[&str]) {
+        for (name, size, date) in FIXTURE_COLUMNS {
+            if names.contains(&name) {
+                let expected = format!("{size:>SIZE_WIDTH$} {date:>DATE_WIDTH$}");
+                assert_eq!(columns_at(row(rows, name), end), expected, "{name}");
+            }
+        }
+    }
 
     /// A folder listing a 5-byte notes.txt and a photos/ folder.
     fn notes_and_photos() -> (tempfile::TempDir, String) {
@@ -727,6 +732,10 @@ mod tests {
         read_listing(start.to_string(), false, SortBy::Name, &SortType::ASC).unwrap()
     }
 
+    fn now() -> LocalStamp {
+        local_stamp(SystemTime::now()).unwrap()
+    }
+
     /// Grow notes.txt to 2 KB and make photos a 3000-byte file, behind ff's back.
     fn change_on_disk(dir: &Path) {
         fs::write(dir.join("notes.txt"), "x".repeat(2048)).unwrap();
@@ -734,11 +743,19 @@ mod tests {
         fs::write(dir.join("photos"), "x".repeat(3000)).unwrap();
     }
 
-    /// The screen's rows.
-    fn draw(width: u16, render: impl FnOnce(&mut Frame)) -> Vec<String> {
+    /// The screen after `render`.
+    fn draw_buffer(width: u16, render: impl FnOnce(&mut Frame)) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
         terminal.draw(render).unwrap();
-        let buffer = terminal.backend().buffer();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The screen's rows.
+    fn draw(width: u16, render: impl FnOnce(&mut Frame)) -> Vec<String> {
+        text(&draw_buffer(width, render))
+    }
+
+    fn text(buffer: &Buffer) -> Vec<String> {
         buffer
             .content()
             .chunks(buffer.area.width as usize)
@@ -748,6 +765,22 @@ mod tests {
 
     fn row<'a>(rows: &'a [String], name: &str) -> &'a str {
         rows.iter().find(|row| row.contains(name)).unwrap()
+    }
+
+    /// The left listing, `width` columns wide, with `selected` highlighted.
+    fn draw_left(
+        ui: &mut Ui,
+        app: &App,
+        settings: &Settings,
+        width: u16,
+        selected: Option<usize>,
+    ) -> Buffer {
+        draw_buffer(width, |f| {
+            let area = f.size();
+            let chunks: Rc<[Rect]> = vec![area, area, area].into();
+            let mut state = ListState::default().with_selected(selected);
+            ui.render_list_preview(f, &chunks, &mut state, app, settings, TODAY);
+        })
     }
 
     #[test]
@@ -761,12 +794,13 @@ mod tests {
             draw(100, |f| {
                 let area = f.size();
                 let chunks: Rc<[Rect]> = vec![area, area, area].into();
-                ui.render_list_preview(f, &chunks, &mut ListState::default(), app, &settings);
+                let mut state = ListState::default();
+                ui.render_list_preview(f, &chunks, &mut state, app, &settings, now());
             })
         };
 
         let before = draw_left(&app);
-        assert!(row(&before, "notes.txt").contains("notes.txt 5 B"));
+        assert!(row(&before, "notes.txt").contains(" 5 B "));
         assert!(!row(&before, "photos").contains(" B"));
 
         change_on_disk(dir.path());
@@ -774,8 +808,8 @@ mod tests {
 
         app.refresh_files_from_watcher(listing(&start), &mut state);
         let after = draw_left(&app);
-        assert!(row(&after, "notes.txt").contains("notes.txt 2.0 KB"));
-        assert!(row(&after, "photos").contains("photos 2.9 KB"));
+        assert!(row(&after, "notes.txt").contains(" 2.0 KB "));
+        assert!(row(&after, "photos").contains(" 2.9 KB "));
     }
 
     #[test]
@@ -790,37 +824,210 @@ mod tests {
         let mut app = App::with_listing(listing);
         app.sort_by = SortBy::Size;
         app.view_mode = ViewMode::FullList;
-        // Nerd font icons are one character in one column.
-        let settings = Settings {
-            use_nerd_fonts: crate::config::settings::NerdFontSetting::Always,
-            ..Settings::default()
-        };
+        let settings = nerd_settings();
         let mut ui = Ui::new(Vec::new(), &settings);
-        let mut draw_left = |width| {
-            draw(width, |f| {
-                let area = f.size();
-                let chunks: Rc<[Rect]> = vec![area, area, area].into();
-                let mut state = ListState::default().with_selected(Some(0));
-                ui.render_list_preview(f, &chunks, &mut state, &app, &settings);
-            })
-        };
 
-        let wide = draw_left(60);
+        let wide = text(&draw_left(&mut ui, &app, &settings, 60, Some(0)));
         let long_row = row(&wide, "a-name");
         assert!(long_row.contains('…') && !long_row.contains(".bin"));
         assert!(long_row.contains("██████████ "));
         assert!(row(&wide, "photos").contains("sizing…"));
-        // Every size ends in the list's last column, inside its padding.
-        for name in ["a-name", "notes.txt", "photos"] {
+        // Every date ends in the list's last column, inside its padding, and every size
+        // a column before the date's.
+        for (name, size) in [
+            ("a-name", "2.0 KB"),
+            ("notes.txt", "5 B"),
+            ("photos", "sizing…"),
+        ] {
+            let size = format!("{size:>SIZE_WIDTH$} ");
+            assert!(
+                columns_at(row(&wide, name), 58).starts_with(&size),
+                "{name}"
+            );
             assert_eq!(row(&wide, name).trim_end().chars().count(), 59, "{name}");
         }
-        assert!(row(&wide, "notes.txt").trim_end().ends_with(" 5 B"));
 
-        let narrow = draw_left(36);
+        // Too narrow for the date and the bar.
+        let narrow = text(&draw_left(&mut ui, &app, &settings, 36, Some(0)));
         assert!(!narrow.iter().any(|row| row.contains('█')));
         let long_row = row(&narrow, "a-name").trim_end();
         assert!(long_row.contains("lon… ") && long_row.ends_with(" 2.0 KB"));
         assert!(row(&narrow, "notes.txt").contains("5 B"));
+    }
+
+    #[test]
+    fn every_list_lines_its_sizes_and_dates_up_at_the_right_edge() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        let names = FIXTURE_COLUMNS.map(|(name, _, _)| name);
+
+        let left = text(&draw_left(&mut ui, &app, &settings, 60, Some(0)));
+        assert_columns(&left, 58, &names);
+
+        app.right_pane = Pane::with_listing("/w".into(), fixture());
+        let right = draw(40, |f| {
+            let items = ui.right_pane_items(&app, &settings, 40, TODAY);
+            f.render_widget(List::new(items), f.size())
+        });
+        assert_columns(&right, 39, &names);
+
+        // The folder preview, in the screen's right half.
+        app.preview_files = fixture();
+        let preview = draw(100, |f| {
+            let area = f.size();
+            let chunks: Rc<[Rect]> = vec![area, area, area].into();
+            let mut state = ListState::default();
+            ui.render_preview_window(f, &chunks, &mut state, &app, &settings, TODAY);
+        });
+        assert_columns(&preview, 99, &names);
+        assert!(!preview.iter().any(|row| row.contains("photos/")));
+    }
+
+    #[test]
+    fn local_search_rows_keep_the_highlight_and_drop_the_score() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        app.input_mode = InputMode::Editing;
+        app.input = "o".into();
+        app.perform_local_search("o");
+        assert_eq!(app.search_results.len(), 3);
+
+        // Nothing highlighted, so no column for the highlight symbol: rows end a column
+        // sooner.
+        let buffer = draw_left(&mut ui, &app, &settings, 60, None);
+        let rows = text(&buffer);
+        assert_columns(&rows, 57, &["notes.txt", "photos", "old.bin"]);
+        assert!(!rows.iter().any(|row| row.contains('(')));
+        let y = rows
+            .iter()
+            .position(|row| row.contains("notes.txt"))
+            .unwrap();
+        let x = rows[y][..rows[y].find("notes.txt").unwrap()]
+            .chars()
+            .count()
+            + 1;
+        let o = buffer.get(x as u16, y as u16);
+        assert_eq!(o.symbol(), "o");
+        assert_eq!(Some(o.bg), OneDarkTheme::search_highlight().bg);
+    }
+
+    #[test]
+    fn global_results_show_where_each_folder_lives_without_a_score() {
+        let home = dirs::home_dir().unwrap();
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(Listing::default());
+        app.view_mode = ViewMode::FullList;
+        app.global_search_mode = true;
+        let photos = fixture().info[1];
+        let result = |path: &str, name: &str| SearchResult {
+            file_path: home.join(path).to_string_lossy().into_owned(),
+            display_name: name.into(),
+            score: 87,
+            info: photos,
+            original_index: 0,
+        };
+        app.search_results = vec![
+            result("projects/ff", "ff"),
+            result("a/very/long/path/that/never/seems/to/end/at/all/src", "src"),
+        ];
+
+        let rows = text(&draw_left(&mut ui, &app, &settings, 60, Some(0)));
+        let ff = row(&rows, "ff ");
+        assert!(ff.contains("ff ~/projects ") && !ff.contains("87"), "{ff}");
+        // A location too long for its room is cut from the start.
+        let src = row(&rows, "src ");
+        assert!(
+            src.contains("src …") && src.contains("/end/at/all "),
+            "{src}"
+        );
+        for name in ["ff ", "src "] {
+            let expected = format!("{:>SIZE_WIDTH$} {:>DATE_WIDTH$}", "", "Oct 21");
+            assert_eq!(columns_at(row(&rows, name), 58), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn narrow_lists_drop_the_date_then_the_bar_then_the_size() {
+        let settings = nerd_settings();
+        let ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::new(Vec::new());
+        app.right_pane = Pane::with_listing("/w".into(), fixture());
+        app.right_pane.sort_by = SortBy::Size;
+        // A name keeps 12 columns beside an icon of up to 3, so 45 fit everything.
+        for (width, bar, size, date) in [
+            (45, true, true, true),
+            (44, true, true, false),
+            (38, true, true, false),
+            (37, false, true, false),
+            (27, false, true, false),
+            (26, false, false, false),
+        ] {
+            let rows = draw(width, |f| {
+                let items = ui.right_pane_items(&app, &settings, width.into(), TODAY);
+                f.render_widget(List::new(items), f.size())
+            });
+            // old.bin is the largest, with a full bar.
+            assert_eq!(row(&rows, "old.bin").contains('█'), bar, "{width}");
+            assert_eq!(row(&rows, "old.bin").contains("3.0 MB"), size, "{width}");
+            assert_eq!(row(&rows, "notes.txt").contains("09:15"), date, "{width}");
+        }
+    }
+
+    #[test]
+    fn hiding_sizes_keeps_the_dates() {
+        let settings = Settings {
+            show_size_bars: false,
+            ..nerd_settings()
+        };
+        let ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::new(Vec::new());
+        app.right_pane = Pane::with_listing("/w".into(), fixture());
+        let rows = draw(40, |f| {
+            let items = ui.right_pane_items(&app, &settings, 40, TODAY);
+            f.render_widget(List::new(items), f.size())
+        });
+        assert!(row(&rows, ".zshrc").ends_with("  2024"));
+        assert!(!rows.iter().any(|row| row.contains(" B")));
+    }
+
+    #[test]
+    fn visual_rows_stay_styled_across_their_columns() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        app.input_mode = InputMode::Visual;
+        app.visual = Some(VisualSelection {
+            anchor: "/w/notes.txt".into(),
+            cursor: "/w/photos".into(),
+            paths: vec!["/w/notes.txt".into(), "/w/photos".into()],
+        });
+
+        // notes.txt is highlighted, which goes on top.
+        let buffer = draw_left(&mut ui, &app, &settings, 60, Some(0));
+        let rows = text(&buffer);
+        let at = |name: &str, x: u16| {
+            let y = rows.iter().position(|row| row.contains(name)).unwrap();
+            buffer.get(x, y as u16).clone()
+        };
+        let theme = &app.theme_colors;
+        // The name takes the visual colour, and the date keeps its own.
+        let name = at("photos", 4);
+        assert_eq!(
+            (name.symbol(), name.fg, name.bg),
+            ("p", theme.statusbar_mode_visual, theme.selection)
+        );
+        let date = at("photos", 58);
+        assert_eq!(
+            (date.symbol(), date.fg, date.bg),
+            ("1", SIZE_COLOR, theme.selection)
+        );
+        assert_ne!(at(".zshrc", 4).bg, theme.selection);
     }
 
     #[test]
@@ -837,7 +1044,8 @@ mod tests {
         assert_ne!(folder_row, file_row);
         let draw_right = |app: &App| {
             draw(40, |f| {
-                f.render_widget(List::new(ui.right_pane_items(app, &settings, 40)), f.size())
+                let items = ui.right_pane_items(app, &settings, 40, now());
+                f.render_widget(List::new(items), f.size())
             })
         };
 
@@ -859,7 +1067,7 @@ mod tests {
         terminal
             .draw(|f| {
                 f.render_widget(
-                    List::new(ui.right_pane_items(&app, &settings, 20)),
+                    List::new(ui.right_pane_items(&app, &settings, 20, TODAY)),
                     f.size(),
                 )
             })
