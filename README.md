@@ -50,9 +50,11 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 
 ### 📊 **File Size Visualization**
 
-- Visual size bars next to files
-- Color coding: green (small), yellow (medium), red (large)
-- Configurable via settings
+- Sorted by size (`s`, then `s`), folders show their real totals, counted in the background, and the biggest items rise to the top
+- Each row gets a bar against the largest item: green below 100 MB, yellow from 100 MB, red from 1 GB
+- The status line shows the folder's total and the free space on its disk
+- `≥` marks a total that's missing items ff couldn't read
+- `show_size_bars = false` hides sizes and bars
 
 ### 🎨 **UI & Theming**
 

@@ -3,13 +3,14 @@
 //! A Pane represents a single file listing view with its own directory,
 //! file list, selection state, and search functionality.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use log::debug;
 use ratatui::widgets::ListState;
 
 use crate::app::{global_search_results, local_search_results, SearchResult};
 use crate::directory_store::DirectoryStore;
+use crate::sizes::ListingSizes;
 use crate::utils::files::{read_listing, EntryInfo, Listing, SortBy, SortType};
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
@@ -44,6 +45,8 @@ pub struct Pane {
     pub sort_type: SortType,
     /// Watches `current_directory` for changes made outside ff while dual pane is on
     pub watcher: Option<FileSystemWatcher>,
+    /// Folder sizing while sorted by size; the totals are the app's
+    pub sizing: ListingSizes,
 }
 
 impl Default for Pane {
@@ -81,13 +84,18 @@ impl Pane {
             sort_by: SortBy::Default,
             sort_type: SortType::ASC,
             watcher: None,
+            sizing: ListingSizes::default(),
         };
         pane.set_listing(listing);
         pane
     }
 
     /// Show `listing`, each path beside its record, and update the labels.
-    fn set_listing(&mut self, listing: Listing) {
+    fn set_listing(&mut self, mut listing: Listing) {
+        if self.sort_by == SortBy::Size {
+            self.sizing.sort(&mut listing, &self.sort_type);
+        }
+        self.sizing.changed = true;
         self.files = listing.files;
         self.file_info = listing.info;
         self.read_only_files = self.files.clone();
@@ -239,6 +247,17 @@ impl Pane {
         self.restore_selection(selected);
     }
 
+    /// Sort the listing again by its folders' latest totals, keeping the highlight.
+    pub fn resort_by_size(&mut self) {
+        let selected = self.get_selected_path();
+        let listing = Listing {
+            files: std::mem::take(&mut self.files),
+            info: std::mem::take(&mut self.file_info),
+        };
+        self.set_listing(listing);
+        self.restore_selection(selected);
+    }
+
     /// Keep the highlight on `selected`; if it's gone, keep its row, clamped.
     fn restore_selection(&mut self, selected: Option<String>) {
         self.selected_index = self
@@ -280,13 +299,14 @@ impl Pane {
     }
 
     /// Re-read the folder, keeping the highlight, once its watcher reports a change.
-    pub fn poll_watcher(&mut self) {
+    /// Returns the paths it named, whose folder totals no longer hold.
+    pub fn poll_watcher(&mut self) -> Vec<PathBuf> {
         let Some(watcher) = &mut self.watcher else {
-            return;
+            return Vec::new();
         };
         let events = watcher.poll_events();
         if events.is_empty() {
-            return;
+            return Vec::new();
         }
         if events
             .iter()
@@ -295,6 +315,11 @@ impl Pane {
             watcher.stop_watching();
         }
         self.refresh_files();
+        events
+            .iter()
+            .flat_map(WatcherEvent::paths)
+            .cloned()
+            .collect()
     }
 
     /// Navigate to a new directory

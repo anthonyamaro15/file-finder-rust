@@ -166,6 +166,12 @@ impl StatusBar {
         let mode_text = Self::mode_label(app, mode_text);
         // Wide enough for "VISUAL · 5 selected" inside its borders.
         let mode_width = u16::try_from(mode_text.chars().count() + 4).map_or(15, |w| w.max(15));
+        // In size order: "7.1 GB here · 212 GB free".
+        let size_text = app
+            .active_sizing()
+            .summary()
+            .unwrap_or_else(|| Self::format_file_size(self.total_size));
+        let size_width = u16::try_from(size_text.chars().count() + 4).map_or(15, |w| w.max(15));
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -174,7 +180,7 @@ impl StatusBar {
                 Constraint::Length(14),         // View mode indicator
                 Constraint::Min(20),            // Directory path
                 Constraint::Length(25),         // File counts
-                Constraint::Length(15),         // Total size
+                Constraint::Length(size_width), // Total size
                 Constraint::Length(20),         // System info
             ])
             .split(area);
@@ -232,7 +238,6 @@ impl StatusBar {
         frame.render_widget(counts_widget, chunks[3]);
 
         // Total size
-        let size_text = Self::format_file_size(self.total_size);
         let size_widget = Paragraph::new(size_text)
             .block(
                 Block::default()
@@ -295,6 +300,18 @@ impl StatusBar {
             // Permissions
             Span::styled(perms_text, Style::default().fg(theme.gray)), // Muted
         ];
+        // In size order: the folder's total and its disk's free space.
+        let spans = match app.active_sizing().summary() {
+            Some(summary) => [
+                spans,
+                vec![
+                    Span::raw("  "),
+                    Span::styled(summary, Style::default().fg(theme.gray)),
+                ],
+            ]
+            .concat(),
+            None => spans,
+        };
 
         let paragraph = Paragraph::new(Line::from(spans));
         frame.render_widget(paragraph, area);

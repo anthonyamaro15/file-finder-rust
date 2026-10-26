@@ -73,6 +73,7 @@ pub fn handle_rename_key(
                             let old_path = Path::new(&app.current_path_to_edit)
                                 .join(&app.current_name_to_edit);
                             index.renamed(&old_path, Path::new(&new_path));
+                            app.forget_sizes([old_path.as_path(), Path::new(&new_path)]);
                             // Only the pane it was renamed in moves its highlight to it.
                             let from_right_pane =
                                 app.view_mode.is_dual_pane() && app.is_right_pane_active();
@@ -153,6 +154,7 @@ pub fn handle_create_key(
                     app.input_mode = InputMode::Normal;
                     // Indexes every folder it made, nested ones included.
                     index.changed(&top_created);
+                    app.forget_sizes([top_created.as_path()]);
 
                     let created_path =
                         created_item_path(Path::new(&new_path), &app.create_edit_file_name);
@@ -294,6 +296,7 @@ pub fn handle_delete_key(
                         Err(e) => e.is_not_found(),
                     };
                     if is_success {
+                        app.forget_sizes([path]);
                         if app.view_mode.is_dual_pane() {
                             app.right_pane.refresh_files();
                         }

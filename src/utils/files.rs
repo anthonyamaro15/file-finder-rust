@@ -108,6 +108,17 @@ impl EntryInfo {
             0
         }
     }
+
+    /// What size order sorts the item by: a folder's total from `folder_total`, which
+    /// has none until the folder is sized. A link to a folder counts as empty, since
+    /// links are never followed.
+    pub fn sort_size(&self, folder_total: impl FnOnce() -> Option<u64>) -> Option<u64> {
+        match (self.is_dir(), self.is_symlink) {
+            (true, true) => Some(0),
+            (true, false) => folder_total(),
+            (false, _) => Some(self.size),
+        }
+    }
 }
 
 /// A folder's items in display order, each beside its details.
@@ -115,6 +126,25 @@ impl EntryInfo {
 pub struct Listing {
     pub files: Vec<String>,
     pub info: Vec<EntryInfo>,
+}
+
+impl Listing {
+    /// Sort by size, each folder by its total from `folder_total`. A folder without
+    /// one goes after every sized item, in either direction.
+    pub fn sort_by_size(
+        &mut self,
+        sort_type: &SortType,
+        folder_total: impl Fn(&str) -> Option<u64>,
+    ) {
+        let mut entries: Vec<(String, EntryInfo)> = std::mem::take(&mut self.files)
+            .into_iter()
+            .zip(std::mem::take(&mut self.info))
+            .collect();
+        entries.sort_by_cached_key(|(file, info)| {
+            size_key(info.sort_size(|| folder_total(file)), sort_type)
+        });
+        (self.files, self.info) = entries.into_iter().unzip();
+    }
 }
 
 impl From<Vec<String>> for Listing {
@@ -142,7 +172,9 @@ pub fn sort_entries_by_type(
                     .to_ascii_lowercase()
                     .cmp(&b.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by_key(|(_, info)| info.size),
+            SortBy::Size => {
+                entries.sort_by_key(|(_, info)| size_key(info.sort_size(|| None), &SortType::ASC))
+            }
             SortBy::DateAdded => entries.sort_by_key(|(_, info)| date_added_key(info)),
             SortBy::Default => {}
         },
@@ -153,13 +185,24 @@ pub fn sort_entries_by_type(
                     .to_ascii_lowercase()
                     .cmp(&a.file_name().unwrap().to_ascii_lowercase())
             }),
-            SortBy::Size => entries.sort_by_key(|(_, info)| Reverse(info.size)),
+            SortBy::Size => {
+                entries.sort_by_key(|(_, info)| size_key(info.sort_size(|| None), &SortType::DESC))
+            }
             SortBy::DateAdded => entries.sort_by_key(|(_, info)| Reverse(date_added_key(info))),
             SortBy::Default => {}
         },
     }
 
     entries
+}
+
+/// Size sort key: known sizes in `sort_type`'s direction, then unknown ones.
+fn size_key(size: Option<u64>, sort_type: &SortType) -> (bool, u64) {
+    match (size, sort_type) {
+        (Some(size), SortType::ASC) => (false, size),
+        (Some(size), SortType::DESC) => (false, u64::MAX - size),
+        (None, _) => (true, 0),
+    }
 }
 
 /// Date sort key: creation time, then modification time, then a fixed epoch for an
@@ -479,6 +522,50 @@ pub(crate) mod tests {
         assert_eq!(names(asc), ["small", "mid", "big"]);
         let desc = sort_entries_by_type(SortBy::Size, SortType::DESC, entries);
         assert_eq!(names(desc), ["big", "mid", "small"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn size_sort_orders_folders_by_total_and_unsized_ones_last_either_way() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, len) in [("one", 1), ("three", 3)] {
+            fs::write(dir.path().join(name), "x".repeat(len)).unwrap();
+        }
+        for name in ["two", "four", "unsized"] {
+            fs::create_dir(dir.path().join(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(dir.path().join("four"), dir.path().join("link")).unwrap();
+        let start = dir.path().to_string_lossy().into_owned();
+        let listing = read_listing(start, false, SortBy::Name, &SortType::ASC).unwrap();
+        let name = |file: &str| {
+            Path::new(file)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let total = |file: &str| match name(file).as_str() {
+            "two" => Some(2),
+            "four" => Some(4),
+            _ => None,
+        };
+
+        for (sort_type, expected) in [
+            (
+                SortType::ASC,
+                ["link", "one", "two", "three", "four", "unsized"],
+            ),
+            (
+                SortType::DESC,
+                ["four", "three", "two", "one", "link", "unsized"],
+            ),
+        ] {
+            let mut sorted = listing.clone();
+            sorted.sort_by_size(&sort_type, total);
+            let names: Vec<String> = sorted.files.iter().map(|file| name(file)).collect();
+            assert_eq!(names, expected, "{sort_type:?}");
+            assert_records_match(&sorted.files, &sorted.info);
+        }
     }
 
     #[test]

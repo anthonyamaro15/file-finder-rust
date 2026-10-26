@@ -12,6 +12,7 @@ pub mod info;
 pub mod operations;
 pub mod pane;
 pub mod render;
+pub mod sizes;
 pub mod status_bar;
 pub mod theme;
 pub mod ui;
