@@ -2,6 +2,7 @@ use crate::app::{App, InputMode, ViewMode};
 use crate::config::theme::ThemeColors;
 use crate::info::plural;
 use crate::sizes::{total_text, FolderTotal};
+use crate::ui::truncate;
 use crate::utils::files::{EntryInfo, EntryKind};
 use crate::utils::format::{format_file_size, modified_text, replace_home_with_tilde, LocalStamp};
 use ratatui::{
@@ -14,8 +15,11 @@ use ratatui::{
 use std::env;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthStr;
 
 const DEFAULT_NOTIFICATION_SECS: u64 = 3;
+/// Fewest columns the highlighted item's name keeps before its details are cut.
+const MIN_NAME_WIDTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
@@ -104,9 +108,19 @@ impl StatusBar {
         }
     }
 
-    /// The highlighted item's name in bright, then its details muted.
-    fn item_line(app: &App, theme: &ThemeColors, today: LocalStamp) -> Vec<Span<'static>> {
+    /// The highlighted item's name in bright, then its details muted, in `room` columns.
+    /// The name gives way first, since the list shows it too.
+    fn item_line(
+        app: &App,
+        theme: &ThemeColors,
+        today: LocalStamp,
+        room: usize,
+    ) -> Vec<Span<'static>> {
         let (name, details) = item_text(app, today);
+        let name_room = room
+            .saturating_sub(details.width() + 2)
+            .max(name.width().min(MIN_NAME_WIDTH));
+        let name = truncate(&name, name_room);
         vec![
             Span::styled(name, Style::default().fg(theme.bright)),
             Span::raw("  "),
@@ -178,7 +192,8 @@ impl StatusBar {
         frame.render_widget(view_widget, chunks[1]);
 
         // The highlighted item, or the visual selection
-        let item_widget = Paragraph::new(Line::from(Self::item_line(app, theme, today)))
+        let room = usize::from(chunks[2].width.saturating_sub(2));
+        let item_widget = Paragraph::new(Line::from(Self::item_line(app, theme, today, room)))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -245,18 +260,6 @@ impl StatusBar {
             .chain([Span::styled(position(app), muted), Span::raw(" ")])
             .collect();
         let right = Line::from(right);
-        let left = [
-            Span::styled(
-                format!(" {mode_text} "),
-                Style::default()
-                    .fg(theme.black)
-                    .bg(mode_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-        ];
-        let left = Line::from([left.to_vec(), Self::item_line(app, theme, today)].concat());
-
         // A bar along the line it's drawn on; the item gives way to the position.
         let bar = Style::default().bg(theme.statusbar_bg);
         let area = Rect {
@@ -269,6 +272,21 @@ impl StatusBar {
                 .saturating_sub(u16::try_from(right.width() + 2).unwrap_or(u16::MAX)),
             ..area
         };
+        let badge = Span::styled(
+            format!(" {mode_text} "),
+            Style::default()
+                .fg(theme.black)
+                .bg(mode_color)
+                .add_modifier(Modifier::BOLD),
+        );
+        let room = usize::from(left_area.width).saturating_sub(badge.width() + 2);
+        let left = Line::from(
+            [
+                vec![badge, Span::raw("  ")],
+                Self::item_line(app, theme, today, room),
+            ]
+            .concat(),
+        );
         frame.render_widget(
             Paragraph::new(right).alignment(Alignment::Right).style(bar),
             area,
@@ -707,6 +725,26 @@ mod tests {
         assert_eq!(buffer.content()[10].fg, theme.bright);
         assert_eq!(buffer.content()[25].fg, theme.light_gray);
         assert_eq!(buffer.content()[119].bg, theme.statusbar_bg);
+    }
+
+    #[test]
+    fn a_long_name_gives_way_to_its_details() {
+        let mut listing = listing();
+        listing.files[1] = "/w/a-screenshot-name-far-too-long-for-the-line.ts".into();
+        let mut app = App::with_listing(listing);
+        app.curr_index = Some(1);
+        let status_bar = StatusBar::new();
+        let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        terminal
+            .draw(|f| status_bar.render_minimal(f, f.size(), &app, &app.theme_colors, TODAY))
+            .unwrap();
+
+        let line = text(terminal.backend().buffer());
+        assert!(line.contains(" a-screenshot-na… "), "{line}");
+        assert!(
+            line.contains("TypeScript · 2.2 MB · modified Oct 12"),
+            "{line}"
+        );
     }
 
     #[test]

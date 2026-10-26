@@ -170,7 +170,6 @@ impl Ui {
         &self,
         f: &mut Frame<'_>,
         area: Rect,
-        state: &mut ListState,
         app: &App,
         settings: &Settings,
         today: LocalStamp,
@@ -222,9 +221,10 @@ impl Ui {
             })
             .collect();
 
+        // From its top: the left list's state would scroll it, and it would move that
+        // list's scroll position in turn.
         let list_preview_block = List::new(items).block(block).style(theme.normal);
-
-        f.render_stateful_widget(list_preview_block, inner_layout[1], state);
+        f.render_widget(list_preview_block, inner_layout[1]);
     }
 
     /// The left listing's rows, `width` columns wide with `cursor` highlighted: its
@@ -902,8 +902,7 @@ mod tests {
         // The folder preview, in the screen's right half.
         app.preview_files = fixture();
         let preview = draw(100, |f| {
-            let mut state = ListState::default();
-            ui.render_preview_window(f, f.size(), &mut state, &app, &settings, TODAY);
+            ui.render_preview_window(f, f.size(), &app, &settings, TODAY);
         });
         assert_columns(&preview, 99, &names);
         assert!(!preview.iter().any(|row| row.contains("photos/")));

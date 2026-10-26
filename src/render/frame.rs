@@ -199,7 +199,6 @@ pub fn draw(
                 // Normal file list rendering
                 let (rows, total) =
                     widgets_ui.clone().render_list_preview(f, lists, state, app, settings, today);
-                // Read now: the folder preview draws with the same state.
                 Some((rows, total, state.offset()))
             }
         };
@@ -295,7 +294,7 @@ pub fn draw(
                 }
                 _ => {
                     image_renderer.clear();
-                    widgets_ui.clone().render_preview_window(f, lists, state, app, settings, today);
+                    widgets_ui.clone().render_preview_window(f, lists, app, settings, today);
                 }
             }
         } else if app.view_mode.is_dual_pane() {
@@ -632,5 +631,24 @@ mod tests {
         let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
         assert!(screen[0].starts_with(" /w "));
         assert!(screen[2].contains("Error"), "{}", screen[2]);
+    }
+
+    #[test]
+    fn moving_up_keeps_the_list_scrolled_where_it_was() {
+        let mut state = loop_state(30);
+        state.app.preview_files = Listing::from(vec!["/w/item-25/a".to_string()]);
+        state.state.select(Some(25));
+        state.app.curr_index = Some(25);
+        frame(&mut state, &settings(false, false), 100, 24);
+        let offset = state.state.offset();
+        assert_eq!(offset, 5);
+
+        // One row up stays on screen, so nothing scrolls; the folder preview doesn't
+        // pull the list back to its cursor.
+        state.state.select(Some(24));
+        state.app.curr_index = Some(24);
+        let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
+        assert_eq!(state.state.offset(), offset);
+        assert!(screen[1].contains("item-05"), "{}", screen[1]);
     }
 }
