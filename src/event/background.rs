@@ -1436,4 +1436,29 @@ pub(crate) mod tests {
         }
         assert!(app.folder_sizes.total(&folders[3]).is_some());
     }
+
+    #[test]
+    fn a_later_reorder_keeps_the_highlight_where_it_was_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut state) = size_ordered(dir.path());
+        size_left(&mut app, &mut state);
+        assert_eq!(names(&app.files), ["big", "mid.txt", "small"]);
+        app.select_active_row(&mut state, 2);
+
+        // small grows past big and is sized again.
+        let data = std::fs::File::create(dir.path().join("small/data")).unwrap();
+        data.set_len(3 << 30).unwrap();
+        app.forget_sizes([dir.path().join("small/data").as_path()]);
+        size_left(&mut app, &mut state);
+
+        assert_eq!(names(&app.files), ["small", "big", "mid.txt"]);
+        assert_eq!(
+            app.get_selected_path(state.selected()),
+            Some(spelled(&dir.path().join("small")))
+        );
+        // The status line shows the folder's total, not the folder entry's size.
+        let mut status_bar = StatusBar::new();
+        status_bar.update(&app);
+        assert_eq!(status_bar.selected_item_info, "small | Directory | 3.0 GB");
+    }
 }

@@ -1,5 +1,6 @@
 use crate::app::{App, InputMode, ViewMode};
 use crate::config::theme::ThemeColors;
+use crate::sizes::total_text;
 use crate::utils::files::{EntryInfo, EntryKind};
 use crate::utils::format::format_path_for_display;
 use ratatui::{
@@ -89,7 +90,7 @@ impl StatusBar {
                         EntryKind::Other => "Other",
                     };
 
-                    let size = Self::format_file_size(info.size);
+                    let size = Self::selected_size(app, path, &info);
                     self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
                 } else {
                     self.selected_item_info = format!("{} | Unknown", name);
@@ -99,6 +100,16 @@ impl StatusBar {
             }
         } else {
             self.selected_item_info = "No selection".to_string();
+        }
+    }
+
+    /// The selected item's size; in size order a folder shows its total, as its row does.
+    fn selected_size(app: &App, path: &Path, info: &EntryInfo) -> String {
+        match app.folder_sizes.total(path) {
+            Some(total) if info.is_dir() && app.active_sizing().folder.is_some() => {
+                total_text(total)
+            }
+            _ => Self::format_file_size(info.size),
         }
     }
 
@@ -378,9 +389,10 @@ impl StatusBar {
 
     /// Get size and permissions for selected file
     fn get_selected_file_info(&self, app: &App) -> (String, String) {
+        let path = app.active_selected_path(app.curr_index).unwrap_or_default();
         match app.active_selected_info(app.curr_index) {
             Some(info) if info.kind.is_some() => (
-                Self::format_file_size(info.size),
+                Self::selected_size(app, Path::new(&path), &info),
                 Self::format_permissions(&info),
             ),
             _ => ("--".to_string(), "----------".to_string()),

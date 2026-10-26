@@ -1114,7 +1114,10 @@ impl App {
     /// Sort the left listing again by its folders' latest totals, keeping the highlight
     /// on the same item.
     pub fn resort_by_size(&mut self, state: &mut ListState) {
-        let selected = self.get_selected_path(self.preserved_selection_index.or(state.selected()));
+        // The live highlight: `preserved_selection_index` can be left over from an
+        // earlier refresh.
+        let selected = self.get_selected_path(state.selected());
+        self.curr_index = state.selected();
         let listing = Listing {
             files: std::mem::take(&mut self.files),
             info: std::mem::take(&mut self.file_info),
