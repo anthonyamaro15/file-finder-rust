@@ -22,6 +22,7 @@ use crate::{
     render::{
         create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
         create_rename_input_popup, create_sort_options_popup, draw_input_popup, draw_popup,
+        hints::hint_line,
         input_popup_cursor_position,
         popups::{
             draw_delete_popup, render_batch_confirmation_popup, render_palette, render_which_key,
@@ -34,15 +35,13 @@ use crate::{
 };
 
 /// Draw the frame, lending the image and right-pane list states to the widgets. The
-/// hints name the live quit and search keys; `keymap_runtime` says when a sequence is
+/// hint row takes its keys from `keymap_runtime`, which also says when a sequence is
 /// waiting for its next key.
 pub fn draw(
     terminal: &mut Terminal<impl Backend>,
     loop_state: &mut LoopState,
     settings: &Settings,
     widgets_ui: &Ui,
-    exit_hint: &str,
-    find_hint: &str,
     keymap_runtime: &KeymapRuntime,
 ) -> io::Result<()> {
     let LoopState {
@@ -67,13 +66,19 @@ pub fn draw(
     // Draw UI
     terminal.draw(|f| {
         let theme = &app.theme_colors;
-        // The mode's accent, for the hint line and a searched pane's border.
+        // The mode's accent, for a searched pane's border.
         let mode = Style::default().fg(app.mode_color());
         // The top bar, the lists, the status line (the classic style's boxes are three
-        // rows) and the hints.
+        // rows) and the hint row, or a message there, which grows up over the lists.
         let status_height = match settings.status_bar_style {
             StatusBarStyle::Classic => 3,
             StatusBarStyle::Minimal => 1,
+        };
+        let message_rows = status_bar.message_rows(f.size().width);
+        let bottom_height = if message_rows > 0 {
+            message_rows
+        } else {
+            u16::from(settings.show_hints)
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -81,74 +86,11 @@ pub fn draw(
                 Constraint::Length(1),
                 Constraint::Min(1),
                 Constraint::Length(status_height),
-                Constraint::Length(1),
+                Constraint::Length(bottom_height),
             ])
             .split(f.size());
         let lists = chunks[1];
-
-        let (search_query, global_search) = app.search_box();
-        let (msg, style) = match app.input_mode {
-            InputMode::Normal => {
-                let search_indicator = if global_search {
-                    " [Global Search]".bold()
-                } else if !search_query.is_empty() {
-                    " [Local Search]".bold()
-                } else {
-                    find_hint.bold()
-                };
-                (
-                    vec![
-                        exit_hint.bold(),
-                        search_indicator,
-                        search_query.to_string().bold(),
-                        " Enter to select file (enter)".bold(),
-                    ],
-                    theme.normal,
-                )
-            },
-            InputMode::Editing => {
-                let mode_text = if global_search {
-                    "Global Search Mode (Esc to exit)".bold()
-                } else {
-                    "Local Search Mode (Esc to exit)".bold()
-                };
-                (vec![mode_text], mode)
-            },
-            InputMode::Visual => (
-                vec!["Visual Select (o swaps the ends, Esc to cancel)".bold()],
-                mode,
-            ),
-            InputMode::WatchDelete => (vec!["Permanent Delete".bold()], mode),
-            InputMode::WatchTrash => (vec!["Move to Trash".bold()], mode),
-            InputMode::WatchCreate => (vec!["Create Mode".bold()], mode),
-            InputMode::WatchRename => (vec!["Rename Mode".bold()], mode),
-            InputMode::WatchSort => (vec!["Sort Mode".bold()], mode),
-            InputMode::WatchInfo => (vec!["Get Info".bold()], theme.info),
-            InputMode::PickFolder => (
-                vec!["Pick a folder (Enter to confirm, Esc to cancel)".bold()],
-                theme.info,
-            ),
-            InputMode::Palette => (
-                vec!["Run an action (Enter to run, Esc to close)".bold()],
-                theme.info,
-            ),
-            InputMode::CacheLoading => {
-                let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
-                (
-                    vec![
-                        "⚡ Building directory cache...".bold(),
-                        format!(" {} directories processed", directories_processed).bold(),
-                        if !current_directory.is_empty() {
-                            format!(" Processing: {}", current_directory).bold()
-                        } else {
-                            " Starting cache build...".bold()
-                        },
-                    ],
-                    theme.warning,
-                )
-            },
-            _ => (vec!["Default".bold()], theme.normal),
-        };
+        let selected = state.selected();
 
         // Dynamic layout based on view mode
         let inner_constraints = match app.view_mode {
@@ -174,9 +116,6 @@ pub fn draw(
             StatusBarStyle::Classic => status_bar.render(f, chunks[2], app, theme, today),
             StatusBarStyle::Minimal => status_bar.render_minimal(f, chunks[2], app, theme, today),
         }
-        let text = Text::from(Line::from(msg)).patch_style(style);
-        f.render_widget(Paragraph::new(text), chunks[3]);
-
         match app.input_mode {
             InputMode::WatchCreate | InputMode::WatchRename => {
                 let area = draw_input_popup(f.size());
@@ -445,9 +384,12 @@ pub fn draw(
             }
             _ => {}
         }
-        // Render error notification overlay if there's an active error
-        if status_bar.has_error() {
-            status_bar.render_error_notification(f, f.size(), theme);
+        // Last, so no popup covers a message.
+        if message_rows > 0 {
+            status_bar.render_message(f, chunks[3], theme);
+        } else if settings.show_hints {
+            let hints = hint_line(app, keymap_runtime, selected, chunks[3].width);
+            f.render_widget(Paragraph::new(hints), chunks[3]);
         }
     })?;
 
@@ -471,10 +413,11 @@ mod tests {
         event::background::tests::memory_index,
         file_reader_content::FileContent,
         render::image_renderer::ImageRenderer,
-        status_bar::StatusBar,
+        status_bar::{NotificationKind, StatusBar},
         utils::files::{EntryInfo, EntryKind, Listing},
     };
     use ratatui::{backend::TestBackend, buffer::Buffer, widgets::ListState};
+    use std::time::Duration;
 
     /// `/w` listing `count` folders, the first highlighted.
     fn loop_state(count: usize) -> LoopState {
@@ -526,16 +469,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let keymap = KeymapRuntime::from_settings(&settings.keymap);
         let ui = Ui::new(Vec::new(), settings);
-        draw(
-            &mut terminal,
-            loop_state,
-            settings,
-            &ui,
-            "Exit (q)",
-            " find (/)",
-            &keymap,
-        )
-        .unwrap();
+        draw(&mut terminal, loop_state, settings, &ui, &keymap).unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -569,17 +503,22 @@ mod tests {
         );
         assert!(screen[22].trim_end().ends_with("1/30"), "{}", screen[22]);
         assert!(
-            screen[23].starts_with("Exit (q) find (/) Enter to select file"),
+            screen[23].starts_with(" l open   h up   / find   ␣/ all folders"),
             "{}",
             screen[23]
         );
+        assert!(screen[23].ends_with("? all keys "), "{}", screen[23]);
 
         // A search is typed in the top bar; there's no search box.
         state.app.input_mode = InputMode::Editing;
         let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
         assert!(screen[0].starts_with(" /   "), "{}", screen[0]);
         assert!(screen[1].contains("item-00"));
-        assert!(screen[23].starts_with("Local Search Mode (Esc to exit)"));
+        assert!(
+            screen[23].starts_with(" Esc cancel   ←/→ move the cursor"),
+            "{}",
+            screen[23]
+        );
         assert!(!screen.iter().any(|row| row.contains('🔍')));
     }
 
@@ -593,7 +532,7 @@ mod tests {
         assert!(screen[21].contains(" NORMAL ") && screen[21].contains("1/30"));
         assert!(screen[21].contains("item-00/  folder"), "{}", screen[21]);
         assert!(screen[22].starts_with('╰'));
-        assert!(screen[23].starts_with("Exit (q)"));
+        assert!(screen[23].starts_with(" l open"), "{}", screen[23]);
     }
 
     #[test]
@@ -625,12 +564,107 @@ mod tests {
     }
 
     #[test]
-    fn a_notification_leaves_the_top_bar_alone() {
+    fn without_hints_the_lists_get_the_row() {
+        let mut state = loop_state(30);
+        let settings = Settings {
+            show_hints: false,
+            ..settings(false, false)
+        };
+        let screen = rows(&frame(&mut state, &settings, 100, 24));
+        assert!(screen[22].contains("item-21"), "{}", screen[22]);
+        assert!(screen[23].starts_with(" NORMAL "), "{}", screen[23]);
+
+        // A message still shows, on a row taken from the lists.
+        state.status_bar.show_info("Copied".into(), None);
+        let screen = rows(&frame(&mut state, &settings, 100, 24));
+        assert!(screen[21].contains("item-20"), "{}", screen[21]);
+        assert!(screen[22].starts_with(" NORMAL "), "{}", screen[22]);
+        assert!(screen[23].starts_with(" ✓ Copied"), "{}", screen[23]);
+    }
+
+    #[test]
+    fn a_message_takes_the_hint_row_with_its_marker_and_tint() {
+        let theme = loop_state(0).app.theme_colors;
+        let kinds = [
+            (NotificationKind::Error, "✗", theme.red, theme.error_bg),
+            (
+                NotificationKind::Warning,
+                "!",
+                theme.yellow,
+                theme.warning_bg,
+            ),
+            (NotificationKind::Info, "✓", theme.green, theme.success_bg),
+        ];
+        for (kind, marker, color, tint) in kinds {
+            let mut state = loop_state(3);
+            state.status_bar.show_error("Couldn't rename".into(), None);
+            state.status_bar.notification_kind = kind;
+            let buffer = frame(&mut state, &settings(false, false), 100, 24);
+            let screen = rows(&buffer);
+            // The top bar and the list's top stay in view.
+            assert!(screen[0].starts_with(" /w "), "{}", screen[0]);
+            assert!(screen[1].contains("item-00"), "{}", screen[1]);
+            assert_eq!(screen[23].trim_end(), format!(" {marker} Couldn't rename"));
+            let marker_cell = buffer.get(1, 23);
+            assert_eq!(marker_cell.fg, color, "{marker}");
+            assert!(marker_cell.modifier.contains(Modifier::BOLD));
+            assert_eq!(buffer.get(3, 23).fg, theme.bright);
+            for x in [0, 50, 99] {
+                assert_eq!(buffer.get(x, 23).bg, tint, "{marker} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_message_wraps_upward_whole_then_the_hints_come_back() {
+        let mut state = loop_state(30);
+        let message = format!(
+            "Couldn't copy '/w/{}/report.pdf' to '/w/archive': Permission denied (os error 13)",
+            "nested-folder/".repeat(6)
+        );
+        state.status_bar.show_error(message.clone(), None);
+        let screen = rows(&frame(&mut state, &settings(false, false), 80, 24));
+        // Three rows: the lists give up two, and the status line sits above.
+        assert!(screen[19].contains("item-18"), "{}", screen[19]);
+        assert!(screen[20].starts_with(" NORMAL "), "{}", screen[20]);
+        assert!(screen[21].starts_with(" ✗ Couldn't copy"), "{}", screen[21]);
+        assert!(screen[22].starts_with("   "), "{}", screen[22]);
+        // Nothing is cut: past the marker, the rows hold every character.
+        let shown: String = screen[21..].concat().chars().skip(3).collect();
+        let without_spaces = |text: &str| text.replace(' ', "");
+        assert_eq!(without_spaces(&shown), without_spaces(&message));
+
+        // Once it expires the hint row is back.
+        state.status_bar.error_display_time = Some(Instant::now() - Duration::from_secs(4));
+        state.status_bar.update(&state.app);
+        let screen = rows(&frame(&mut state, &settings(false, false), 80, 24));
+        assert!(screen[21].contains("item-20"), "{}", screen[21]);
+        assert!(screen[22].starts_with(" NORMAL "), "{}", screen[22]);
+        assert!(screen[23].starts_with(" l open"), "{}", screen[23]);
+    }
+
+    #[test]
+    fn a_message_too_long_for_four_rows_keeps_its_start_and_its_reason() {
         let mut state = loop_state(3);
-        state.status_bar.show_error("Couldn't rename".into(), None);
-        let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
-        assert!(screen[0].starts_with(" /w "));
-        assert!(screen[2].contains("Error"), "{}", screen[2]);
+        let message = format!(
+            "Couldn't create '{}': File name too long (os error 63)",
+            "x".repeat(300)
+        );
+        state.status_bar.show_error(message, None);
+        let screen = rows(&frame(&mut state, &settings(false, false), 80, 24));
+        assert!(
+            screen[20].starts_with(" ✗ Couldn't create"),
+            "{}",
+            screen[20]
+        );
+        assert!(screen[21].trim_end().ends_with('…'), "{}", screen[21]);
+        assert!(
+            screen[23]
+                .trim_end()
+                .ends_with("File name too long (os error 63)"),
+            "{}",
+            screen[23]
+        );
     }
 
     #[test]

@@ -29,7 +29,6 @@ use file_finder::{
 use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
-    config::Action,
     directory_store::{
         build_directory_from_store_async, DirectoryIndex, DirectoryStore, REFRESH_THREADS,
     },
@@ -38,7 +37,7 @@ use file_finder::{
         transfer::handle_folder_picker_key, LoopControl, LoopState,
     },
     file_reader_content::FileContent,
-    render::{configured_action_key_labels, image_renderer::ImageRenderer},
+    render::image_renderer::ImageRenderer,
     status_bar::StatusBar,
     ui::Ui,
     utils::{init, read_listing, SortBy, SortType},
@@ -179,22 +178,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.print_path = effective_config.print_path;
 
     let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
-    // "Exit (q)", " find (/)  global (Space + /)": the first live key of each action.
-    let key_hint = |label: &str, action| {
-        configured_action_key_labels(&settings.keymap, action)
-            .first()
-            .map(|key| format!("{label} ({key})"))
-    };
-    let exit_hint = key_hint("Exit", Action::Quit).unwrap_or_default();
-    let find_hint: String = [
-        ("find", Action::SearchCurrent),
-        ("global", Action::SearchRoot),
-    ]
-    .into_iter()
-    .filter_map(|(label, action)| key_hint(label, action))
-    .map(|hint| format!(" {hint}"))
-    .collect::<Vec<_>>()
-    .join(" ");
 
     let cache_path = PathBuf::from(&settings.cache_directory);
     let loaded = if !cli_args.rebuild_cache && cache_path.exists() {
@@ -335,8 +318,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state,
             &settings,
             &widgets_ui,
-            &exit_hint,
-            &find_hint,
             &keymap_runtime,
         )?;
 

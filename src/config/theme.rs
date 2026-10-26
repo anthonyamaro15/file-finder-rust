@@ -347,6 +347,10 @@ pub struct ThemeColors {
     pub search_bg: Color,
     /// The top bar's while a search from the root is typed.
     pub global_bg: Color,
+    /// A message's row: an error's, a warning's and a notice's.
+    pub error_bg: Color,
+    pub warning_bg: Color,
+    pub success_bg: Color,
 
     // Icon colors
     pub icon_directory: Color,
@@ -554,7 +558,7 @@ impl Theme {
             error: Style::default().fg(red),
             dotfile: Style::default().fg(gray),
 
-            // Row bands and the search tints: a little of the foreground or the mode's
+            // Row bands and the search and message tints: a little of the foreground or a
             // color over the background, so a theme changes them with those colors.
             cursor_bg: blend(bg, fg, 0.1),
             inactive_cursor_bg: blend(bg, fg, 0.04),
@@ -562,6 +566,9 @@ impl Theme {
             visual_cursor_bg: blend(bg, mode_visual, 0.22),
             search_bg: blend(bg, mode_search, 0.1),
             global_bg: blend(bg, mode_global, 0.1),
+            error_bg: blend(bg, red, 0.15),
+            warning_bg: blend(bg, yellow, 0.15),
+            success_bg: blend(bg, green, 0.15),
 
             // Icon colors
             icon_directory: Self::parse_color(&icons.directory)?,

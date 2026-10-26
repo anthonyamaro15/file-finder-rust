@@ -609,13 +609,17 @@ fn keybinding_help_lines(keymap: &KeymapSettings, theme: &ThemeColors) -> Vec<Li
     lines
 }
 
-pub fn configured_action_key_labels(keymap: &KeymapSettings, action: Action) -> Vec<String> {
-    action_key_labels(&keymap.resolve(), action)
+fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
+    action_keys(bindings, action)
+        .iter()
+        .map(|sequence| format_key_sequence(sequence, &bindings.leader))
+        .collect()
 }
 
-/// Plain characters first, then named keys, Ctrl chords and leader sequences.
-pub(crate) fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<String> {
-    let mut key_labels: Vec<(u8, String)> = bindings
+/// `action`'s keys in the help's order: plain characters first, then named keys, Ctrl
+/// chords and leader sequences.
+pub(crate) fn action_keys(bindings: &Bindings, action: Action) -> Vec<KeySequence> {
+    let mut keys: Vec<(u8, String, &KeySequence)> = bindings
         .normal
         .iter()
         .filter(|(_, bound)| *bound == action)
@@ -626,15 +630,21 @@ pub(crate) fn action_key_labels(bindings: &Bindings, action: Action) -> Vec<Stri
                 KeySequence::Single(key) if key.chars().count() > 1 => 1,
                 KeySequence::Single(_) => 0,
             };
-            (rank, format_key_sequence(sequence, &bindings.leader))
+            (
+                rank,
+                format_key_sequence(sequence, &bindings.leader),
+                sequence,
+            )
         })
         .collect();
 
-    key_labels.sort();
-    key_labels.into_iter().map(|(_, label)| label).collect()
+    keys.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    keys.into_iter()
+        .map(|(.., sequence)| sequence.clone())
+        .collect()
 }
 
-fn format_key_sequence(sequence: &KeySequence, leader: &str) -> String {
+pub(crate) fn format_key_sequence(sequence: &KeySequence, leader: &str) -> String {
     match sequence {
         KeySequence::Leader(key) => format!("{} + {}", key_label(leader), key_label(key)),
         KeySequence::Single(key) => key_label(key),
