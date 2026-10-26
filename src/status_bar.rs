@@ -1,8 +1,9 @@
 use crate::app::{App, InputMode, ViewMode};
 use crate::config::theme::ThemeColors;
-use crate::sizes::total_text;
+use crate::info::plural;
+use crate::sizes::{total_text, FolderTotal};
 use crate::utils::files::{EntryInfo, EntryKind};
-use crate::utils::format::format_path_for_display;
+use crate::utils::format::{format_file_size, modified_text, replace_home_with_tilde, LocalStamp};
 use ratatui::{
     prelude::*,
     style::{Color, Modifier, Style},
@@ -24,11 +25,7 @@ pub enum NotificationKind {
 }
 
 pub struct StatusBar {
-    pub file_count: usize,
-    pub directory_count: usize,
-    pub current_directory: String,
     pub total_size: u64,
-    pub selected_item_info: String,
     pub system_info: String,
     pub error_message: Option<String>,
     pub error_display_time: Option<Instant>,
@@ -45,11 +42,7 @@ impl Default for StatusBar {
 impl StatusBar {
     pub fn new() -> Self {
         StatusBar {
-            file_count: 0,
-            directory_count: 0,
-            current_directory: String::new(),
             total_size: 0,
-            selected_item_info: String::new(),
             system_info: Self::get_system_info(),
             error_message: None,
             error_display_time: None,
@@ -58,59 +51,15 @@ impl StatusBar {
         }
     }
 
-    /// Describe the active pane from its listing's records, never the disk.
+    /// Add up the active pane's listing from its records, never the disk.
     pub fn update(&mut self, app: &App) {
-        // Describe the active pane: its directory (even when empty) and listing
         let file_info = if is_right_pane(app) {
             &app.right_pane.file_info
         } else {
             &app.file_info
         };
-        self.file_count = file_info.iter().filter(|info| info.is_file()).count();
-        self.directory_count = file_info.iter().filter(|info| info.is_dir()).count();
         self.total_size = file_info.iter().map(EntryInfo::file_size).sum();
-
-        self.current_directory = app.current_directory_path().to_string_lossy().to_string();
-        self.update_selected_item_info(app);
         self.update_error_display();
-    }
-
-    fn update_selected_item_info(&mut self, app: &App) {
-        if let Some(selected_path) = app.active_selected_path(app.curr_index) {
-            let path = Path::new(&selected_path);
-
-            if let Some(file_name) = path.file_name() {
-                let name = file_name.to_string_lossy();
-                let info = app.active_selected_info(app.curr_index).unwrap_or_default();
-
-                if let Some(kind) = info.kind {
-                    let file_type = match kind {
-                        EntryKind::File => "File",
-                        EntryKind::Folder => "Directory",
-                        EntryKind::Other => "Other",
-                    };
-
-                    let size = Self::selected_size(app, path, &info);
-                    self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
-                } else {
-                    self.selected_item_info = format!("{} | Unknown", name);
-                }
-            } else {
-                self.selected_item_info = "No selection".to_string();
-            }
-        } else {
-            self.selected_item_info = "No selection".to_string();
-        }
-    }
-
-    /// The selected item's size; in size order a folder shows its total, as its row does.
-    fn selected_size(app: &App, path: &Path, info: &EntryInfo) -> String {
-        match app.folder_sizes.total(path) {
-            Some(total) if info.is_dir() && app.active_sizing().folder.is_some() => {
-                total_text(total)
-            }
-            _ => Self::format_file_size(info.size),
-        }
     }
 
     fn get_system_info() -> String {
@@ -119,26 +68,11 @@ impl StatusBar {
         format!("{} ({})", os, arch)
     }
 
-    fn format_file_size(size: u64) -> String {
-        const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
-        let mut size = size as f64;
-        let mut unit_index = 0;
-
-        while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-            size /= 1024.0;
-            unit_index += 1;
-        }
-
-        if unit_index == 0 {
-            format!("{} {}", size as u64, UNITS[unit_index])
-        } else {
-            format!("{:.1} {}", size, UNITS[unit_index])
-        }
-    }
-
-    fn get_mode_indicator(app: &App, theme: &ThemeColors) -> (&'static str, Color) {
-        let label = match app.input_mode {
+    /// The badge's name and color: the mode's, for the modes that have one.
+    fn badge(app: &App, theme: &ThemeColors) -> (&'static str, Color) {
+        let name = match app.input_mode {
             InputMode::Normal => "NORMAL",
+            InputMode::Editing if app.search_box().1 => "GLOBAL",
             InputMode::Editing => "SEARCH",
             InputMode::WatchDelete => "DELETE",
             InputMode::WatchTrash => "TRASH",
@@ -152,28 +86,14 @@ impl StatusBar {
             InputMode::Visual => "VISUAL",
             InputMode::Palette => "PALETTE",
         };
-        (label, Self::mode_color(app, theme))
-    }
-
-    /// The badge's color: the mode's, for the modes that have one.
-    fn mode_color(app: &App, theme: &ThemeColors) -> Color {
-        match app.input_mode {
+        let color = match app.input_mode {
             InputMode::WatchKeyBinding => theme.fg,
             InputMode::CacheLoading => theme.yellow,
             InputMode::PickFolder | InputMode::Palette => theme.blue,
             InputMode::WatchInfo => theme.cyan,
             _ => app.mode_color(),
-        }
-    }
-
-    /// The mode's label, with the selection's size in visual mode: "VISUAL · 5 selected".
-    fn mode_label(app: &App, label: &str) -> String {
-        match &app.visual {
-            Some(visual) if app.input_mode == InputMode::Visual => {
-                format!("{label} · {} selected", visual.paths.len())
-            }
-            _ => label.to_string(),
-        }
+        };
+        (name, color)
     }
 
     fn get_view_mode_indicator(view_mode: &ViewMode, theme: &ThemeColors) -> (&'static str, Color) {
@@ -184,27 +104,44 @@ impl StatusBar {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
-        let (mode_text, mode_color) = Self::get_mode_indicator(app, theme);
-        let mode_text = Self::mode_label(app, mode_text);
-        // Wide enough for "VISUAL · 5 selected" inside its borders.
-        let mode_width = u16::try_from(mode_text.chars().count() + 4).map_or(15, |w| w.max(15));
+    /// The highlighted item's name in bright, then its details muted.
+    fn item_line(app: &App, theme: &ThemeColors, today: LocalStamp) -> Vec<Span<'static>> {
+        let (name, details) = item_text(app, today);
+        vec![
+            Span::styled(name, Style::default().fg(theme.bright)),
+            Span::raw("  "),
+            Span::styled(details, Style::default().fg(theme.light_gray)),
+        ]
+    }
+
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        app: &App,
+        theme: &ThemeColors,
+        today: LocalStamp,
+    ) {
+        let (mode_text, mode_color) = Self::badge(app, theme);
+        let position = position(app);
+        // Wide enough for "right pane · 12/36" inside its borders.
+        let position_width = u16::try_from(position.chars().count() + 4).map_or(12, |w| w.max(12));
         // In size order: "7.1 GB here · 212 GB free".
         let size_text = app
             .active_sizing()
             .summary()
-            .unwrap_or_else(|| Self::format_file_size(self.total_size));
+            .unwrap_or_else(|| format_file_size(self.total_size));
         let size_width = u16::try_from(size_text.chars().count() + 4).map_or(15, |w| w.max(15));
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(mode_width), // Mode indicator
-                Constraint::Length(14),         // View mode indicator
-                Constraint::Min(20),            // Directory path
-                Constraint::Length(25),         // File counts
-                Constraint::Length(size_width), // Total size
-                Constraint::Length(20),         // System info
+                Constraint::Length(15),             // Mode indicator
+                Constraint::Length(14),             // View mode indicator
+                Constraint::Min(20),                // Highlighted item
+                Constraint::Length(position_width), // Position
+                Constraint::Length(size_width),     // Total size
+                Constraint::Length(20),             // System info
             ])
             .split(area);
         frame.render_widget(
@@ -240,33 +177,28 @@ impl StatusBar {
             .alignment(Alignment::Center);
         frame.render_widget(view_widget, chunks[1]);
 
-        // Current directory with smart path formatting
-        // Account for border (2 chars) and padding (2 chars) = 4 chars overhead
-        let available_width = (chunks[2].width as usize).saturating_sub(4);
-        let dir_text = format_path_for_display(&self.current_directory, available_width);
-
-        let dir_widget = Paragraph::new(dir_text)
+        // The highlighted item, or the visual selection
+        let item_widget = Paragraph::new(Line::from(Self::item_line(app, theme, today)))
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_set(border::ROUNDED)
-                    .title("Directory"),
+                    .title("Item"),
             )
             .style(Style::default().fg(theme.statusbar_fg));
-        frame.render_widget(dir_widget, chunks[2]);
+        frame.render_widget(item_widget, chunks[2]);
 
-        // File and directory counts
-        let counts_text = format!("{}F {}D", self.file_count, self.directory_count);
-        let counts_widget = Paragraph::new(counts_text)
+        // Where the highlight is in the list
+        let position_widget = Paragraph::new(position)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_set(border::ROUNDED)
-                    .title("Items"),
+                    .title("Position"),
             )
             .style(Style::default().fg(theme.cyan))
             .alignment(Alignment::Center);
-        frame.render_widget(counts_widget, chunks[3]);
+        frame.render_widget(position_widget, chunks[3]);
 
         // Total size
         let size_widget = Paragraph::new(size_text)
@@ -293,159 +225,55 @@ impl StatusBar {
         frame.render_widget(system_widget, chunks[5]);
     }
 
-    /// Render minimal status bar - single clean line with essential info
-    /// Format:  NOR  ~/path  position  size  permissions
-    pub fn render_minimal(&self, frame: &mut Frame, area: Rect, app: &App, theme: &ThemeColors) {
-        let (mode_text, mode_color) = Self::get_mode_indicator_short(app, theme);
-        let mode_text = Self::mode_label(app, mode_text);
-
-        // Calculate position indicator
-        let position = Self::get_position_indicator(app);
-
-        // Get selected file size and permissions
-        let (size_text, perms_text) = self.get_selected_file_info(app);
-
-        // Format path with home directory abbreviation
-        let path = Self::abbreviate_home_path(&self.current_directory);
-
-        // Build the status line with spans
-        let spans = vec![
-            // Mode indicator with background
+    /// Draw the minimal status line: the mode's badge and the highlighted item at the
+    /// left; in size order the folder's total and free space, then the highlight's
+    /// position, at the right.
+    pub fn render_minimal(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        app: &App,
+        theme: &ThemeColors,
+        today: LocalStamp,
+    ) {
+        let (mode_text, mode_color) = Self::badge(app, theme);
+        let muted = Style::default().fg(theme.light_gray);
+        let summary = app.active_sizing().summary();
+        let right: Vec<Span> = summary
+            .into_iter()
+            .flat_map(|summary| [Span::styled(summary, muted), Span::raw("  ")])
+            .chain([Span::styled(position(app), muted), Span::raw(" ")])
+            .collect();
+        let right = Line::from(right);
+        let left = [
             Span::styled(
-                format!(" {} ", mode_text),
+                format!(" {mode_text} "),
                 Style::default()
                     .fg(theme.black)
                     .bg(mode_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            // Path
-            Span::styled(path, Style::default().fg(theme.statusbar_fg)),
-            Span::raw("  "),
-            // Position
-            Span::styled(position, Style::default().fg(theme.gray)), // Muted
-            Span::raw("  "),
-            // Size
-            Span::styled(size_text, Style::default().fg(theme.gray)), // Muted
-            Span::raw("  "),
-            // Permissions
-            Span::styled(perms_text, Style::default().fg(theme.gray)), // Muted
         ];
-        // In size order: the folder's total and its disk's free space.
-        let spans = match app.active_sizing().summary() {
-            Some(summary) => [
-                spans,
-                vec![
-                    Span::raw("  "),
-                    Span::styled(summary, Style::default().fg(theme.gray)),
-                ],
-            ]
-            .concat(),
-            None => spans,
-        };
+        let left = Line::from([left.to_vec(), Self::item_line(app, theme, today)].concat());
 
-        // A bar along the line it's drawn on.
-        let paragraph =
-            Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.statusbar_bg));
+        // A bar along the line it's drawn on; the item gives way to the position.
+        let bar = Style::default().bg(theme.statusbar_bg);
+        let area = Rect {
+            height: area.height.min(1),
+            ..area
+        };
+        let left_area = Rect {
+            width: area
+                .width
+                .saturating_sub(u16::try_from(right.width() + 2).unwrap_or(u16::MAX)),
+            ..area
+        };
         frame.render_widget(
-            paragraph,
-            Rect {
-                height: area.height.min(1),
-                ..area
-            },
+            Paragraph::new(right).alignment(Alignment::Right).style(bar),
+            area,
         );
-    }
-
-    /// Get short mode indicator for minimal status bar
-    fn get_mode_indicator_short(app: &App, theme: &ThemeColors) -> (&'static str, Color) {
-        let label = match app.input_mode {
-            InputMode::Normal => "NOR",
-            InputMode::Editing => "SRC",
-            InputMode::WatchDelete => "DEL",
-            InputMode::WatchTrash => "TRASH",
-            InputMode::WatchCreate => "NEW",
-            InputMode::WatchRename => "REN",
-            InputMode::WatchSort => "SRT",
-            InputMode::WatchKeyBinding => "HLP",
-            InputMode::CacheLoading => "...",
-            InputMode::PickFolder => "PCK",
-            InputMode::WatchInfo => "INFO",
-            InputMode::Visual => "VISUAL",
-            InputMode::Palette => "PAL",
-        };
-        (label, Self::mode_color(app, theme))
-    }
-
-    /// Get position indicator: "Top", "Bot", or "N/M"
-    fn get_position_indicator(app: &App) -> String {
-        let (index, total) = if is_right_pane(app) {
-            (
-                app.right_pane.selected_index,
-                app.right_pane.get_list_length(),
-            )
-        } else {
-            (app.curr_index, app.get_list_length())
-        };
-
-        if total == 0 {
-            return "Empty".to_string();
-        }
-
-        let current = index.unwrap_or(0) + 1; // 1-indexed for display
-
-        if current == 1 {
-            "Top".to_string()
-        } else if current == total {
-            "Bot".to_string()
-        } else {
-            format!("{}/{}", current, total)
-        }
-    }
-
-    /// Abbreviate home directory path with ~
-    fn abbreviate_home_path(path: &str) -> String {
-        if let Some(home) = dirs::home_dir() {
-            let home_str = home.to_string_lossy();
-            if path.starts_with(home_str.as_ref()) {
-                return path.replacen(home_str.as_ref(), "~", 1);
-            }
-        }
-        path.to_string()
-    }
-
-    /// Get size and permissions for selected file
-    fn get_selected_file_info(&self, app: &App) -> (String, String) {
-        let path = app.active_selected_path(app.curr_index).unwrap_or_default();
-        match app.active_selected_info(app.curr_index) {
-            Some(info) if info.kind.is_some() => (
-                Self::selected_size(app, Path::new(&path), &info),
-                Self::format_permissions(&info),
-            ),
-            _ => ("--".to_string(), "----------".to_string()),
-        }
-    }
-
-    /// Format Unix-style permissions string of what the item is (a link's target)
-    #[cfg(unix)]
-    fn format_permissions(info: &EntryInfo) -> String {
-        let file_type = if info.is_dir() { 'd' } else { '-' };
-
-        format!(
-            "{}{}",
-            file_type,
-            crate::utils::format::permission_bits(info.mode)
-        )
-    }
-
-    #[cfg(not(unix))]
-    fn format_permissions(info: &EntryInfo) -> String {
-        if info.is_dir() {
-            "d---------".to_string()
-        } else if info.mode & 0o222 == 0 {
-            "-r--r--r--".to_string()
-        } else {
-            "-rw-rw-rw-".to_string()
-        }
+        frame.render_widget(Paragraph::new(left).style(bar), left_area);
     }
 
     /// Show an error message for a specified duration (default: 3 seconds)
@@ -542,71 +370,487 @@ fn is_right_pane(app: &App) -> bool {
     app.view_mode.is_dual_pane() && app.is_right_pane_active()
 }
 
+/// What the status line says about the active pane's highlighted item, from its
+/// records: its name, then its kind and item count or type and size, when it was
+/// modified and its permissions; a global result says where it lives instead. In
+/// visual mode, and while its prompt is open, it's the selection's size.
+pub fn item_text(app: &App, today: LocalStamp) -> (String, String) {
+    if let Some(visual) = &app.visual {
+        return (
+            format!("{} selected", visual.paths.len()),
+            selection_kinds(app),
+        );
+    }
+    let (Some(path), Some(info)) = (
+        app.active_selected_path(app.curr_index),
+        app.active_selected_info(app.curr_index),
+    ) else {
+        return (String::new(), String::new());
+    };
+    let item = Path::new(&path);
+    let mut name = item
+        .file_name()
+        .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned());
+    let global = showing_global_results(app);
+    let mut details = Vec::new();
+    if global {
+        details
+            .extend(item.parent().map(|parent| {
+                format!("in {}", replace_home_with_tilde(&parent.to_string_lossy()))
+            }));
+    }
+    match info.kind {
+        Some(EntryKind::Folder) => {
+            if !name.ends_with('/') {
+                name.push('/');
+            }
+            if !global {
+                details.push("folder".to_string());
+            }
+            // The preview's listing, read in the background, once it's this folder's.
+            details.extend(
+                app.preview_count(&path)
+                    .map(|count| plural(count as u64, "item")),
+            );
+            details.extend(folder_total(app, item, &info).map(total_text));
+        }
+        Some(EntryKind::File) => {
+            if !global {
+                details.push(type_label(item));
+            }
+            details.push(format_file_size(info.size));
+        }
+        Some(EntryKind::Other) => details.push("other".to_string()),
+        None => {}
+    }
+    details.extend(
+        info.modified_local
+            .map(|stamp| format!("modified {}", modified_text(stamp, today))),
+    );
+    if info.kind.is_some() && !global {
+        details.push(format_permissions(&info));
+    }
+    (name, details.join(" · "))
+}
+
+/// Whether the active pane lists a search from the root's results.
+fn showing_global_results(app: &App) -> bool {
+    if is_right_pane(app) {
+        app.right_pane.is_searching() && app.right_pane.global_search_mode
+    } else {
+        app.global_search_mode && !app.search_results.is_empty()
+    }
+}
+
+/// In size order, a folder's total, as its row shows it.
+fn folder_total(app: &App, path: &Path, info: &EntryInfo) -> Option<FolderTotal> {
+    app.active_sizing().folder.as_ref()?;
+    app.folder_sizes.total(path).filter(|_| info.is_dir())
+}
+
+/// "6 folders, 1 file": what the visual selection holds, while both its ends are listed.
+fn selection_kinds(app: &App) -> String {
+    let info = if is_right_pane(app) {
+        &app.right_pane.file_info
+    } else {
+        &app.file_info
+    };
+    let Some(selected) = app.visual_rows().and_then(|rows| info.get(rows)) else {
+        return String::new();
+    };
+    let folders = selected.iter().filter(|info| info.is_dir()).count();
+    [(folders, "folder"), (selected.len() - folders, "file")]
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, noun)| plural(count as u64, noun))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Where the highlight is in the active pane's list, "12/36", naming the pane in dual
+/// pane: "right pane · 3/9".
+fn position(app: &App) -> String {
+    let (index, total) = if is_right_pane(app) {
+        (
+            app.right_pane.selected_index,
+            app.right_pane.get_list_length(),
+        )
+    } else {
+        (app.curr_index, app.get_list_length())
+    };
+    let position = if total == 0 {
+        "Empty".to_string()
+    } else {
+        format!("{}/{total}", index.unwrap_or(0) + 1)
+    };
+    if app.view_mode.is_dual_pane() {
+        let pane = if app.is_right_pane_active() {
+            "right"
+        } else {
+            "left"
+        };
+        format!("{pane} pane · {position}")
+    } else {
+        position
+    }
+}
+
+/// A short name for a file's type from its extension, like "TypeScript" or "PNG
+/// image", else "file".
+fn type_label(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .map(|ext| ext.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let kind = match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "heic" => {
+            "image"
+        }
+        "mp4" | "mov" | "mkv" | "avi" | "webm" => "video",
+        "mp3" | "wav" | "flac" | "aac" | "m4a" | "ogg" => "audio",
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" => "archive",
+        _ => "",
+    };
+    if !kind.is_empty() {
+        return format!("{} {kind}", ext.to_uppercase());
+    }
+    match ext.as_str() {
+        "rs" => "Rust",
+        "ts" | "mts" | "cts" | "tsx" => "TypeScript",
+        "js" | "mjs" | "cjs" | "jsx" => "JavaScript",
+        "py" => "Python",
+        "go" => "Go",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "swift" => "Swift",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "c" | "h" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" => "C++",
+        "lua" => "Lua",
+        "sh" | "bash" | "zsh" | "fish" => "shell script",
+        "html" | "htm" => "HTML",
+        "css" | "scss" | "sass" => "CSS",
+        "md" | "markdown" => "Markdown",
+        "json" => "JSON",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "xml" => "XML",
+        "csv" => "CSV",
+        "sql" => "SQL",
+        "txt" => "text",
+        "pdf" => "PDF document",
+        _ => "file",
+    }
+    .to_string()
+}
+
+/// Unix-style permissions of what the item is (a link's target): "drwxr-xr-x".
+#[cfg(unix)]
+fn format_permissions(info: &EntryInfo) -> String {
+    let file_type = if info.is_dir() { 'd' } else { '-' };
+    format!(
+        "{}{}",
+        file_type,
+        crate::utils::format::permission_bits(info.mode)
+    )
+}
+
+#[cfg(not(unix))]
+fn format_permissions(info: &EntryInfo) -> String {
+    if info.is_dir() {
+        "d---------".to_string()
+    } else if info.mode & 0o222 == 0 {
+        "-r--r--r--".to_string()
+    } else {
+        "-rw-rw-rw-".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{PanePosition, SearchResult};
+    use crate::pane::Pane;
+    use crate::utils::files::Listing;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    /// What the fixture's dates are judged against.
+    const TODAY: LocalStamp = LocalStamp {
+        year: 2026,
+        month: 9,
+        day: 25,
+        hour: 14,
+        minute: 30,
+    };
+
+    fn at(year: i32, month: u8, day: u8, hour: u8, minute: u8) -> Option<LocalStamp> {
+        Some(LocalStamp {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+        })
+    }
+
+    fn folder(modified_local: Option<LocalStamp>) -> EntryInfo {
+        EntryInfo {
+            kind: Some(EntryKind::Folder),
+            size: 288,
+            modified_local,
+            mode: 0o755,
+            ..EntryInfo::default()
+        }
+    }
+
+    /// `/w`'s 36 items: a geo-pipeline folder from this morning, a 2.2 MB data.ts from
+    /// Oct 12 and a 4 KB logo.png from 2024, then 33 folders.
+    fn listing() -> Listing {
+        let file = |size, modified_local| EntryInfo {
+            kind: Some(EntryKind::File),
+            size,
+            modified_local,
+            mode: 0o644,
+            ..EntryInfo::default()
+        };
+        let mut files = vec![
+            "/w/geo-pipeline".to_string(),
+            "/w/data.ts".into(),
+            "/w/logo.png".into(),
+        ];
+        let mut info = vec![
+            folder(at(2026, 9, 25, 9, 15)),
+            file(2_306_867, at(2026, 9, 12, 8, 0)),
+            file(4096, at(2024, 9, 23, 10, 0)),
+        ];
+        for i in 3..36 {
+            files.push(format!("/w/folder-{i:02}"));
+            info.push(folder(None));
+        }
+        Listing { files, info }
+    }
+
+    /// Show `count` items in the folder preview, loaded for `path`.
+    fn preview(app: &mut App, path: &str, count: usize) {
+        app.preview_loading = false;
+        app.preview_loading_path = Some(path.into());
+        app.preview_files = Listing::from(
+            (0..count)
+                .map(|i| format!("{path}/{i}"))
+                .collect::<Vec<_>>(),
+        );
+        app.preview_file_content.clear();
+    }
+
+    /// The minimal status line, or the classic boxes, on a 120-column screen.
+    fn draw(app: &App, minimal: bool) -> Buffer {
+        let status_bar = StatusBar::new();
+        let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+        terminal
+            .draw(|f| {
+                if minimal {
+                    status_bar.render_minimal(f, f.size(), app, &app.theme_colors, TODAY);
+                } else {
+                    status_bar.render(f, f.size(), app, &app.theme_colors, TODAY);
+                }
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn text(buffer: &Buffer) -> String {
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    fn item(app: &App) -> (String, String) {
+        item_text(app, TODAY)
+    }
+
+    fn pair(name: &str, details: &str) -> (String, String) {
+        (name.to_string(), details.to_string())
+    }
 
     #[test]
-    fn both_styles_show_visual_mode_with_the_selection_size() {
-        use ratatui::{backend::TestBackend, Terminal};
-        let mut app = App::new(vec!["/w/a".into(), "/w/b".into(), "/w/c".into()]);
+    fn a_folder_shows_its_item_count_once_its_preview_has_loaded_it() {
+        let mut app = App::with_listing(listing());
+        let without_count = pair(
+            "geo-pipeline/",
+            "folder · modified today 09:15 · drwxr-xr-x",
+        );
+        assert_eq!(item(&app), without_count);
+
+        // Still loading, then loaded.
+        app.preview_loading = true;
+        app.preview_loading_path = Some("/w/geo-pipeline".into());
+        assert_eq!(item(&app), without_count);
+        preview(&mut app, "/w/geo-pipeline", 7);
+        let with_count = pair(
+            "geo-pipeline/",
+            "folder · 7 items · modified today 09:15 · drwxr-xr-x",
+        );
+        assert_eq!(item(&app), with_count);
+
+        // Another folder's preview gives no count.
+        app.curr_index = Some(3);
+        assert_eq!(item(&app), pair("folder-03/", "folder · drwxr-xr-x"));
+
+        // The line: the name bright, its details muted.
+        app.curr_index = Some(0);
+        let buffer = draw(&app, true);
+        let line = text(&buffer);
+        assert!(
+            line.starts_with(" NORMAL   geo-pipeline/  folder · 7 items · modified today"),
+            "{line}"
+        );
+        let theme = &app.theme_colors;
+        assert_eq!(buffer.content()[10].fg, theme.bright);
+        assert_eq!(buffer.content()[25].fg, theme.light_gray);
+        assert_eq!(buffer.content()[119].bg, theme.statusbar_bg);
+    }
+
+    #[test]
+    fn a_file_shows_its_type_size_and_date() {
+        let mut app = App::with_listing(listing());
+        app.curr_index = Some(1);
+        assert_eq!(
+            item(&app),
+            pair(
+                "data.ts",
+                "TypeScript · 2.2 MB · modified Oct 12 · -rw-r--r--"
+            )
+        );
+        app.curr_index = Some(2);
+        assert_eq!(
+            item(&app),
+            pair(
+                "logo.png",
+                "PNG image · 4.0 KB · modified Oct 23 2024 · -rw-r--r--"
+            )
+        );
+        assert_eq!(type_label(Path::new("/w/notes")), "file");
+    }
+
+    #[test]
+    fn a_global_result_says_where_it_lives() {
+        let home = dirs::home_dir().unwrap();
+        let path = home.join("Desktop/work/projects/geo-pipeline");
+        let path = path.to_string_lossy().into_owned();
+        let mut app = App::with_listing(listing());
+        app.global_search_mode = true;
+        app.search_results = vec![SearchResult {
+            file_path: path.clone(),
+            display_name: "geo-pipeline".into(),
+            score: 1,
+            info: folder(at(2026, 9, 25, 9, 15)),
+            original_index: 0,
+        }];
+        app.curr_index = Some(0);
+        preview(&mut app, &path, 7);
+        assert_eq!(
+            item(&app),
+            pair(
+                "geo-pipeline/",
+                "in ~/Desktop/work/projects · 7 items · modified today 09:15"
+            )
+        );
+    }
+
+    #[test]
+    fn visual_mode_counts_the_selection_by_kind_in_both_styles() {
+        let mut app = App::with_listing(listing());
         app.start_visual(Some(0)).unwrap();
-        app.move_visual_cursor(Some(1));
-        let status_bar = StatusBar::new();
+        app.move_visual_cursor(Some(6));
+        assert_eq!(item(&app), pair("7 selected", "5 folders, 2 files"));
         for minimal in [false, true] {
-            let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
-            terminal
-                .draw(|f| {
-                    if minimal {
-                        status_bar.render_minimal(f, f.size(), &app, &app.theme_colors);
-                    } else {
-                        status_bar.render(f, f.size(), &app, &app.theme_colors);
-                    }
-                })
-                .unwrap();
-            let screen: String = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            assert!(screen.contains("VISUAL · 2 selected"), "{screen}");
+            let screen = text(&draw(&app, minimal));
+            assert!(screen.contains("VISUAL"), "{screen}");
+            assert!(
+                screen.contains("7 selected  5 folders, 2 files"),
+                "{screen}"
+            );
         }
+
+        // The same while its Trash prompt is open.
+        app.input_mode = InputMode::WatchTrash;
+        let line = text(&draw(&app, true));
+        assert!(
+            line.starts_with(" TRASH   7 selected  5 folders, 2 files "),
+            "{line}"
+        );
+
         app.end_visual();
-        assert_eq!(StatusBar::mode_label(&app, "NORMAL"), "NORMAL");
+        app.input_mode = InputMode::Normal;
+        assert_eq!(item(&app).0, "geo-pipeline/");
+    }
+
+    #[test]
+    fn the_position_counts_rows_and_names_the_pane_in_dual_pane() {
+        let mut app = App::with_listing(listing());
+        for (index, shown) in [(0, "1/36 "), (11, "12/36 "), (35, "36/36 ")] {
+            app.curr_index = Some(index);
+            let line = text(&draw(&app, true));
+            assert!(line.contains(shown) && !line.contains("Top") && !line.contains("Bot"));
+            assert_eq!(position(&app), shown.trim());
+        }
+
+        app.curr_index = Some(11);
+        app.view_mode = ViewMode::DualPane;
+        let files = (0..9).map(|i| format!("/v/f{i}")).collect();
+        app.right_pane = Pane::with_listing(
+            "/v".into(),
+            Listing {
+                files,
+                info: vec![folder(None); 9],
+            },
+        );
+        app.right_pane.selected_index = Some(2);
+        assert_eq!(position(&app), "left pane · 12/36");
+        app.active_pane = PanePosition::Right;
+        assert_eq!(position(&app), "right pane · 3/9");
+        assert_eq!(item(&app), pair("f2/", "folder · drwxr-xr-x"));
+        let buffer = draw(&app, true);
+        assert!(text(&buffer).contains("right pane · 3/9 "));
+        // The classic style's box says the same.
+        let screen = text(&draw(&app, false));
+        assert!(screen.contains("right pane · 3/9"), "{screen}");
+        assert!(screen.contains("f2/  folder · drwxr-xr-x"), "{screen}");
+    }
+
+    #[test]
+    fn in_size_order_the_line_shows_the_folders_total_and_free_space() {
+        let mut app = App::with_listing(listing());
+        app.sizing.folder = Some("/w".into());
+        app.sizing.free = Some(212 << 30);
+        let line = text(&draw(&app, true));
+        assert!(line.contains("212.0 GB free  1/36 "), "{line}");
     }
 
     #[test]
     fn both_styles_show_the_badge_black_on_the_mode_color() {
-        use ratatui::{backend::TestBackend, Terminal};
         let mut app = App::new(vec!["/w/a".into()]);
-        let status_bar = StatusBar::new();
         let theme = app.theme_colors.clone();
         for (mode, global, label, color) in [
-            (InputMode::Normal, false, "NOR", theme.mode_normal),
-            (InputMode::Editing, false, "SRC", theme.mode_search),
-            (InputMode::Editing, true, "SRC", theme.mode_global),
+            (InputMode::Normal, false, "NORMAL", theme.mode_normal),
+            (InputMode::Editing, false, "SEARCH", theme.mode_search),
+            (InputMode::Editing, true, "GLOBAL", theme.mode_global),
             (InputMode::WatchTrash, false, "TRASH", theme.mode_delete),
-            (InputMode::WatchRename, false, "REN", theme.mode_rename),
+            (InputMode::WatchDelete, false, "DELETE", theme.mode_delete),
+            (InputMode::WatchRename, false, "RENAME", theme.mode_rename),
+            (InputMode::WatchSort, false, "SORT", theme.mode_sort),
         ] {
             app.input_mode = mode;
             app.global_search_mode = global;
             for minimal in [false, true] {
-                let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
-                terminal
-                    .draw(|f| {
-                        if minimal {
-                            status_bar.render_minimal(f, f.size(), &app, &app.theme_colors);
-                        } else {
-                            status_bar.render(f, f.size(), &app, &app.theme_colors);
-                        }
-                    })
-                    .unwrap();
-                // The badge's first letter, inside the classic style's border: "NORMAL"
-                // there, "NOR" in the minimal one.
+                let buffer = draw(&app, minimal);
+                // The badge's first letter, inside the classic style's border.
                 let row = usize::from(!minimal);
-                let cell = terminal.backend().buffer().content()[row * 120..]
+                let line: String = buffer.content()[row * 120..(row + 1) * 120]
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(line.contains(&format!(" {label} ")), "{line}");
+                let cell = buffer.content()[row * 120..]
                     .iter()
                     .find(|cell| cell.symbol() == &label[..1])
                     .unwrap();
@@ -657,7 +901,6 @@ mod tests {
 
     #[test]
     fn update_describes_the_active_right_pane() {
-        use crate::app::PanePosition;
         use crate::utils::{get_file_path_data, SortBy, SortType};
 
         let dir = tempfile::tempdir().unwrap();
@@ -681,23 +924,23 @@ mod tests {
         let mut status_bar = StatusBar::new();
 
         status_bar.update(&app);
-        assert_eq!(status_bar.current_directory, left);
-        assert_eq!((status_bar.file_count, status_bar.directory_count), (1, 0));
-        assert!(status_bar.selected_item_info.starts_with("left.txt | File"));
+        assert_eq!(status_bar.total_size, 1);
+        let (name, details) = item(&app);
+        assert_eq!(name, "left.txt");
+        assert!(details.starts_with("text · 1 B · modified "), "{details}");
+        assert_eq!(position(&app), "left pane · 1/1");
 
         app.active_pane = PanePosition::Right;
         status_bar.update(&app);
-        assert_eq!(status_bar.current_directory, right);
-        assert_eq!((status_bar.file_count, status_bar.directory_count), (2, 1));
         assert_eq!(status_bar.total_size, 12);
-        assert_eq!(status_bar.selected_item_info, "b.txt | File | 7 B");
-        assert_eq!(StatusBar::get_position_indicator(&app), "2/3");
-        assert_eq!(status_bar.get_selected_file_info(&app).0, "7 B");
+        let (name, details) = item(&app);
+        assert_eq!(name, "b.txt");
+        assert!(details.starts_with("text · 7 B · modified "), "{details}");
+        assert_eq!(position(&app), "right pane · 2/3");
     }
 
     #[test]
-    fn selected_item_info_comes_from_the_records_until_the_listing_is_read_again() {
-        use crate::app::PanePosition;
+    fn the_item_comes_from_the_records_until_the_listing_is_read_again() {
         use crate::utils::{read_listing, SortBy, SortType};
 
         let dir = tempfile::tempdir().unwrap();
@@ -708,21 +951,8 @@ mod tests {
         let mut app = App::with_listing(listing());
         app.right_pane = crate::pane::Pane::with_listing(start.clone(), listing());
         let mut status_bar = StatusBar::new();
-        let minimal = |status_bar: &StatusBar, app: &App| {
-            let mut terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 1)).unwrap();
-            terminal
-                .draw(|f| status_bar.render_minimal(f, f.size(), app, &app.theme_colors))
-                .unwrap();
-            let screen: String = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect();
-            screen
-        };
+        let minimal = |app: &App| text(&draw(app, true));
+        let details = |app: &App| item(app).1;
 
         for right in [false, true] {
             if right {
@@ -733,20 +963,19 @@ mod tests {
             app.refresh_files_from_watcher(listing(), &mut ratatui::widgets::ListState::default());
             app.right_pane.refresh_files();
             status_bar.update(&app);
-            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
-            assert!(minimal(&status_bar, &app).contains("5 B  -rw"));
+            assert!(details(&app).starts_with("text · 5 B · "));
+            assert!(minimal(&app).contains("notes.txt  text · 5 B · "));
 
             // Grown, then gone: still what the records say.
             std::fs::write(&notes, "x".repeat(2048)).unwrap();
             status_bar.update(&app);
-            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
+            assert!(details(&app).starts_with("text · 5 B · "));
             assert_eq!(status_bar.total_size, 5);
             std::fs::remove_file(&notes).unwrap();
             status_bar.update(&app);
-            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 5 B");
-            assert_eq!((status_bar.file_count, status_bar.directory_count), (1, 0));
+            assert!(details(&app).starts_with("text · 5 B · "));
             assert!(
-                minimal(&status_bar, &app).contains("5 B  -rw"),
+                minimal(&app).contains("notes.txt  text · 5 B · "),
                 "right: {right}"
             );
 
@@ -760,22 +989,19 @@ mod tests {
                 );
             }
             status_bar.update(&app);
-            assert_eq!(status_bar.selected_item_info, "notes.txt | File | 2.0 KB");
+            assert!(details(&app).starts_with("text · 2.0 KB · "));
             assert_eq!(status_bar.total_size, 2048);
-            assert!(minimal(&status_bar, &app).contains("2.0 KB  -rw"));
+            assert!(minimal(&app).contains("notes.txt  text · 2.0 KB · "));
         }
     }
 
     #[test]
-    fn update_shows_an_empty_folder_being_browsed() {
+    fn an_empty_folder_has_no_item_to_describe() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(Vec::new());
         app.current_directory = dir.path().to_string_lossy().into_owned();
-        let mut status_bar = StatusBar::new();
 
-        status_bar.update(&app);
-
-        assert_eq!(status_bar.current_directory, app.current_directory);
-        assert_eq!(StatusBar::get_position_indicator(&app), "Empty");
+        assert_eq!(item(&app), pair("", ""));
+        assert_eq!(position(&app), "Empty");
     }
 }

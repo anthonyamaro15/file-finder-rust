@@ -123,6 +123,19 @@ pub fn date_label(stamp: Option<LocalStamp>, today: LocalStamp) -> String {
     }
 }
 
+/// The status line's word for a modified time against `today`: "today 09:15" on the
+/// same day, "Oct 23" in the same year, else "Oct 23 2024".
+pub fn modified_text(stamp: LocalStamp, today: LocalStamp) -> String {
+    let month = MONTHS.get(usize::from(stamp.month)).unwrap_or(&"");
+    if stamp.year != today.year {
+        format!("{month} {} {}", stamp.day, stamp.year)
+    } else if (stamp.month, stamp.day) != (today.month, today.day) {
+        format!("{month} {}", stamp.day)
+    } else {
+        format!("today {:02}:{:02}", stamp.hour, stamp.minute)
+    }
+}
+
 /// Format a file size in bytes to a human-readable string.
 ///
 /// # Examples
@@ -380,6 +393,25 @@ mod tests {
             (None, ""),
         ] {
             assert_eq!(date_label(stamp, today), label, "{stamp:?}");
+        }
+    }
+
+    #[test]
+    fn modified_text_names_today_and_other_years() {
+        let at = |year, month, day, hour, minute| LocalStamp {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+        };
+        let today = at(2026, 9, 25, 14, 30);
+        for (stamp, text) in [
+            (at(2026, 9, 25, 9, 15), "today 09:15"),
+            (at(2026, 9, 3, 18, 0), "Oct 3"),
+            (at(2024, 9, 23, 9, 15), "Oct 23 2024"),
+        ] {
+            assert_eq!(modified_text(stamp, today), text);
         }
     }
 

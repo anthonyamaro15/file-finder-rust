@@ -1941,6 +1941,14 @@ impl App {
         }
     }
 
+    /// How many items the folder preview lists, once it has loaded `path`'s.
+    pub fn preview_count(&self, path: &str) -> Option<usize> {
+        let loaded = !self.preview_loading
+            && self.preview_loading_path.as_deref() == Some(path)
+            && self.preview_file_content.is_empty();
+        loaded.then_some(self.preview_files.files.len())
+    }
+
     /// Check if a pending preview is ready to load (debounce period elapsed)
     /// Returns the path if ready, None otherwise
     pub fn take_ready_preview(&mut self, debounce_ms: u64) -> Option<String> {

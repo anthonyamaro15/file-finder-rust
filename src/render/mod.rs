@@ -5,6 +5,7 @@ pub mod image_renderer;
 pub mod popups;
 pub mod preview;
 pub mod size_bar;
+pub mod top_bar;
 
 // Re-export items used by main.rs
 pub use popups::{

@@ -343,6 +343,10 @@ pub struct ThemeColors {
     pub visual_bg: Color,
     /// The cursor's inside the visual selection.
     pub visual_cursor_bg: Color,
+    /// The top bar's while a search of the folder is typed.
+    pub search_bg: Color,
+    /// The top bar's while a search from the root is typed.
+    pub global_bg: Color,
 
     // Icon colors
     pub icon_directory: Color,
@@ -508,6 +512,8 @@ impl Theme {
         let selection = Self::parse_color(&p.selection)?;
         let black = Self::parse_color(&p.black)?;
         let mode_visual = Self::parse_color(&sb.mode_visual)?;
+        let mode_search = Self::parse_color(&sb.mode_search)?;
+        let mode_global = Self::parse_color(&sb.mode_global)?;
 
         // Parse UI colors
         let active_border_color = Self::parse_color(&ui.active_border)?;
@@ -548,12 +554,14 @@ impl Theme {
             error: Style::default().fg(red),
             dotfile: Style::default().fg(gray),
 
-            // Row bands: a little of the foreground or the visual color over the
-            // background, so a theme changes them with those colors.
+            // Row bands and the search tints: a little of the foreground or the mode's
+            // color over the background, so a theme changes them with those colors.
             cursor_bg: blend(bg, fg, 0.1),
             inactive_cursor_bg: blend(bg, fg, 0.04),
             visual_bg: blend(bg, mode_visual, 0.1),
             visual_cursor_bg: blend(bg, mode_visual, 0.22),
+            search_bg: blend(bg, mode_search, 0.1),
+            global_bg: blend(bg, mode_global, 0.1),
 
             // Icon colors
             icon_directory: Self::parse_color(&icons.directory)?,
@@ -620,8 +628,8 @@ impl Theme {
 
             // Mode colors
             mode_normal: Self::parse_color(&sb.mode_normal)?,
-            mode_search: Self::parse_color(&sb.mode_search)?,
-            mode_global: Self::parse_color(&sb.mode_global)?,
+            mode_search,
+            mode_global,
             mode_visual,
             mode_delete: Self::parse_color(&sb.mode_delete)?,
             mode_create: Self::parse_color(&sb.mode_create)?,
@@ -757,10 +765,12 @@ mod tests {
     #[test]
     fn bands_are_tinted_from_the_background() {
         let colors = Theme::default().to_colors().unwrap();
-        // Near the design's #2a2f39, #20242b, #2b2232 and #3f2d4c.
+        // Near the design's #2a2f39, #20242b, #2b2232, #3f2d4c, #1c2619 and #2b2516.
         assert_eq!(colors.cursor_bg, Color::Rgb(0x2c, 0x30, 0x37));
         assert_eq!(colors.inactive_cursor_bg, Color::Rgb(0x24, 0x28, 0x2f));
         assert_eq!(colors.visual_bg, Color::Rgb(0x2f, 0x2a, 0x3b));
         assert_eq!(colors.visual_cursor_bg, Color::Rgb(0x42, 0x32, 0x50));
+        assert_eq!(colors.search_bg, Color::Rgb(0x2a, 0x32, 0x30));
+        assert_eq!(colors.global_bg, Color::Rgb(0x33, 0x32, 0x30));
     }
 }

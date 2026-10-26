@@ -218,7 +218,7 @@ fn size_text(bytes: u64) -> String {
 }
 
 /// "1 file", "1,234 files".
-fn plural(n: u64, noun: &str) -> String {
+pub(crate) fn plural(n: u64, noun: &str) -> String {
     let s = if n == 1 { "" } else { "s" };
     format!("{} {noun}{s}", format_thousands(n))
 }
