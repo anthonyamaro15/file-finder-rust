@@ -104,6 +104,9 @@ pub struct Settings {
     /// Status bar style: "classic" or "minimal"
     pub status_bar_style: StatusBarStyle,
 
+    /// Show the bottom row of keys for the current mode
+    pub show_hints: bool,
+
     /// Mode-aware keybindings.
     pub keymap: KeymapSettings,
 
@@ -161,6 +164,7 @@ impl Default for Settings {
             use_nerd_fonts: NerdFontSetting::default(),
             show_borders: default_show_borders(),
             status_bar_style: StatusBarStyle::default(),
+            show_hints: true,
             keymap: KeymapSettings::default(),
             finder: FinderSettings::default(),
         }

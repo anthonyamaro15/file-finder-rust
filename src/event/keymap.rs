@@ -10,7 +10,7 @@ use crate::{
         keymap::{ctrl_key, key_label, NAMED_KEYS},
         Action, KeySequence, KeymapSettings,
     },
-    render::popups::action_key_labels,
+    render::popups::{action_keys, format_key_sequence},
 };
 
 /// How long a sequence waits for its next key before the box listing those keys
@@ -26,8 +26,8 @@ pub struct KeymapRuntime {
     pending_key: Option<String>,
     /// When the pending sequence started waiting.
     pending_since: Option<Instant>,
-    /// Each bound action's first key, as the help shows it.
-    first_keys: HashMap<Action, String>,
+    /// Each bound action's first key, in the help's order.
+    first_keys: HashMap<Action, KeySequence>,
     ignored: Vec<String>,
     /// Shown for a key that does nothing while selecting, naming the keys that act.
     selection_hint: String,
@@ -36,16 +36,17 @@ pub struct KeymapRuntime {
 impl KeymapRuntime {
     pub fn from_settings(settings: &KeymapSettings) -> Self {
         let bindings = settings.resolve();
-        let first_keys: HashMap<Action, String> = Action::ALL
+        let first_keys: HashMap<Action, KeySequence> = Action::ALL
             .iter()
             .filter_map(|(action, _)| {
-                let key = action_key_labels(&bindings, *action).into_iter().next()?;
+                let key = action_keys(&bindings, *action).into_iter().next()?;
                 Some((*action, key))
             })
             .collect();
-        let keys: Vec<&str> = [Action::FileTrash, Action::FileDelete]
+        let keys: Vec<String> = [Action::FileTrash, Action::FileDelete]
             .iter()
-            .filter_map(|action| first_keys.get(action).map(String::as_str))
+            .filter_map(|action| first_keys.get(action))
+            .map(|key| format_key_sequence(key, &bindings.leader))
             .collect();
         let selection_hint = if keys.is_empty() {
             "Esc to cancel the selection".to_string()
@@ -81,10 +82,35 @@ impl KeymapRuntime {
     /// How "press … again" warnings name `action` when the palette runs it: its first
     /// key, or its name if nothing is bound to it.
     pub fn key_for(&self, action: Action) -> String {
-        self.first_keys
-            .get(&action)
-            .cloned()
-            .unwrap_or_else(|| action.name().to_string())
+        self.first_keys.get(&action).map_or_else(
+            || action.name().to_string(),
+            |key| format_key_sequence(key, &self.leader),
+        )
+    }
+
+    /// `action`'s first key as the hint row writes it, shorter than the help: `V`,
+    /// `␣/`, `⏎`. `None` when nothing is bound to it.
+    pub fn hint_key(&self, action: Action) -> Option<String> {
+        let short = |key: &str| match key {
+            " " => "␣".to_string(),
+            "<Enter>" => "⏎".to_string(),
+            "<Backspace>" => "⌫".to_string(),
+            _ if key.chars().count() == 1 => key.to_string(),
+            _ => key_label(key),
+        };
+        let (first, second) = match self.first_keys.get(&action)? {
+            KeySequence::Single(key) => return Some(short(key)),
+            KeySequence::Leader(key) => (short(&self.leader), short(key)),
+            KeySequence::Pair(first, second) => (short(first), short(second)),
+        };
+        // `␣/` and `gg`, or `Ctrl-w j` when a key is longer than one character.
+        Some(
+            if first.chars().count() == 1 && second.chars().count() == 1 {
+                first + &second
+            } else {
+                format!("{first} {second}")
+            },
+        )
     }
 
     /// Once a sequence has waited [`WHICH_KEY_DELAY`] for its next key at `now`: the

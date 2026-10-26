@@ -66,6 +66,12 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 - A status line about the highlighted item (a folder's item count, a file's type and
   size, when it was modified, its permissions) and where it is in the list (`12/36`)
 - The divider beside the list doubles as its scrollbar
+- A hint row at the bottom with the keys for the current mode and the highlighted item
+  (a folder's, a file's, a selection's, a prompt's), taken from your keymap, with `?`
+  for all keys at the right; `show_hints = false` hides it
+- Errors, warnings and notices show in the hint row for a few seconds, tinted by kind
+  (`✗`, `!`, `✓`); a long one wraps upward over the list's last rows instead of being
+  cut off
 - Modal dialogs for confirmations
 - Custom themes via TOML
 - Configurable syntax highlighting theme

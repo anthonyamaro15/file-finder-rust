@@ -15,9 +15,11 @@ use ratatui::{
 use std::env;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const DEFAULT_NOTIFICATION_SECS: u64 = 3;
+/// Most rows a message takes, growing up from the hint row over the lists.
+const MESSAGE_ROWS: usize = 4;
 /// Fewest columns the highlighted item's name keeps before its details are cut.
 const MIN_NAME_WIDTH: usize = 16;
 
@@ -342,45 +344,78 @@ impl StatusBar {
         self.error_message.is_some()
     }
 
-    /// Render error notification as an overlay
-    pub fn render_error_notification(&self, frame: &mut Frame, area: Rect, theme: &ThemeColors) {
-        if let Some(ref error_msg) = self.error_message {
-            // Calculate popup size (60% width, minimum height for message)
-            let popup_width = (area.width * 6) / 10;
-            let popup_height = 5;
+    /// How many rows the message takes at `width`: as many as it wraps to, up to
+    /// [`MESSAGE_ROWS`]; 0 with no message.
+    pub fn message_rows(&self, width: u16) -> u16 {
+        u16::try_from(self.message_text(width).len()).unwrap_or(u16::MAX)
+    }
 
-            let popup_x = (area.width - popup_width) / 2;
-            let popup_y = 2; // Show near top of screen
+    /// Draw the message on `area`, in its kind's tint: its marker, then its text,
+    /// wrapped under itself.
+    pub fn render_message(&self, frame: &mut Frame, area: Rect, theme: &ThemeColors) {
+        let (marker, color, bg) = match self.notification_kind {
+            NotificationKind::Error => ("✗", theme.red, theme.error_bg),
+            NotificationKind::Warning => ("!", theme.yellow, theme.warning_bg),
+            NotificationKind::Info => ("✓", theme.green, theme.success_bg),
+        };
+        let marker_style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+        let text = Style::default().fg(theme.bright);
+        let lines: Vec<Line> = self
+            .message_text(area.width)
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let lead = if i == 0 {
+                    Span::styled(format!(" {marker} "), marker_style)
+                } else {
+                    Span::raw("   ")
+                };
+                Line::from(vec![lead, Span::styled(line, text)])
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).style(Style::default().bg(bg)), area);
+    }
 
-            let popup_area = Rect {
-                x: popup_x,
-                y: popup_y,
-                width: popup_width,
-                height: popup_height,
-            };
+    /// The message's lines at `width`, beside its 3-column marker. One too long for
+    /// [`MESSAGE_ROWS`] ends in `…`.
+    fn message_text(&self, width: u16) -> Vec<String> {
+        let Some(message) = &self.error_message else {
+            return Vec::new();
+        };
+        let room = usize::from(width).saturating_sub(4);
+        let mut lines = wrap(message, room);
+        if lines.len() > MESSAGE_ROWS {
+            lines.truncate(MESSAGE_ROWS);
+            let last = lines.pop().unwrap_or_default();
+            lines.push(truncate(&format!("{last} …"), room));
+        }
+        lines
+    }
+}
 
-            // Clear the area
-            let clear_widget = ratatui::widgets::Clear;
-            frame.render_widget(clear_widget, popup_area);
-
-            let (title, color) = match self.notification_kind {
-                NotificationKind::Error => ("❌ Error", theme.red),
-                NotificationKind::Warning => ("⚠ Warning", theme.yellow),
-                NotificationKind::Info => ("ℹ Info", theme.green),
-            };
-            let error_block = Paragraph::new(error_msg.clone())
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(title)
-                        .style(Style::default().fg(color)),
-                )
-                .style(Style::default().fg(theme.bright).bg(theme.gray))
-                .wrap(ratatui::widgets::Wrap { trim: true });
-
-            frame.render_widget(error_block, popup_area);
+/// `text` in lines at most `width` columns wide, broken between words, or inside a
+/// word wider than a line.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.width() + 1 + word.width() <= width {
+            line.push(' ');
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        for c in word.chars() {
+            if !line.is_empty() && line.width() + c.width().unwrap_or(0) > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(c);
         }
     }
+    lines.push(line);
+    lines
 }
 
 /// Whether the status bar describes the right pane: it's active in dual pane.
