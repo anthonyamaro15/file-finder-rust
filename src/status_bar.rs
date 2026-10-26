@@ -377,7 +377,8 @@ impl StatusBar {
     }
 
     /// The message's lines at `width`, beside its 3-column marker. One too long for
-    /// [`MESSAGE_ROWS`] ends in `…`.
+    /// [`MESSAGE_ROWS`] loses its middle, marked with `…`, so both its start and its
+    /// end, where errors give their reason, still show.
     fn message_text(&self, width: u16) -> Vec<String> {
         let Some(message) = &self.error_message else {
             return Vec::new();
@@ -385,9 +386,12 @@ impl StatusBar {
         let room = usize::from(width).saturating_sub(4);
         let mut lines = wrap(message, room);
         if lines.len() > MESSAGE_ROWS {
-            lines.truncate(MESSAGE_ROWS);
+            let head = MESSAGE_ROWS / 2;
+            let tail = lines.split_off(lines.len() - (MESSAGE_ROWS - head));
+            lines.truncate(head);
             let last = lines.pop().unwrap_or_default();
             lines.push(truncate(&format!("{last} …"), room));
+            lines.extend(tail);
         }
         lines
     }

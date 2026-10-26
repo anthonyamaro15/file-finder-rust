@@ -644,6 +644,30 @@ mod tests {
     }
 
     #[test]
+    fn a_message_too_long_for_four_rows_keeps_its_start_and_its_reason() {
+        let mut state = loop_state(3);
+        let message = format!(
+            "Couldn't create '{}': File name too long (os error 63)",
+            "x".repeat(300)
+        );
+        state.status_bar.show_error(message, None);
+        let screen = rows(&frame(&mut state, &settings(false, false), 80, 24));
+        assert!(
+            screen[20].starts_with(" ✗ Couldn't create"),
+            "{}",
+            screen[20]
+        );
+        assert!(screen[21].trim_end().ends_with('…'), "{}", screen[21]);
+        assert!(
+            screen[23]
+                .trim_end()
+                .ends_with("File name too long (os error 63)"),
+            "{}",
+            screen[23]
+        );
+    }
+
+    #[test]
     fn moving_up_keeps_the_list_scrolled_where_it_was() {
         let mut state = loop_state(30);
         state.app.preview_files = Listing::from(vec!["/w/item-25/a".to_string()]);
