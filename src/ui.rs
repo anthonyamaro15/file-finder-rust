@@ -159,7 +159,7 @@ impl Ui {
             filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
         }
 
-        let list_block = List::new(filtered_read_only_items.clone())
+        let list_block = List::new(filtered_read_only_items)
             .block(block)
             .highlight_style(OneDarkTheme::selected())
             .highlight_symbol(if settings.show_borders { "❯" } else { " " })
@@ -173,7 +173,7 @@ impl Ui {
                 _ => OneDarkTheme::disabled(),
             });
 
-        f.render_stateful_widget(list_block.clone(), inner_layout[0], state);
+        f.render_stateful_widget(list_block, inner_layout[0], state);
     }
 
     pub fn render_preview_window(
