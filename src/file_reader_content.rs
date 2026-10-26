@@ -14,6 +14,7 @@ use ratatui::{style::Color, widgets::Paragraph};
 
 // Use centralized theme colors for markdown
 use crate::ui::theme::markdown as markdown_colors;
+use crate::utils::files::{EntryInfo, Listing};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -696,21 +697,19 @@ pub fn load_preview_async(
         // Load directory listing
         match fs::read_dir(&path) {
             Ok(entries) => {
-                let mut items: Vec<String> = entries
+                let mut items: Vec<(String, EntryInfo)> = entries
                     .filter_map(|e| e.ok())
                     .map(|e| {
-                        let name = e.file_name().to_string_lossy().to_string();
-                        if e.path().is_dir() {
-                            format!("{}/", name)
-                        } else {
-                            name
-                        }
+                        let path = e.path();
+                        let info = EntryInfo::read(&path);
+                        (path.to_string_lossy().into_owned(), info)
                     })
                     .collect();
-                items.sort();
+                items.sort_by(|(a, _), (b, _)| a.cmp(b));
+                let (files, info) = items.into_iter().unzip();
                 let _ = sender.send(PreviewMessage::DirectoryListing {
                     path,
-                    entries: items,
+                    listing: Listing { files, info },
                 });
             }
             Err(e) => {

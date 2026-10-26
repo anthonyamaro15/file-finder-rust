@@ -17,7 +17,7 @@ use crate::{
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
     status_bar::StatusBar,
-    utils::{format_file_size, get_file_path_data, read_listing, SortBy},
+    utils::{format_file_size, get_file_path_data, read_listing, Listing, SortBy},
 };
 
 /// Preview debounce delay in milliseconds
@@ -51,7 +51,7 @@ pub fn start_debounced_preview(
             file_reader_content.file_type = file_type;
             if file_reader_content.try_use_cached_preview(&path) {
                 app.preview_file_content.clear();
-                app.preview_files = Vec::new();
+                app.preview_files = Listing::default();
                 image_renderer.clear();
             }
         } else {
@@ -63,7 +63,7 @@ pub fn start_debounced_preview(
             app.preview_loading = true;
             app.preview_loading_path = Some(path.clone());
             app.preview_file_content = "Loading...".to_string();
-            app.preview_files = Vec::new();
+            app.preview_files = Listing::default();
             image_renderer.clear();
 
             // Create channel for async preview result
@@ -189,13 +189,13 @@ pub fn poll_preview_result(
                                     app.preview_file_content = content;
                                 }
                             }
-                            app.preview_files = Vec::new();
+                            app.preview_files = Listing::default();
                         }
                     }
-                    PreviewMessage::DirectoryListing { path, entries } => {
+                    PreviewMessage::DirectoryListing { path, listing } => {
                         if app.preview_loading_path.as_ref() == Some(&path) {
                             app.preview_loading = false;
-                            app.preview_files = entries;
+                            app.preview_files = listing;
                             app.preview_file_content.clear();
                             file_reader_content.file_type = FileType::NotAvailable;
                             image_renderer.clear();

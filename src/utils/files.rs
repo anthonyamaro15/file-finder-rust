@@ -9,6 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
 
+use super::format::{local_stamp, LocalStamp};
+
 /// Sort order direction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SortType {
@@ -44,6 +46,8 @@ pub struct EntryInfo {
     /// Length in bytes; a folder's is that of its own entry, not its contents.
     pub size: u64,
     pub modified: Option<SystemTime>,
+    /// `modified` in local time, so drawing never converts it.
+    pub modified_local: Option<LocalStamp>,
     pub created: Option<SystemTime>,
     /// Permission bits.
     pub mode: u32,
@@ -82,11 +86,13 @@ impl EntryInfo {
         } else {
             0o666
         };
+        let modified = metadata.modified().ok();
         Self {
             kind: Some(kind),
             is_symlink,
             size: metadata.len(),
-            modified: metadata.modified().ok(),
+            modified,
+            modified_local: modified.and_then(local_stamp),
             created: metadata.created().ok(),
             mode,
         }

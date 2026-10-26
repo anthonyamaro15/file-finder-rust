@@ -29,14 +29,15 @@ pub fn permission_bits(mode: u32) -> String {
         .collect()
 }
 
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 /// Local date and time like "Oct 24, 2026 at 3:41 PM", or `None` when the system
 /// can't convert it.
 pub fn format_local_time(time: SystemTime) -> Option<String> {
     #[cfg(unix)]
     {
-        const MONTHS: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
         let local = local_time(time)?;
         let hour = match local.tm_hour % 12 {
             0 => 12,
@@ -72,6 +73,54 @@ pub fn local_time(time: SystemTime) -> Option<libc::tm> {
         return None;
     }
     Some(local)
+}
+
+/// A moment's local calendar date and time, worked out once when an item is read so
+/// that drawing never asks the time zone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocalStamp {
+    pub year: i32,
+    /// 0 for January.
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+/// `time` in the local time zone, or `None` when the system can't convert it.
+pub fn local_stamp(time: SystemTime) -> Option<LocalStamp> {
+    #[cfg(unix)]
+    {
+        let local = local_time(time)?;
+        Some(LocalStamp {
+            year: local.tm_year + 1900,
+            month: u8::try_from(local.tm_mon).ok()?,
+            day: u8::try_from(local.tm_mday).ok()?,
+            hour: u8::try_from(local.tm_hour).ok()?,
+            minute: u8::try_from(local.tm_min).ok()?,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = time;
+        None
+    }
+}
+
+/// A list's label for a modified time, by its calendar day and year against `today`:
+/// "09:15" on the same day, "Oct 21" in the same year, else "2024"; blank without one.
+pub fn date_label(stamp: Option<LocalStamp>, today: LocalStamp) -> String {
+    let Some(stamp) = stamp else {
+        return String::new();
+    };
+    if stamp.year != today.year {
+        stamp.year.to_string()
+    } else if (stamp.month, stamp.day) != (today.month, today.day) {
+        let month = MONTHS.get(usize::from(stamp.month)).unwrap_or(&"");
+        format!("{month} {:>2}", stamp.day)
+    } else {
+        format!("{:02}:{:02}", stamp.hour, stamp.minute)
+    }
 }
 
 /// Format a file size in bytes to a human-readable string.
@@ -304,6 +353,33 @@ mod tests {
                     format!("{month} {}, 2026 at {time}", local.tm_mday)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn date_labels_read_against_today() {
+        let at = |year, month, day, hour, minute| {
+            Some(LocalStamp {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+            })
+        };
+        let today = at(2026, 9, 25, 14, 30).unwrap();
+        for (stamp, label) in [
+            (at(2026, 9, 25, 9, 15), "09:15"),
+            (at(2026, 9, 21, 18, 0), "Oct 21"),
+            (at(2026, 2, 3, 0, 0), "Mar  3"),
+            (at(2024, 9, 25, 9, 15), "2024"),
+            // A future date is judged the same way.
+            (at(2026, 9, 25, 23, 59), "23:59"),
+            (at(2026, 11, 25, 9, 15), "Dec 25"),
+            (at(2027, 0, 1, 0, 0), "2027"),
+            (None, ""),
+        ] {
+            assert_eq!(date_label(stamp, today), label, "{stamp:?}");
         }
     }
 

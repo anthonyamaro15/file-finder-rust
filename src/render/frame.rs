@@ -32,6 +32,7 @@ use crate::{
     },
     theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
+    utils::format::local_stamp,
 };
 
 /// Draw the frame, lending the image and right-pane list states to the widgets. The
@@ -62,6 +63,8 @@ pub fn draw(
 
     // Extract right pane list state for rendering (needed for scroll position persistence)
     let mut right_pane_list_state = app.right_pane.list_state.clone();
+    // What the lists' dates are judged against, worked out once a frame.
+    let today = local_stamp(SystemTime::now()).unwrap_or_default();
 
     // Draw UI
     terminal.draw(|f| {
@@ -250,7 +253,7 @@ pub fn draw(
             }
             _ => {
                 // Normal file list rendering
-                widgets_ui.clone().render_list_preview(f, &chunks, state, app, settings);
+                widgets_ui.clone().render_list_preview(f, &chunks, state, app, settings, today);
             }
         }
 
@@ -345,7 +348,7 @@ pub fn draw(
                 }
                 _ => {
                     image_renderer.clear();
-                    widgets_ui.clone().render_preview_window(f, &chunks, state, app, settings);
+                    widgets_ui.clone().render_preview_window(f, &chunks, state, app, settings, today);
                 }
             }
         } else if app.view_mode.is_dual_pane() {
@@ -407,7 +410,7 @@ pub fn draw(
 
             // As wide as the rows beside the highlight symbol.
             let width = block.inner(inner_layout[1]).width.saturating_sub(1);
-            let right_items = widgets_ui.right_pane_items(app, settings, width.into());
+            let right_items = widgets_ui.right_pane_items(app, settings, width.into(), today);
             let right_items = if is_right_active {
                 crate::ui::style_visual_rows(right_items, app)
             } else {
