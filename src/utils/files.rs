@@ -106,6 +106,15 @@ impl EntryInfo {
         self.kind == Some(EntryKind::File)
     }
 
+    /// Whether `.` hides the item at `path`: a dotfile. Folders always show.
+    pub fn is_hidden(&self, path: &Path) -> bool {
+        !self.is_dir()
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+    }
+
     /// A file's size; 0 for anything else.
     pub fn file_size(&self) -> u64 {
         if self.is_file() {
@@ -234,13 +243,7 @@ pub fn convert_file_path_to_string(
         })
         .filter(|(path, info)| match info.kind {
             Some(EntryKind::Folder) => true,
-            Some(EntryKind::File) => {
-                show_hidden
-                    || path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .is_some_and(|name| !name.starts_with('.'))
-            }
+            Some(EntryKind::File) => show_hidden || !info.is_hidden(path),
             _ => false,
         })
         .collect();

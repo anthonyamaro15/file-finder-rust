@@ -27,7 +27,7 @@ use crate::{
         popups::{
             draw_delete_popup, render_batch_confirmation_popup, render_palette, render_which_key,
         },
-        render_folder_picker, render_info_popup, render_keybindings_popup,
+        preview, render_folder_picker, render_info_popup, render_keybindings_popup,
         split_popup_area_vertical, top_bar,
     },
     ui::{create_preview_block, draw_scrollbar, Ui},
@@ -111,7 +111,9 @@ pub fn draw(
             .constraints(inner_constraints)
             .split(lists);
 
-        top_bar::render(f, chunks[0], app, SystemTime::now());
+        // In dual pane, a path header over each pane.
+        let split = app.view_mode.is_dual_pane().then(|| inner_layout[1].x);
+        top_bar::render(f, chunks[0], app, SystemTime::now(), split);
         match settings.status_bar_style {
             StatusBarStyle::Classic => status_bar.render(f, chunks[2], app, theme, today),
             StatusBarStyle::Minimal => status_bar.render_minimal(f, chunks[2], app, theme, today),
@@ -144,122 +146,98 @@ pub fn draw(
 
         // Only render preview in Normal view mode
         // In FullList mode, there's no preview pane
-        // In DualPane mode, we render two file lists (handled in Phase 4)
         if app.view_mode.shows_preview() {
+            let block = create_preview_block(settings, theme);
+            let inner = block.inner(inner_layout[1]);
+            f.render_widget(block, inner_layout[1]);
+            let image_size = has_image.then_some(image_info.as_str());
+            let body = preview::render_header(
+                f,
+                inner,
+                app,
+                &widgets_ui.icon_provider,
+                file_reader_content,
+                image_size,
+                selected,
+            );
             let t = file_reader_content.file_type.clone();
-            match t {
-                FileType::SourceCode | FileType::Markdown | FileType::TextFile |
-                FileType::ConfigFile | FileType::JSON => {
-                    image_renderer.clear();
-                    if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
-                        let file_preview_text = highlighted_content.clone()
-                            .block(create_preview_block("Preview", settings, theme))
-                            .style(Style::default());
-                        f.render_widget(file_preview_text, inner_layout[1]);
-                    } else {
-                        // Fallback for when highlighted content is not available
-                        let preview_text = Paragraph::new(app.preview_file_content.clone())
-                            .block(create_preview_block("Preview", settings, theme))
-                            .style(Style::default());
-                        f.render_widget(preview_text, inner_layout[1]);
+            if app.visual.is_some() {
+                // What d and D act on, in place of the highlighted item's preview.
+                widgets_ui.render_selection(f, body, app, settings, today);
+            } else {
+                match t {
+                    FileType::SourceCode | FileType::Markdown | FileType::TextFile |
+                    FileType::ConfigFile | FileType::JSON => {
+                        image_renderer.clear();
+                        let rows = usize::from(body.height);
+                        let lines: Vec<Line> = match file_reader_content.hightlighted_content.as_ref() {
+                            Some(text) => text.lines.iter().take(rows).cloned().collect(),
+                            // Fallback for when highlighted content is not available
+                            None => app.preview_file_content.lines().take(rows).map(Line::raw).collect(),
+                        };
+                        // Markdown reads formatted, and a loading note isn't the file's.
+                        let lines = if matches!(t, FileType::Markdown) || app.preview_loading {
+                            lines
+                        } else {
+                            preview::numbered(lines, theme)
+                        };
+                        f.render_widget(Paragraph::new(lines), body);
                     }
-                }
-                FileType::Image => {
-                    if has_image {
-                        if let Some(ref mut img_state) = image_state_for_render {
-                            // Create a block for the image with title showing dimensions
-                            let title = format!("Image ({})", image_info);
-                            let block = create_preview_block(&title, settings, theme);
-
-                            // Calculate inner area for the image
-                            let image_area = block.inner(inner_layout[1]);
-
-                            // Render the block first
-                            f.render_widget(block, inner_layout[1]);
-
-                            // Render the actual image using StatefulImage
-                            let image_widget = StatefulImage::new(None);
-                            f.render_stateful_widget(image_widget, image_area, img_state);
+                    FileType::Image => {
+                        if has_image {
+                            if let Some(ref mut img_state) = image_state_for_render {
+                                // Below the header, in the rest of the preview.
+                                let image_widget = StatefulImage::new(None);
+                                f.render_stateful_widget(image_widget, body, img_state);
+                            }
+                        } else if image_error.is_none()
+                            && (app.preview_receiver.is_some() || app.image_receiver.is_some())
+                        {
+                            // Still reading or decoding, which can take seconds for large images
+                            f.render_widget(Paragraph::new("Loading image..."), body);
+                        } else {
+                            // Show error message if image failed to load
+                            let error_msg = image_error.unwrap_or_else(|| {
+                                "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP, WebP".to_string()
+                            });
+                            let error_widget = Paragraph::new(error_msg).style(theme.warning);
+                            f.render_widget(error_widget, body);
                         }
-                    } else if image_error.is_none()
-                        && (app.preview_receiver.is_some() || app.image_receiver.is_some())
-                    {
-                        // Still reading or decoding, which can take seconds for large images
-                        let loading = Paragraph::new("Loading image...")
-                            .block(create_preview_block("Image", settings, theme));
-                        f.render_widget(loading, inner_layout[1]);
-                    } else {
-                        // Show error message if image failed to load
-                        let error_msg = image_error.unwrap_or_else(|| {
-                            "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP, WebP".to_string()
-                        });
-                        let error_widget = Paragraph::new(error_msg)
-                            .block(create_preview_block("Image - Error", settings, theme))
-                            .style(theme.warning);
-                        f.render_widget(error_widget, inner_layout[1]);
                     }
-                }
-                FileType::ZIP => {
-                    let block = create_preview_block("ZIP Archive", settings, theme);
-                    let zip_list_content = List::new(file_reader_content.curr_zip_content.clone())
-                        .block(block)
-                        .style(Style::default().fg(theme.muted));
-                    f.render_widget(zip_list_content, inner_layout[1]);
-                }
-                FileType::Archive => {
-                    let archive_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("Archive", settings, theme))
-                        .style(Style::default());
-                    f.render_widget(archive_info, inner_layout[1]);
-                }
-                FileType::CSV => {
-                    let csv_content = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("CSV Data", settings, theme))
-                        .style(Style::default().fg(theme.muted));
-                    f.render_widget(csv_content, inner_layout[1]);
-                }
-                FileType::PDF => {
-                    let pdf_content = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("PDF", settings, theme))
-                        .style(Style::default().fg(theme.bright))
-                        .wrap(ratatui::widgets::Wrap { trim: false });
-                    f.render_widget(pdf_content, inner_layout[1]);
-                }
-                FileType::Binary => {
-                    let binary_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("Hex View", settings, theme))
-                        .style(Style::default().fg(theme.bright));
-                    f.render_widget(binary_info, inner_layout[1]);
-                }
-                _ => {
-                    image_renderer.clear();
-                    widgets_ui.clone().render_preview_window(f, lists, app, settings, today);
+                    FileType::ZIP => {
+                        let zip_list_content = List::new(file_reader_content.curr_zip_content.clone())
+                            .style(Style::default().fg(theme.muted));
+                        f.render_widget(zip_list_content, body);
+                    }
+                    FileType::Archive => {
+                        let archive_info = Paragraph::new(app.preview_file_content.clone());
+                        f.render_widget(archive_info, body);
+                    }
+                    FileType::CSV => {
+                        let csv_content = Paragraph::new(app.preview_file_content.clone())
+                            .style(Style::default().fg(theme.muted));
+                        f.render_widget(csv_content, body);
+                    }
+                    FileType::PDF => {
+                        let pdf_content = Paragraph::new(app.preview_file_content.clone())
+                            .style(Style::default().fg(theme.bright))
+                            .wrap(ratatui::widgets::Wrap { trim: false });
+                        f.render_widget(pdf_content, body);
+                    }
+                    FileType::Binary => {
+                        let binary_info = Paragraph::new(app.preview_file_content.clone())
+                            .style(Style::default().fg(theme.bright));
+                        f.render_widget(binary_info, body);
+                    }
+                    _ => {
+                        image_renderer.clear();
+                        widgets_ui.render_preview_window(f, body, app, settings, today);
+                    }
                 }
             }
         } else if app.view_mode.is_dual_pane() {
-            // DualPane mode: render right pane file list
-            let right_pane = &app.right_pane;
+            // DualPane mode: render right pane file list; the top bar names its folder.
             let is_right_active = app.is_right_pane_active();
-
-            // Create title with directory info and active indicator
-            let dir_name = std::path::Path::new(&right_pane.current_directory)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("...");
-
-            let right_title = if settings.show_borders {
-                if is_right_active {
-                    format!("▸ Right: {}", dir_name)
-                } else {
-                    format!("  Right: {}", dir_name)
-                }
-            } else {
-                if is_right_active {
-                    format!("▸ {}", dir_name)
-                } else {
-                    dir_name.to_string()
-                }
-            };
 
             // Create block based on settings
             let block = if settings.show_borders {
@@ -273,20 +251,11 @@ pub fn draw(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_set(border::ROUNDED)
-                    .title(right_title)
                     .style(right_border_style)
             } else {
-                // Borderless mode - use title style for active indicator
-                let title_style = if is_right_active {
-                    theme.active_border
-                } else {
-                    theme.inactive_border
-                };
                 Block::default()
                     .borders(Borders::LEFT)
                     .border_style(Style::default().fg(theme.dim))
-                    .title(right_title)
-                    .title_style(title_style)
             };
 
             let width = block.inner(inner_layout[1]).width;
@@ -416,21 +385,27 @@ mod tests {
         status_bar::{NotificationKind, StatusBar},
         utils::files::{EntryInfo, EntryKind, Listing},
     };
-    use ratatui::{backend::TestBackend, buffer::Buffer, widgets::ListState};
+    use ratatui::{backend::TestBackend, buffer::Buffer, text::Text, widgets::ListState};
     use std::time::Duration;
 
     /// `/w` listing `count` folders, the first highlighted.
     fn loop_state(count: usize) -> LoopState {
-        let listing = Listing {
+        listing_state(Listing {
             files: (0..count).map(|i| format!("/w/item-{i:02}")).collect(),
-            info: vec![
-                EntryInfo {
-                    kind: Some(EntryKind::Folder),
-                    ..EntryInfo::default()
-                };
-                count
-            ],
-        };
+            info: vec![entry(EntryKind::Folder, 0); count],
+        })
+    }
+
+    fn entry(kind: EntryKind, size: u64) -> EntryInfo {
+        EntryInfo {
+            kind: Some(kind),
+            size,
+            ..EntryInfo::default()
+        }
+    }
+
+    /// `/w` listing `listing`, the first item highlighted.
+    fn listing_state(listing: Listing) -> LoopState {
         let mut app = App::with_listing(listing);
         app.current_directory = "/w".into();
         LoopState {
@@ -684,5 +659,278 @@ mod tests {
         let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
         assert_eq!(state.state.offset(), offset);
         assert!(screen[1].contains("item-05"), "{}", screen[1]);
+    }
+
+    /// The text of `screen`'s row `y` from column `x` on.
+    fn from(screen: &[String], y: usize, x: usize) -> String {
+        screen[y].chars().skip(x).collect()
+    }
+
+    /// The cell showing the first `needle` on row `y`.
+    fn find<'a>(buffer: &'a Buffer, y: u16, needle: &str) -> &'a ratatui::buffer::Cell {
+        let row = &rows(buffer)[usize::from(y)];
+        let x = row[..row.find(needle).unwrap()].chars().count();
+        buffer.get(x as u16, y)
+    }
+
+    /// Show `/w/item-00`'s items in the folder preview: two dotfiles, a dot folder, a
+    /// file and a folder.
+    fn preview_folder(state: &mut LoopState) {
+        let names = [".env", ".git", "notes.txt", "src", ".zshrc"];
+        let kinds = [
+            EntryKind::File,
+            EntryKind::Folder,
+            EntryKind::File,
+            EntryKind::Folder,
+            EntryKind::File,
+        ];
+        let app = &mut state.app;
+        app.preview_files = Listing {
+            files: names.map(|name| format!("/w/item-00/{name}")).to_vec(),
+            info: kinds.map(|kind| entry(kind, 5)).to_vec(),
+        };
+        app.preview_loading = false;
+        app.preview_loading_path = Some("/w/item-00".into());
+        app.preview_file_content.clear();
+    }
+
+    #[test]
+    fn a_folder_preview_has_a_header_and_follows_the_hidden_toggle() {
+        let mut state = loop_state(3);
+        preview_folder(&mut state);
+        let theme = state.app.theme_colors.clone();
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        // Under a column of padding beside the divider: the icon and name, its count.
+        let header = from(&screen, 1, 52);
+        assert!(header.contains(" item-00/ "), "{header}");
+        assert!(header.ends_with("3 items · 2 hidden "), "{header}");
+        let name = find(&buffer, 1, "item-00/");
+        assert_eq!(name.fg, theme.bright);
+        assert!(name.modifier.contains(Modifier::BOLD));
+        assert_eq!(find(&buffer, 1, "3 items").fg, theme.light_gray);
+        assert_eq!(from(&screen, 2, 52).trim_end(), "─".repeat(47));
+        assert_eq!(buffer.get(52, 2).fg, theme.dim);
+        // The rows: a dot folder shows, as in the list; dotfiles don't.
+        let body = screen[3..8].join("\n");
+        assert!(
+            body.contains(".git") && body.contains("notes.txt"),
+            "{body}"
+        );
+        assert!(!body.contains(".env") && !body.contains(".zshrc"), "{body}");
+        // The status line agrees.
+        assert!(
+            screen[22].contains("item-00/  folder · 3 items"),
+            "{}",
+            screen[22]
+        );
+
+        state.app.show_hidden_files = true;
+        let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
+        assert!(screen[1].ends_with("  5 items "), "{}", screen[1]);
+        let body = screen[3..9].join("\n");
+        assert!(body.contains(".env") && body.contains(".zshrc"), "{body}");
+
+        // With borders the header sits inside them.
+        let screen = rows(&frame(&mut state, &settings(false, true), 100, 24));
+        assert!(
+            screen[1].starts_with("╭") && screen[1].contains("╮╭"),
+            "{}",
+            screen[1]
+        );
+        assert!(from(&screen, 2, 51).contains(" item-00/ "), "{}", screen[2]);
+        assert!(screen[3].contains(&"─".repeat(48)), "{}", screen[3]);
+        assert!(!screen.iter().any(|row| row.contains("Preview")));
+    }
+
+    #[test]
+    fn a_file_preview_has_its_type_and_size_and_numbered_lines() {
+        let mut state = listing_state(Listing {
+            files: vec!["/w/data.ts".into(), "/w/notes.md".into()],
+            info: vec![
+                entry(EntryKind::File, 2_306_867),
+                entry(EntryKind::File, 120),
+            ],
+        });
+        let theme = state.app.theme_colors.clone();
+        let content = &mut state.file_reader_content;
+        content.file_type = FileType::SourceCode;
+        content.curr_selected_path = "/w/data.ts".into();
+        content.hightlighted_content = Some(Text::from("const a = 1;\nexport { a };"));
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        assert!(from(&screen, 1, 52).contains(" data.ts "), "{}", screen[1]);
+        assert!(screen[1].ends_with("TypeScript · 2.2 MB "), "{}", screen[1]);
+        assert_eq!(from(&screen, 3, 52).trim_end(), "  1  const a = 1;");
+        assert_eq!(from(&screen, 4, 52).trim_end(), "  2  export { a };");
+        assert_eq!(buffer.get(54, 3).fg, theme.dim);
+        assert!(!screen.iter().any(|row| row.contains("Preview")));
+
+        // Markdown reads formatted, without numbers.
+        state.state.select(Some(1));
+        state.app.curr_index = Some(1);
+        let content = &mut state.file_reader_content;
+        content.file_type = FileType::Markdown;
+        content.curr_selected_path = "/w/notes.md".into();
+        content.hightlighted_content = Some(Text::from("Notes\nbody"));
+        let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
+        assert!(screen[1].ends_with("Markdown · 120 B "), "{}", screen[1]);
+        assert_eq!(from(&screen, 3, 52).trim_end(), "Notes");
+        assert_eq!(from(&screen, 4, 52).trim_end(), "body");
+    }
+
+    /// Visual mode on the left listing from row `from` to row `to`.
+    fn select(state: &mut LoopState, from: usize, to: usize) {
+        let files = &state.app.files;
+        state.app.input_mode = InputMode::Visual;
+        state.app.visual = Some(crate::app::VisualSelection {
+            anchor: files[from].clone(),
+            cursor: files[to].clone(),
+            paths: files[from..=to].to_vec(),
+        });
+        state.state.select(Some(to));
+        state.app.curr_index = Some(to);
+    }
+
+    #[test]
+    fn visual_mode_lists_the_selection_in_the_preview() {
+        let mut listing = Listing {
+            files: (0..30).map(|i| format!("/w/item-{i:02}")).collect(),
+            info: vec![entry(EntryKind::Folder, 0); 30],
+        };
+        listing.files[6] = "/w/report.pdf".into();
+        listing.info[6] = entry(EntryKind::File, 2048);
+        let mut state = listing_state(listing);
+        preview_folder(&mut state);
+        select(&mut state, 0, 6);
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        let header = from(&screen, 1, 52);
+        assert!(header.starts_with("Selection "), "{header}");
+        assert!(header.ends_with("6 folders, 1 file "), "{header}");
+        let name = find(&buffer, 1, "Selection");
+        assert_eq!(name.fg, state.app.theme_colors.bright);
+        assert!(name.modifier.contains(Modifier::BOLD));
+        // Each selected item as a list row, in place of the highlighted one's preview.
+        for (y, name) in [
+            (3, "item-00"),
+            (4, "item-01"),
+            (8, "item-05"),
+            (9, "report.pdf"),
+        ] {
+            assert!(from(&screen, y, 52).contains(name), "{}", screen[y]);
+        }
+        assert!(from(&screen, 9, 52).contains("2.0 KB"), "{}", screen[9]);
+        assert!(!screen.iter().any(|row| row.contains("notes.txt")));
+
+        // Longer than the preview's 19 rows: what fits, then how many more.
+        select(&mut state, 0, 24);
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        assert!(screen[1].ends_with("24 folders, 1 file "), "{}", screen[1]);
+        assert!(from(&screen, 20, 52).contains("item-17"), "{}", screen[20]);
+        assert_eq!(from(&screen, 21, 52).trim_end(), "and 7 more");
+        assert_eq!(
+            find(&buffer, 21, "and 7").fg,
+            state.app.theme_colors.light_gray
+        );
+    }
+
+    /// Dual pane: `/w`'s folders on the left, `/x/archive`'s two on the right.
+    fn dual_pane(count: usize) -> LoopState {
+        let mut state = loop_state(count);
+        let archive = Listing {
+            files: vec!["/x/archive/2023".into(), "/x/archive/2024".into()],
+            info: vec![entry(EntryKind::Folder, 0); 2],
+        };
+        state.app.view_mode = ViewMode::DualPane;
+        state.app.right_pane = crate::pane::Pane::with_listing("/x/archive".into(), archive);
+        state
+    }
+
+    #[test]
+    fn dual_pane_has_a_path_header_over_each_pane() {
+        let mut state = dual_pane(30);
+        let theme = state.app.theme_colors.clone();
+        // On the way there, the full list keeps the single bar.
+        state.app.view_mode = ViewMode::FullList;
+        let screen = rows(&frame(&mut state, &settings(false, false), 100, 24));
+        assert!(screen[0].starts_with(" /w ") && screen[0].ends_with("30 items "));
+        state.app.view_mode = ViewMode::DualPane;
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        assert!(screen[0].starts_with(" ● /w "), "{}", screen[0]);
+        assert_eq!(from(&screen, 0, 50).trim_end(), "│ ○ /x/archive");
+        let (active, other) = (buffer.get(1, 0), buffer.get(52, 0));
+        assert_eq!(active.fg, theme.mode_normal);
+        assert_eq!(other.fg, theme.gray);
+        // The active pane's name bright and bold, the other's muted.
+        let name = buffer.get(4, 0);
+        assert!(name.fg == theme.bright && name.modifier.contains(Modifier::BOLD));
+        assert_eq!(find(&buffer, 0, "archive").fg, theme.light_gray);
+        assert_eq!(buffer.get(50, 0).fg, theme.dim);
+        // No titles over the lists: they start on the next row.
+        assert!(
+            screen[1].contains("item-00") && screen[1].contains("2023"),
+            "{}",
+            screen[1]
+        );
+        assert!(screen[21].contains("item-20"), "{}", screen[21]);
+        assert!(!screen
+            .iter()
+            .any(|row| row.contains("items") || row.contains("▸")));
+
+        // Tab swaps them, and the mode's color marks the active one.
+        state.app.toggle_active_pane();
+        state.app.input_mode = InputMode::Visual;
+        let buffer = frame(&mut state, &settings(false, false), 100, 24);
+        let screen = rows(&buffer);
+        assert!(screen[0].starts_with(" ○ /w "), "{}", screen[0]);
+        assert_eq!(from(&screen, 0, 50).trim_end(), "│ ● /x/archive");
+        assert_eq!(buffer.get(52, 0).fg, theme.mode_visual);
+        assert_eq!(buffer.get(1, 0).fg, theme.gray);
+
+        // With borders, the boxes keep only their borders.
+        let screen = rows(&frame(&mut state, &settings(false, true), 100, 24));
+        assert!(
+            screen[1].starts_with("╭──") && !screen[1].contains("Left"),
+            "{}",
+            screen[1]
+        );
+        assert!(from(&screen, 1, 50).starts_with("╭──") && !screen[1].contains("Right"));
+        assert!(
+            screen[2].contains("item-00") && screen[2].contains("2023"),
+            "{}",
+            screen[2]
+        );
+    }
+
+    #[test]
+    fn what_runs_stays_in_the_active_panes_header() {
+        let mut state = dual_pane(3);
+        state.app.job = Some(crate::app::BackgroundJob::spawn(
+            "move",
+            "Moving 'notes'…".into(),
+            Vec::new(),
+            |_| Ok("moved".into()),
+        ));
+        state.app.sizing.progress = Some((3, 5));
+        let buffer = frame(&mut state, &settings(false, false), 120, 24);
+        let screen = rows(&buffer);
+        let left: String = screen[0].chars().take(60).collect();
+        assert!(left.starts_with(" ● /w "), "{left}");
+        assert!(left.contains("Moving 'notes'…  ·  "), "{left}");
+        assert!(left.ends_with(" 3 of 5 folders sized "), "{left}");
+        assert_eq!(find(&buffer, 0, "Moving").fg, state.app.theme_colors.yellow);
+
+        // Over the right pane once it's active, at the screen's right end.
+        state.app.toggle_active_pane();
+        let screen = rows(&frame(&mut state, &settings(false, false), 120, 24));
+        assert!(
+            from(&screen, 0, 60).starts_with("│ ● /x/archive "),
+            "{}",
+            screen[0]
+        );
+        assert!(screen[0].ends_with("Moving 'notes'… "), "{}", screen[0]);
     }
 }

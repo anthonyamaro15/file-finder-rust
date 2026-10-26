@@ -239,8 +239,8 @@ pub fn poll_image_result(
                 // Only update if this is still the file we're waiting for
                 if file_reader_content.curr_asset_path == result.path {
                     match result.result {
-                        Ok((decoded_image, format)) => {
-                            image_renderer.load_from_decoded(decoded_image, format);
+                        Ok(decoded_image) => {
+                            image_renderer.load_from_decoded(decoded_image);
                             app.preview_file_content.clear();
                         }
                         Err(error_msg) => {

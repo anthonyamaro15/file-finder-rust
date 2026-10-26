@@ -14,7 +14,7 @@ pub struct ImageRenderer {
     pub(crate) image_state: Option<Box<dyn StatefulProtocol>>,
     /// Whether an image is currently loaded
     has_image: bool,
-    /// Image metadata info (dimensions, format)
+    /// The image's size in pixels, "660×1295".
     image_info: String,
     /// Error message if image loading failed
     error_message: Option<String>,
@@ -38,14 +38,9 @@ impl ImageRenderer {
     }
 
     /// Load an image from a pre-decoded DynamicImage (for async loading)
-    pub(crate) fn load_from_decoded(&mut self, decoded_image: image::DynamicImage, format: String) {
+    pub(crate) fn load_from_decoded(&mut self, decoded_image: image::DynamicImage) {
         self.clear();
-
-        let width = decoded_image.width();
-        let height = decoded_image.height();
-
-        // Store metadata
-        self.image_info = format!("{}x{} {}", width, height, format);
+        self.image_info = format!("{}×{}", decoded_image.width(), decoded_image.height());
 
         // Create protocol state for rendering
         let protocol = self.picker.new_resize_protocol(decoded_image);
@@ -73,7 +68,7 @@ impl ImageRenderer {
         self.has_image && self.image_state.is_some()
     }
 
-    /// Get the image info string
+    /// The loaded image's size in pixels, "660×1295".
     pub(crate) fn get_info(&self) -> &str {
         &self.image_info
     }

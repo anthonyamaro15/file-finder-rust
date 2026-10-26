@@ -1,6 +1,8 @@
 //! The top bar: the active pane's folder, how it's listed and what's running; or the
-//! search typed there, and its query while its results are shown.
+//! search typed there, and its query while its results are shown. In dual pane it's a
+//! path header over each pane.
 
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use ratatui::{
@@ -25,8 +27,70 @@ use crate::{
 const SEPARATOR: &str = "  ·  ";
 
 /// Draw the top bar on `area`'s first row, its sizing spinner turned for `now`. While
-/// a search is typed the bar takes its tint.
-pub fn render(f: &mut Frame, area: Rect, app: &App, now: SystemTime) {
+/// a search is typed the bar takes its tint. In dual pane (`split` is the column
+/// between the panes) each pane gets a path header: the active one's marked ● in the
+/// mode's color, with what runs at its right; the other's ○ and muted.
+pub fn render(f: &mut Frame, area: Rect, app: &App, now: SystemTime, split: Option<u16>) {
+    let area = Rect {
+        height: area.height.min(1),
+        ..area
+    };
+    let Some(split) = split.filter(|&x| x > area.x && x < area.right()) else {
+        return bar(f, area, app, now, None);
+    };
+    let theme = &app.theme_colors;
+    let left = Rect {
+        width: split - area.x,
+        ..area
+    };
+    let right = Rect {
+        x: split + 1,
+        width: area.right() - split - 1,
+        ..area
+    };
+    let (active, other, other_dir) = if app.is_right_pane_active() {
+        (right, left, app.left_directory_path())
+    } else {
+        (
+            left,
+            right,
+            PathBuf::from(&app.right_pane.current_directory),
+        )
+    };
+    bar(
+        f,
+        active,
+        app,
+        now,
+        Some(Span::styled("● ", Style::default().fg(app.mode_color()))),
+    );
+
+    let gray = Style::default().fg(theme.gray);
+    let room = usize::from(other.width).saturating_sub(4);
+    let mut header = vec![Span::raw(" "), Span::styled("○ ", gray)];
+    header.extend(path(
+        &other_dir,
+        room,
+        gray,
+        Style::default().fg(theme.light_gray),
+    ));
+    let bar_style = Style::default().bg(theme.statusbar_bg);
+    f.render_widget(Paragraph::new(Line::from(header)).style(bar_style), other);
+    let divider = Span::styled("│", Style::default().fg(theme.dim));
+    f.render_widget(
+        Paragraph::new(divider).style(bar_style),
+        Rect {
+            x: split,
+            width: 1,
+            ..area
+        },
+    );
+}
+
+/// Draw the bar on `area`: the folder or search at the left, after `marker` in dual
+/// pane, and at the right what runs, then how the folder is listed or the search's
+/// count. In dual pane there's no room for how it's listed.
+fn bar(f: &mut Frame, area: Rect, app: &App, now: SystemTime, marker: Option<Span<'static>>) {
     let theme = &app.theme_colors;
     let (query, global) = app.search_box();
     let typing = app.input_mode == InputMode::Editing;
@@ -55,33 +119,38 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, now: SystemTime) {
             count(app, query, global),
             Style::default().fg(color),
         ));
-    } else {
+    } else if marker.is_none() {
         for (i, part) in listing(app).into_iter().enumerate() {
             if i > 0 {
                 right.push(separator.clone());
             }
             right.push(Span::styled(part, muted));
         }
+    } else {
+        // Nothing listed after what runs.
+        right.pop();
     }
     right.push(Span::raw(" "));
     let right = Line::from(right);
 
     // The left part gets what the right leaves, keeping a gap.
-    let room = usize::from(area.width).saturating_sub(right.width() + 3);
+    let marker_width = marker.as_ref().map_or(0, Span::width);
+    let room = usize::from(area.width).saturating_sub(right.width() + 3 + marker_width);
     let mut left = vec![Span::raw(" ")];
+    left.extend(marker);
     left.extend(if searching {
         prompt(app, query, global, typing)
     } else {
-        path(app, room)
+        let name = Style::default()
+            .fg(theme.bright)
+            .add_modifier(Modifier::BOLD);
+        path(&app.current_directory_path(), room, muted, name)
     });
 
     let bar = Style::default().bg(bg);
-    let area = Rect {
-        height: area.height.min(1),
-        ..area
-    };
     let left_area = Rect {
-        width: u16::try_from(room + 1).map_or(area.width, |width| width.min(area.width)),
+        width: u16::try_from(room + 1 + marker_width)
+            .map_or(area.width, |width| width.min(area.width)),
         ..area
     };
     f.render_widget(
@@ -173,30 +242,24 @@ fn count(app: &App, query: &str, global: bool) -> String {
     }
 }
 
-/// The active pane's folder, `~` for home: its parent muted and its name bright and
-/// bold, the parent cut from the start to fit `room` columns.
-fn path(app: &App, room: usize) -> Vec<Span<'static>> {
-    let theme = &app.theme_colors;
-    let dir = replace_home_with_tilde(&app.current_directory_path().to_string_lossy());
+/// The folder `dir`, `~` for home: its parent in `parent` and its name in `name`, the
+/// parent cut from the start to fit `room` columns.
+fn path(dir: &Path, room: usize, parent: Style, name: Style) -> Vec<Span<'static>> {
+    let dir = replace_home_with_tilde(&dir.to_string_lossy());
     let split = match dir.rfind('/') {
         Some(i) if i + 1 < dir.len() => i + 1,
         _ => 0,
     };
-    let (parent, name) = dir.split_at(split);
-    let name = truncate(name, room);
-    let parent = if room > name.width() {
-        truncate_start(parent, room - name.width())
+    let (parent_text, name_text) = dir.split_at(split);
+    let name_text = truncate(name_text, room);
+    let parent_text = if room > name_text.width() {
+        truncate_start(parent_text, room - name_text.width())
     } else {
         String::new()
     };
     vec![
-        Span::styled(parent, Style::default().fg(theme.light_gray)),
-        Span::styled(
-            name,
-            Style::default()
-                .fg(theme.bright)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(parent_text, parent),
+        Span::styled(name_text, name),
     ]
 }
 
@@ -272,7 +335,9 @@ mod tests {
 
     fn draw(app: &App, width: u16) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
-        terminal.draw(|f| render(f, f.size(), app, now())).unwrap();
+        terminal
+            .draw(|f| render(f, f.size(), app, now(), None))
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 

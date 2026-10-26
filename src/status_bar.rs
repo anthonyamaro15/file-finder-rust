@@ -506,7 +506,7 @@ fn folder_total(app: &App, path: &Path, info: &EntryInfo) -> Option<FolderTotal>
 }
 
 /// "6 folders, 1 file": what the visual selection holds, while both its ends are listed.
-fn selection_kinds(app: &App) -> String {
+pub(crate) fn selection_kinds(app: &App) -> String {
     let info = if is_right_pane(app) {
         &app.right_pane.file_info
     } else {
@@ -554,7 +554,7 @@ fn position(app: &App) -> String {
 
 /// A short name for a file's type from its extension, like "TypeScript" or "PNG
 /// image", else "file".
-fn type_label(path: &Path) -> String {
+pub(crate) fn type_label(path: &Path) -> String {
     let ext = path
         .extension()
         .map(|ext| ext.to_string_lossy().to_lowercase())

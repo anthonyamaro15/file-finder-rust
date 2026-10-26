@@ -4,7 +4,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Padding},
     Frame,
 };
 use std::{ops::RangeInclusive, path::Path};
@@ -19,24 +19,18 @@ use crate::sizes::{FolderSizes, FolderTotal, RowSize};
 use crate::utils::files::{EntryInfo, SortBy};
 use crate::utils::format::{date_label, replace_home_with_tilde, LocalStamp};
 
-/// Create a preview block with consistent styling based on settings
-pub fn create_preview_block<'a>(
-    title: &'a str,
-    settings: &Settings,
-    theme: &ThemeColors,
-) -> Block<'a> {
+/// The preview's block: a box with borders, else a dim divider on its left and a
+/// column of padding each side, like the list's.
+pub fn create_preview_block(settings: &Settings, theme: &ThemeColors) -> Block<'static> {
     if settings.show_borders {
         Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .title(title)
     } else {
-        // Modern mode: subtle left border separator, muted title
         Block::default()
             .borders(Borders::LEFT)
             .border_style(Style::default().fg(theme.dim))
-            .title(title)
-            .title_style(Style::default().fg(theme.muted))
+            .padding(Padding::horizontal(1))
     }
 }
 
@@ -133,19 +127,7 @@ impl Ui {
             // Modern mode: no borders, clean look
             Block::default()
                 .borders(Borders::NONE)
-                .padding(ratatui::widgets::Padding::horizontal(1))
-        };
-        // In dual pane a title tells the panes apart; the top bar names the folder.
-        let block = match dual_pane_title(app, settings) {
-            Some(title) => {
-                let title_style = if app.is_right_pane_active() {
-                    theme.inactive_border
-                } else {
-                    theme.active_border
-                };
-                block.title(title).title_style(title_style)
-            }
-            None => block,
+                .padding(Padding::horizontal(1))
         };
 
         // Generate list items based on search mode, as wide as the list.
@@ -166,6 +148,8 @@ impl Ui {
         (rows, count)
     }
 
+    /// Draw the folder preview's items on `area`, from its top, leaving out what `.`
+    /// hides, as the list does.
     pub fn render_preview_window(
         &self,
         f: &mut Frame<'_>,
@@ -174,44 +158,10 @@ impl Ui {
         settings: &Settings,
         today: LocalStamp,
     ) {
-        let inner_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area);
-
-        // Create block with or without borders based on settings
-        let theme = &app.theme_colors;
-        let block = if settings.show_borders {
-            Block::default()
-                .borders(Borders::ALL)
-                .border_set(border::ROUNDED)
-                .title("Preview")
-                .style(match app.input_mode {
-                    InputMode::Normal => theme.inactive_border,
-                    InputMode::Editing => theme.inactive_border,
-                    _ => theme.disabled,
-                })
-        } else {
-            // Modern mode: no borders, muted title
-            Block::default()
-                .borders(Borders::LEFT) // Only left border as separator
-                .border_style(Style::default().fg(theme.dim)) // Subtle separator
-                .title("Preview")
-                .title_style(Style::default().fg(theme.muted))
-        };
-
-        let rows = Rows::new(
-            self,
-            app,
-            settings,
-            block.inner(inner_layout[1]).width.into(),
-            today,
-        );
+        let rows = Rows::new(self, app, settings, area.width.into(), today);
         let items: Vec<ListItem> = app
-            .preview_files
-            .files
-            .iter()
-            .zip(&app.preview_files.info)
+            .preview_items()
+            .take(area.height.into())
             .enumerate()
             .map(|(i, (path, info))| {
                 let name = Path::new(path)
@@ -220,11 +170,50 @@ impl Ui {
                 rows.row(i, path, &name, info, None)
             })
             .collect();
+        f.render_widget(List::new(items).style(app.theme_colors.normal), area);
+    }
 
-        // From its top: the left list's state would scroll it, and it would move that
-        // list's scroll position in turn.
-        let list_preview_block = List::new(items).block(block).style(theme.normal);
-        f.render_widget(list_preview_block, inner_layout[1]);
+    /// Draw the visual selection's items on `area`, what `d` and `D` act on, ending
+    /// with "and N more" when they don't all fit.
+    pub fn render_selection(
+        &self,
+        f: &mut Frame<'_>,
+        area: Rect,
+        app: &App,
+        settings: &Settings,
+        today: LocalStamp,
+    ) {
+        let Some(selected) = app.visual_rows() else {
+            return;
+        };
+        let total = selected.clone().count();
+        let height = usize::from(area.height);
+        let shown = if total > height {
+            height.saturating_sub(1)
+        } else {
+            total
+        };
+        let rows = Rows::new(self, app, settings, area.width.into(), today);
+        let mut items: Vec<ListItem> = selected
+            .take(shown)
+            .enumerate()
+            .map(|(i, index)| {
+                rows.row(
+                    i,
+                    &app.files[index],
+                    &app.file_read_only_label_list[index],
+                    &app.file_info[index],
+                    None,
+                )
+            })
+            .collect();
+        if shown < total {
+            items.push(ListItem::new(Span::styled(
+                format!("and {} more", total - shown),
+                Style::default().fg(app.theme_colors.light_gray),
+            )));
+        }
+        f.render_widget(List::new(items).style(app.theme_colors.normal), area);
     }
 
     /// The left listing's rows, `width` columns wide with `cursor` highlighted: its
@@ -325,22 +314,6 @@ impl Ui {
                 .collect()
         }
     }
-}
-
-/// The left pane's title in dual pane, which tells it from the right one: ▸ while it's
-/// active.
-fn dual_pane_title(app: &App, settings: &Settings) -> Option<String> {
-    if app.view_mode != ViewMode::DualPane {
-        return None;
-    }
-    let total = app.files.len();
-    let active = !app.is_right_pane_active();
-    Some(match (settings.show_borders, active) {
-        (true, true) => format!("▸ Left: Files ({total})"),
-        (true, false) => format!("  Left: Files ({total})"),
-        (false, true) => format!("▸ {total} items"),
-        (false, false) => format!("{total} items"),
-    })
 }
 
 /// Draw a scrollbar's thumb in `color` on column `x` beside `rows`, for a list of
@@ -899,13 +872,19 @@ mod tests {
         });
         assert_columns(&right, 39, &names);
 
-        // The folder preview, in the screen's right half.
+        // The folder preview, which leaves out what `.` hides until it's toggled.
         app.preview_files = fixture();
-        let preview = draw(100, |f| {
+        let preview = draw(40, |f| {
             ui.render_preview_window(f, f.size(), &app, &settings, TODAY);
         });
-        assert_columns(&preview, 99, &names);
+        assert_columns(&preview, 39, &["notes.txt", "photos", "old.bin"]);
+        assert!(!preview.iter().any(|row| row.contains(".zshrc")));
         assert!(!preview.iter().any(|row| row.contains("photos/")));
+        app.show_hidden_files = true;
+        let preview = draw(40, |f| {
+            ui.render_preview_window(f, f.size(), &app, &settings, TODAY);
+        });
+        assert_columns(&preview, 39, &names);
     }
 
     #[test]
