@@ -1,27 +1,29 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
-use std::{path::Path, rc::Rc};
+use std::{ops::RangeInclusive, path::Path, rc::Rc};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, InputMode, SearchResult, ViewMode};
 use crate::config::{Settings, ThemeColors};
+use crate::highlight::highlight_search_term;
 use crate::icons::IconProvider;
-use crate::render::size_bar::{size_column, BAR_WIDTH, SIZE_COLOR, SIZE_WIDTH};
+use crate::render::size_bar::{size_column, BAR_WIDTH, SIZE_WIDTH};
 use crate::sizes::{FolderSizes, FolderTotal, RowSize};
 use crate::utils::files::{EntryInfo, SortBy};
 use crate::utils::format::{date_label, replace_home_with_tilde, LocalStamp};
-pub mod theme;
-use self::theme::OneDarkTheme;
-use crate::highlight::highlight_search_term;
 
 /// Create a preview block with consistent styling based on settings
-pub fn create_preview_block<'a>(title: &'a str, settings: &Settings) -> Block<'a> {
+pub fn create_preview_block<'a>(
+    title: &'a str,
+    settings: &Settings,
+    theme: &ThemeColors,
+) -> Block<'a> {
     if settings.show_borders {
         Block::default()
             .borders(Borders::ALL)
@@ -31,9 +33,9 @@ pub fn create_preview_block<'a>(title: &'a str, settings: &Settings) -> Block<'a
         // Modern mode: subtle left border separator, muted title
         Block::default()
             .borders(Borders::LEFT)
-            .border_style(Style::default().fg(Color::Rgb(62, 68, 81)))
+            .border_style(Style::default().fg(theme.dim))
             .title(title)
-            .title_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+            .title_style(Style::default().fg(theme.muted))
     }
 }
 
@@ -108,40 +110,37 @@ impl Ui {
             .split(chunks[2]);
 
         // Create block with or without borders based on settings
+        let theme = &app.theme_colors;
         let block = if settings.show_borders {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
                 .title(list_title.as_str())
                 .style(match app.input_mode {
-                    _ if app.searching_right_pane() => OneDarkTheme::inactive_border(),
+                    _ if app.searching_right_pane() => theme.inactive_border,
                     InputMode::Normal | InputMode::Visual => {
                         if app.view_mode == ViewMode::DualPane && app.is_right_pane_active() {
-                            OneDarkTheme::inactive_border()
+                            theme.inactive_border
                         } else {
-                            OneDarkTheme::active_border()
+                            theme.active_border
                         }
                     }
-                    InputMode::Editing => {
-                        if app.global_search_mode {
-                            OneDarkTheme::global_search()
-                        } else {
-                            OneDarkTheme::local_search()
-                        }
-                    }
-                    _ => OneDarkTheme::inactive_border(),
+                    InputMode::Editing => Style::default()
+                        .fg(app.mode_color())
+                        .add_modifier(Modifier::BOLD),
+                    _ => theme.inactive_border,
                 })
         } else {
             // Modern mode: no borders, clean look
             // Use active/inactive title style in dual pane mode
             let title_style = if app.view_mode == ViewMode::DualPane {
                 if app.is_right_pane_active() {
-                    OneDarkTheme::inactive_title()
+                    theme.inactive_border
                 } else {
-                    OneDarkTheme::active_title()
+                    theme.active_border
                 }
             } else {
-                Style::default().fg(Color::Rgb(92, 99, 112)) // Default muted title
+                Style::default().fg(theme.muted) // Default muted title
             };
             Block::default()
                 .borders(Borders::NONE)
@@ -150,28 +149,18 @@ impl Ui {
                 .padding(ratatui::widgets::Padding::horizontal(1))
         };
 
-        // Generate list items based on search mode, as wide as the rows beside the
-        // highlight symbol.
-        let width = block.inner(inner_layout[0]).width.saturating_sub(1);
-        let mut filtered_read_only_items =
-            self.generate_list_items(app, settings, width.into(), today);
-        if !(app.view_mode == ViewMode::DualPane && app.is_right_pane_active()) {
-            filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
-        }
+        // Generate list items based on search mode, as wide as the list.
+        let width = block.inner(inner_layout[0]).width;
+        let filtered_read_only_items =
+            self.generate_list_items(app, settings, width.into(), today, state.selected());
 
-        let list_block = List::new(filtered_read_only_items)
-            .block(block)
-            .highlight_style(OneDarkTheme::selected())
-            .highlight_symbol(if settings.show_borders { "❯" } else { " " })
-            .style(match app.input_mode {
-                InputMode::Normal | InputMode::Visual => OneDarkTheme::normal(),
-                InputMode::Editing => OneDarkTheme::normal(),
-                InputMode::WatchDelete => OneDarkTheme::disabled(),
-                InputMode::WatchCreate => OneDarkTheme::disabled(),
-                InputMode::WatchRename => OneDarkTheme::disabled(),
-                InputMode::WatchSort => OneDarkTheme::disabled(),
-                _ => OneDarkTheme::disabled(),
-            });
+        let list_block =
+            List::new(filtered_read_only_items)
+                .block(block)
+                .style(match app.input_mode {
+                    InputMode::Normal | InputMode::Visual | InputMode::Editing => theme.normal,
+                    _ => theme.disabled,
+                });
 
         f.render_stateful_widget(list_block, inner_layout[0], state);
     }
@@ -191,23 +180,24 @@ impl Ui {
             .split(chunks[2]);
 
         // Create block with or without borders based on settings
+        let theme = &app.theme_colors;
         let block = if settings.show_borders {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
                 .title("Preview")
                 .style(match app.input_mode {
-                    InputMode::Normal => OneDarkTheme::inactive_border(),
-                    InputMode::Editing => OneDarkTheme::inactive_border(),
-                    _ => OneDarkTheme::disabled(),
+                    InputMode::Normal => theme.inactive_border,
+                    InputMode::Editing => theme.inactive_border,
+                    _ => theme.disabled,
                 })
         } else {
             // Modern mode: no borders, muted title
             Block::default()
                 .borders(Borders::LEFT) // Only left border as separator
-                .border_style(Style::default().fg(Color::Rgb(62, 68, 81))) // Subtle separator
+                .border_style(Style::default().fg(theme.dim)) // Subtle separator
                 .title("Preview")
-                .title_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+                .title_style(Style::default().fg(theme.muted))
         };
 
         let rows = Rows::new(
@@ -222,15 +212,16 @@ impl Ui {
             .files
             .iter()
             .zip(&app.preview_files.info)
-            .map(|(path, info)| {
+            .enumerate()
+            .map(|(i, (path, info))| {
                 let name = Path::new(path)
                     .file_name()
                     .map_or_else(|| path.into(), |name| name.to_string_lossy());
-                rows.row(path, &name, info, None)
+                rows.row(i, path, &name, info, None)
             })
             .collect();
 
-        let list_preview_block = List::new(items).block(block).style(OneDarkTheme::normal());
+        let list_preview_block = List::new(items).block(block).style(theme.normal);
 
         f.render_stateful_widget(list_preview_block, inner_layout[1], state);
     }
@@ -310,26 +301,29 @@ impl Ui {
         }
     }
 
-    /// The left listing's rows, `width` columns wide: its items, or a global search's
-    /// results.
+    /// The left listing's rows, `width` columns wide with `cursor` highlighted: its
+    /// items, or a global search's results.
     fn generate_list_items(
         &self,
         app: &App,
         settings: &Settings,
         width: usize,
         today: LocalStamp,
+        cursor: Option<usize>,
     ) -> Vec<ListItem<'static>> {
         let term = highlight_term(app, false);
         if app.global_search_mode && !app.search_results.is_empty() {
             let rows = Rows {
                 term,
                 ..Rows::new(self, app, settings, width, today)
-            };
+            }
+            .with_cursor(app, false, cursor);
             return app
                 .search_results
                 .iter()
                 .take(50) // Limit to top 50 results for performance
-                .map(|result| rows.result(result, true))
+                .enumerate()
+                .map(|(i, result)| rows.result(i, result, true))
                 .collect();
         }
         let size_order = app.sort_by == SortBy::Size
@@ -343,7 +337,8 @@ impl Ui {
                 (&app.folder_sizes, largest)
             }),
             ..Rows::new(self, app, settings, width, today)
-        };
+        }
+        .with_cursor(app, false, cursor);
 
         // Use all filtered indexes (or all files if no filter)
         let indexes: Vec<usize> = if !app.filtered_indexes.is_empty() {
@@ -353,8 +348,10 @@ impl Ui {
         };
         indexes
             .iter()
-            .map(|&index| {
+            .enumerate()
+            .map(|(i, &index)| {
                 rows.row(
+                    i,
                     &app.files[index],
                     &app.file_read_only_label_list[index],
                     &app.file_info[index],
@@ -364,8 +361,9 @@ impl Ui {
             .collect()
     }
 
-    /// The right pane's rows, `width` columns wide: its listing, or its search's
-    /// results, highlighted like the left listing's while the query is typed.
+    /// The right pane's rows, `width` columns wide with its cursor highlighted: its
+    /// listing, or its search's results, highlighted like the left listing's while the
+    /// query is typed.
     pub fn right_pane_items(
         &self,
         app: &App,
@@ -382,21 +380,22 @@ impl Ui {
                 let largest = largest(&pane.files, &pane.file_info, &app.folder_sizes);
                 (&app.folder_sizes, largest)
             }),
-            // Dim dotfiles with `crate::theme`'s dimmer colour rather than this module's
-            dotfile: crate::theme::OneDarkTheme::dotfile(),
             ..Rows::new(self, app, settings, width, today)
-        };
+        }
+        .with_cursor(app, true, pane.list_state.selected());
         if pane.is_searching() {
             pane.search_results
                 .iter()
-                .map(|result| rows.result(result, pane.global_search_mode))
+                .enumerate()
+                .map(|(i, result)| rows.result(i, result, pane.global_search_mode))
                 .collect()
         } else {
             pane.files
                 .iter()
                 .zip(&pane.file_labels)
                 .zip(&pane.file_info)
-                .map(|((path, label), info)| rows.row(path, label, info, None))
+                .enumerate()
+                .map(|(i, ((path, label), info))| rows.row(i, path, label, info, None))
                 .collect()
         }
     }
@@ -426,6 +425,7 @@ fn largest(files: &[String], info: &[EntryInfo], sizes: &FolderSizes) -> u64 {
 struct Rows<'a> {
     icons: &'a IconProvider,
     theme: &'a ThemeColors,
+    /// Columns beside the mark.
     width: usize,
     /// Show sizes, and bars in size order.
     sizes: bool,
@@ -434,12 +434,19 @@ struct Rows<'a> {
     today: LocalStamp,
     /// The query highlighted in names.
     term: &'a str,
-    dotfile: Style,
+    /// The query's letters: bold and underlined in the search's color.
+    hit: Style,
+    /// The highlighted row. While there is one, every row keeps a column for a mark.
+    cursor: Option<usize>,
+    /// The cursor's mark color in the pane keys go to; the other pane's cursor is
+    /// fainter and has none.
+    mark: Option<Color>,
+    /// The visual selection's rows, in the pane keys go to.
+    selection: Option<RangeInclusive<usize>>,
 }
 
 impl<'a> Rows<'a> {
-    /// Rows `width` columns wide outside size order, with nothing highlighted and
-    /// dotfiles dimmed as in the left listing.
+    /// Rows `width` columns wide outside size order, with nothing highlighted.
     fn new(ui: &'a Ui, app: &'a App, settings: &Settings, width: usize, today: LocalStamp) -> Self {
         Self {
             icons: &ui.icon_provider,
@@ -449,17 +456,36 @@ impl<'a> Rows<'a> {
             size_order: None,
             today,
             term: "",
-            dotfile: OneDarkTheme::dotfile(),
+            hit: Style::default()
+                .fg(app.mode_color())
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+            cursor: None,
+            mark: None,
+            selection: None,
         }
     }
 
-    /// A search result's row, showing where the folder lives when `global`.
-    fn result(&self, result: &SearchResult, global: bool) -> ListItem<'static> {
+    /// These rows with `cursor` highlighted, in the right pane's list when `right_pane`.
+    /// In the pane keys go to, it's marked in the mode's color and the selection shows.
+    fn with_cursor(self, app: &App, right_pane: bool, cursor: Option<usize>) -> Self {
+        let active = right_pane == (app.view_mode.is_dual_pane() && app.is_right_pane_active());
+        Self {
+            width: self.width.saturating_sub(usize::from(cursor.is_some())),
+            cursor,
+            mark: active.then(|| app.cursor_color()),
+            selection: app.visual_rows().filter(|_| active),
+            ..self
+        }
+    }
+
+    /// Row `index`, of a search result, showing where the folder lives when `global`.
+    fn result(&self, index: usize, result: &SearchResult, global: bool) -> ListItem<'static> {
         let location = Path::new(&result.file_path)
             .parent()
             .filter(|_| global)
             .map(|parent| replace_home_with_tilde(&parent.to_string_lossy()));
         self.row(
+            index,
             &result.file_path,
             &result.display_name,
             &result.info,
@@ -467,23 +493,51 @@ impl<'a> Rows<'a> {
         )
     }
 
-    /// A row of the item at `path`: its icon and `name`, cut short with … and with the
-    /// query highlighted, then `location` dimmed, and the size and date columns at the
-    /// right edge, so they line up down the list.
+    /// Row `index`, of the item at `path`: its mark, its icon and `name`, cut short with
+    /// … and with the query highlighted, then `location` dimmed, and the size and date
+    /// columns at the right edge, so they line up down the list.
     fn row(
         &self,
+        index: usize,
         path: &str,
         name: &str,
         info: &EntryInfo,
         location: Option<&str>,
     ) -> ListItem<'static> {
+        let theme = self.theme;
         let icon = self
             .icons
-            .get_colored_for_path(Path::new(path), info.is_dir(), self.theme);
+            .get_colored_for_path(Path::new(path), info.is_dir(), theme);
+        let at_cursor = self.cursor == Some(index);
+        let selected = self
+            .selection
+            .as_ref()
+            .is_some_and(|rows| rows.contains(&index));
+        let visual = Style::default().fg(theme.mode_visual);
+        // The cursor's mark is in the mode's color, or the selection's inside it.
+        let (mark, band) = match (at_cursor, self.mark) {
+            (true, Some(_)) if selected => {
+                (Span::styled("▌", visual), Some(theme.visual_cursor_bg))
+            }
+            (true, Some(color)) => (
+                Span::styled("▌", Style::default().fg(color)),
+                Some(theme.cursor_bg),
+            ),
+            (true, None) => (Span::raw(" "), Some(theme.inactive_cursor_bg)),
+            (false, _) if selected => (Span::styled("┃", visual), Some(theme.visual_bg)),
+            (false, _) => (Span::raw(" "), None),
+        };
         let (icon_style, name_style) = if name.starts_with('.') {
-            (self.dotfile, self.dotfile)
+            (theme.dotfile, theme.dotfile)
         } else {
             (Style::default().fg(icon.color), Style::default())
+        };
+        let name_style = if at_cursor && self.mark.is_some() {
+            Style::default()
+                .fg(theme.bright)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            name_style
         };
         let icon = Span::styled(icon.icon, icon_style);
         let columns = self.columns(path, info);
@@ -494,25 +548,32 @@ impl<'a> Rows<'a> {
             .saturating_sub(icon.width() + 1 + columns_width + usize::from(columns_width > 0));
         let name = truncate(name, room);
         let mut used = name.width();
-        let mut spans = vec![icon, Span::raw(" ")];
+        let mut spans = Vec::new();
+        if self.cursor.is_some() {
+            spans.push(mark);
+        }
+        spans.extend([icon, Span::raw(" ")]);
         if self.term.is_empty() {
             spans.push(Span::styled(name, name_style));
         } else {
-            let highlight = OneDarkTheme::search_highlight();
-            spans.extend(highlight_search_term(&name, self.term, name_style, highlight).spans);
+            spans.extend(highlight_search_term(&name, self.term, name_style, self.hit).spans);
         }
         // Where it lives gets what the name leaves, cut from the start.
         if let Some(location) = location.filter(|_| room > used + 2) {
             let location = truncate_start(location, room - used - 1);
             used += location.width() + 1;
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(location, Style::default().fg(SIZE_COLOR)));
+            spans.push(Span::styled(location, Style::default().fg(theme.muted)));
         }
         if !columns.is_empty() {
             spans.push(Span::raw(" ".repeat(room - used + 1)));
             spans.extend(columns);
         }
-        ListItem::from(Line::from(spans))
+        let item = ListItem::from(Line::from(spans));
+        match band {
+            Some(band) => item.style(Style::default().bg(band)),
+            None => item,
+        }
     }
 
     /// The bar, size and date columns that fit, for the item at `path`. Outside size
@@ -552,7 +613,7 @@ impl<'a> Rows<'a> {
             let label = date_label(info.modified_local, self.today);
             spans.push(Span::styled(
                 format!("{label:>DATE_WIDTH$}"),
-                Style::default().fg(SIZE_COLOR),
+                Style::default().fg(self.theme.muted),
             ));
         }
         spans
@@ -598,28 +659,6 @@ fn truncate_start(text: &str, width: usize) -> String {
     std::iter::once('…').chain(kept.into_iter().rev()).collect()
 }
 
-/// Mark the active pane's selected rows (visual mode) in the theme's selection colour,
-/// names in the visual mode colour; the highlighted row keeps its own style on top.
-pub fn style_visual_rows<'a>(items: Vec<ListItem<'a>>, app: &App) -> Vec<ListItem<'a>> {
-    let Some(rows) = app.visual_rows() else {
-        return items;
-    };
-    let style = Style::default()
-        .bg(app.theme_colors.selection)
-        .fg(app.theme_colors.statusbar_mode_visual);
-    items
-        .into_iter()
-        .enumerate()
-        .map(|(row, item)| {
-            if rows.contains(&row) {
-                item.style(style)
-            } else {
-                item
-            }
-        })
-        .collect()
-}
-
 /// The search box's query to highlight in a pane's rows while it's typed there:
 /// the left listing's, or the right pane's when `right_pane`.
 pub fn highlight_term(app: &App, right_pane: bool) -> &str {
@@ -641,13 +680,17 @@ pub fn highlight_term(app: &App, right_pane: bool) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::VisualSelection;
+    use crate::app::{PanePosition, VisualSelection};
     use crate::config::settings::NerdFontSetting;
     use crate::pane::Pane;
     use crate::utils::files::{EntryKind, Listing};
     use crate::utils::format::local_stamp;
     use crate::utils::{read_listing, SortBy, SortType};
-    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+    use ratatui::{
+        backend::TestBackend,
+        buffer::{Buffer, Cell},
+        Terminal,
+    };
     use std::{fs, time::SystemTime};
 
     /// What the fixture's dates are judged against.
@@ -765,6 +808,26 @@ mod tests {
 
     fn row<'a>(rows: &'a [String], name: &str) -> &'a str {
         rows.iter().find(|row| row.contains(name)).unwrap()
+    }
+
+    /// The cell `x` columns into the row of `name`, or `offset` columns into the name
+    /// when `x` is `None`.
+    fn cell(buffer: &Buffer, name: &str, x: Option<u16>, offset: usize) -> Cell {
+        let rows = text(buffer);
+        let y = rows.iter().position(|row| row.contains(name)).unwrap();
+        let x = x.unwrap_or_else(|| {
+            let start = rows[y][..rows[y].find(name).unwrap()].chars().count();
+            (start + offset) as u16
+        });
+        buffer.get(x, y as u16).clone()
+    }
+
+    /// Whether `cell` shows `symbol` in `fg` on `bg`, and is bold.
+    fn looks(cell: &Cell, symbol: &str, fg: Color, bg: Color) -> (bool, bool) {
+        (
+            (cell.symbol(), cell.fg, cell.bg) == (symbol, fg, bg),
+            cell.modifier.contains(Modifier::BOLD),
+        )
     }
 
     /// The left listing, `width` columns wide, with `selected` highlighted.
@@ -896,23 +959,138 @@ mod tests {
         app.perform_local_search("o");
         assert_eq!(app.search_results.len(), 3);
 
-        // Nothing highlighted, so no column for the highlight symbol: rows end a column
-        // sooner.
+        // Nothing highlighted, so no column for a mark: rows start a column sooner and
+        // still end at the right edge.
         let buffer = draw_left(&mut ui, &app, &settings, 60, None);
         let rows = text(&buffer);
-        assert_columns(&rows, 57, &["notes.txt", "photos", "old.bin"]);
+        assert_columns(&rows, 58, &["notes.txt", "photos", "old.bin"]);
         assert!(!rows.iter().any(|row| row.contains('(')));
-        let y = rows
-            .iter()
-            .position(|row| row.contains("notes.txt"))
-            .unwrap();
-        let x = rows[y][..rows[y].find("notes.txt").unwrap()]
-            .chars()
-            .count()
-            + 1;
-        let o = buffer.get(x as u16, y as u16);
-        assert_eq!(o.symbol(), "o");
-        assert_eq!(Some(o.bg), OneDarkTheme::search_highlight().bg);
+        let start = row(&rows, "notes.txt").find("notes.txt").unwrap();
+        assert_eq!(row(&rows, "notes.txt")[..start].chars().count(), 3);
+        assert_eq!(cell(&buffer, "notes.txt", None, 1).symbol(), "o");
+    }
+
+    #[test]
+    fn search_matches_are_underlined_in_the_search_color() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        app.input_mode = InputMode::Editing;
+        app.input = "o".into();
+        app.perform_local_search("o");
+        let theme = app.theme_colors.clone();
+        let underlined = |cell: &Cell| {
+            cell.modifier
+                .contains(Modifier::BOLD | Modifier::UNDERLINED)
+        };
+
+        let buffer = draw_left(&mut ui, &app, &settings, 60, None);
+        let (n, o) = (
+            cell(&buffer, "notes.txt", None, 0),
+            cell(&buffer, "notes.txt", None, 1),
+        );
+        assert_eq!(
+            (o.symbol(), o.fg, o.bg),
+            ("o", theme.mode_search, Color::Reset)
+        );
+        assert!(underlined(&o) && !underlined(&n));
+
+        // A search from the root's, on the cursor's band rather than a box.
+        app.global_search_mode = true;
+        app.input = "pho".into();
+        app.search_results = vec![SearchResult {
+            file_path: "/w/photos".into(),
+            display_name: "photos".into(),
+            score: 87,
+            info: fixture().info[1],
+            original_index: 0,
+        }];
+        let buffer = draw_left(&mut ui, &app, &settings, 60, Some(0));
+        let p = cell(&buffer, "photos", None, 0);
+        assert_eq!(
+            (p.symbol(), p.fg, p.bg),
+            ("p", theme.mode_global, theme.cursor_bg)
+        );
+        assert!(underlined(&p) && !underlined(&cell(&buffer, "photos", None, 3)));
+    }
+
+    #[test]
+    fn the_cursor_gets_a_band_a_mark_in_the_mode_color_and_a_bold_name() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        let theme = app.theme_colors.clone();
+
+        let buffer = draw_left(&mut ui, &app, &settings, 60, Some(1));
+        // The mark sits where the highlight symbol did, beside the icon and the name.
+        let mark = cell(&buffer, "photos", Some(1), 0);
+        assert_eq!(
+            looks(&mark, "▌", theme.mode_normal, theme.cursor_bg),
+            (true, false)
+        );
+        let name = cell(&buffer, "photos", Some(4), 0);
+        assert_eq!(
+            looks(&name, "p", theme.bright, theme.cursor_bg),
+            (true, true)
+        );
+        // The date stays muted on the band.
+        let date = cell(&buffer, "photos", Some(58), 0);
+        assert_eq!((date.fg, date.bg), (theme.muted, theme.cursor_bg));
+        let other = cell(&buffer, "notes.txt", Some(1), 0);
+        assert_eq!((other.symbol(), other.bg), (" ", Color::Reset));
+        assert_eq!(cell(&buffer, "notes.txt", Some(4), 0).fg, theme.fg);
+
+        // Browsing a local search's results, the mark takes the search's color.
+        app.input = "o".into();
+        app.perform_local_search("o");
+        let buffer = draw_left(&mut ui, &app, &settings, 60, Some(0));
+        // Below the list's title.
+        assert_eq!(buffer.get(1, 1).fg, theme.mode_search);
+    }
+
+    #[test]
+    fn the_other_panes_cursor_is_fainter_and_unmarked() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::DualPane;
+        app.right_pane = Pane::with_listing("/w".into(), fixture());
+        let theme = app.theme_colors.clone();
+        let right = |ui: &Ui, app: &App| {
+            draw_buffer(40, |f| {
+                let items = ui.right_pane_items(app, &settings, 40, TODAY);
+                f.render_widget(List::new(items), f.size())
+            })
+        };
+
+        app.active_pane = PanePosition::Right;
+        let buffer = right(&ui, &app);
+        let mark = cell(&buffer, "notes.txt", Some(0), 0);
+        assert_eq!(
+            looks(&mark, "▌", theme.mode_normal, theme.cursor_bg),
+            (true, false)
+        );
+        // The left pane's cursor, in the left half.
+        let buffer = draw_left(&mut ui, &app, &settings, 120, Some(0));
+        let mark = cell(&buffer, "notes.txt", Some(1), 0);
+        assert_eq!(
+            looks(&mark, " ", theme.fg, theme.inactive_cursor_bg),
+            (true, false)
+        );
+        let name = cell(&buffer, "notes.txt", Some(4), 0);
+        assert_eq!(
+            looks(&name, "n", theme.fg, theme.inactive_cursor_bg),
+            (true, false)
+        );
+
+        app.active_pane = PanePosition::Left;
+        let buffer = right(&ui, &app);
+        let mark = cell(&buffer, "notes.txt", Some(0), 0);
+        assert_eq!((mark.symbol(), mark.bg), (" ", theme.inactive_cursor_bg));
+        let buffer = draw_left(&mut ui, &app, &settings, 120, Some(0));
+        assert_eq!(cell(&buffer, "notes.txt", Some(1), 0).symbol(), "▌");
     }
 
     #[test]
@@ -958,14 +1136,15 @@ mod tests {
         let mut app = App::new(Vec::new());
         app.right_pane = Pane::with_listing("/w".into(), fixture());
         app.right_pane.sort_by = SortBy::Size;
-        // A name keeps 12 columns beside an icon of up to 3, so 45 fit everything.
+        // A name keeps 12 columns beside the mark's column and an icon of up to 3, so 46
+        // fit everything.
         for (width, bar, size, date) in [
-            (45, true, true, true),
-            (44, true, true, false),
-            (38, true, true, false),
-            (37, false, true, false),
-            (27, false, true, false),
-            (26, false, false, false),
+            (46, true, true, true),
+            (45, true, true, false),
+            (39, true, true, false),
+            (38, false, true, false),
+            (28, false, true, false),
+            (27, false, false, false),
         ] {
             let rows = draw(width, |f| {
                 let items = ui.right_pane_items(&app, &settings, width.into(), TODAY);
@@ -996,38 +1175,53 @@ mod tests {
     }
 
     #[test]
-    fn visual_rows_stay_styled_across_their_columns() {
+    fn visual_rows_get_the_band_and_marks_with_names_in_their_own_colors() {
         let settings = nerd_settings();
         let mut ui = Ui::new(Vec::new(), &settings);
         let mut app = App::with_listing(fixture());
         app.view_mode = ViewMode::FullList;
         app.input_mode = InputMode::Visual;
         app.visual = Some(VisualSelection {
-            anchor: "/w/notes.txt".into(),
-            cursor: "/w/photos".into(),
-            paths: vec!["/w/notes.txt".into(), "/w/photos".into()],
+            anchor: "/w/.zshrc".into(),
+            cursor: "/w/notes.txt".into(),
+            paths: vec![
+                "/w/notes.txt".into(),
+                "/w/photos".into(),
+                "/w/.zshrc".into(),
+            ],
         });
+        let theme = app.theme_colors.clone();
 
-        // notes.txt is highlighted, which goes on top.
+        // notes.txt is the cursor, with a stronger tint.
         let buffer = draw_left(&mut ui, &app, &settings, 60, Some(0));
-        let rows = text(&buffer);
-        let at = |name: &str, x: u16| {
-            let y = rows.iter().position(|row| row.contains(name)).unwrap();
-            buffer.get(x, y as u16).clone()
-        };
-        let theme = &app.theme_colors;
-        // The name takes the visual colour, and the date keeps its own.
-        let name = at("photos", 4);
+        let mark = cell(&buffer, "notes.txt", Some(1), 0);
         assert_eq!(
-            (name.symbol(), name.fg, name.bg),
-            ("p", theme.statusbar_mode_visual, theme.selection)
+            looks(&mark, "▌", theme.mode_visual, theme.visual_cursor_bg),
+            (true, false)
         );
-        let date = at("photos", 58);
+        let name = cell(&buffer, "notes.txt", Some(4), 0);
         assert_eq!(
-            (date.symbol(), date.fg, date.bg),
-            ("1", SIZE_COLOR, theme.selection)
+            looks(&name, "n", theme.bright, theme.visual_cursor_bg),
+            (true, true)
         );
-        assert_ne!(at(".zshrc", 4).bg, theme.selection);
+        // The rest of the selection: names in their own colors, a dotfile's dimmed, and
+        // the date muted, all on the band.
+        for (name, x, symbol, fg) in [
+            ("photos", 1, "┃", theme.mode_visual),
+            ("photos", 4, "p", theme.fg),
+            ("photos", 58, "1", theme.muted),
+            (".zshrc", 1, "┃", theme.mode_visual),
+            (".zshrc", 4, ".", theme.gray),
+        ] {
+            let shown = cell(&buffer, name, Some(x), 0);
+            assert_eq!(
+                looks(&shown, symbol, fg, theme.visual_bg),
+                (true, false),
+                "{name} {x}"
+            );
+        }
+        let after = cell(&buffer, "old.bin", Some(1), 0);
+        assert_eq!((after.symbol(), after.bg), (" ", Color::Reset));
     }
 
     #[test]
@@ -1058,7 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn right_pane_dims_dotfiles_with_the_dimmer_theme_colour() {
+    fn right_pane_dims_dotfiles_like_the_left_listing() {
         let settings = Settings::default();
         let ui = Ui::new(Vec::new(), &settings);
         let mut app = App::new(Vec::new());
@@ -1078,6 +1272,6 @@ mod tests {
             .iter()
             .find(|cell| cell.symbol() == ".")
             .unwrap();
-        assert_eq!(Some(dot.fg), crate::theme::OneDarkTheme::dotfile().fg);
+        assert_eq!(Some(dot.fg), app.theme_colors.dotfile.fg);
     }
 }

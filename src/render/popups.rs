@@ -4,7 +4,7 @@ use std::{collections::HashSet, path::Path};
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Margin, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     symbols::border,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
@@ -17,7 +17,6 @@ use crate::config::{
     Action, KeySequence, KeymapSettings, ThemeColors,
 };
 use crate::event::palette::palette_matches;
-use crate::theme::OneDarkTheme;
 use crate::utils::format::replace_home_with_tilde;
 use crate::utils::{format_file_size, EntryInfo, SortBy, SortType};
 
@@ -101,6 +100,7 @@ pub fn create_delete_confirmation_popup<'a>(
     _file_count: Option<usize>,
     total_size: Option<u64>,
     to_trash: bool,
+    theme: &ThemeColors,
 ) -> Paragraph<'a> {
     let info_line = if is_dir {
         // For directories, stats are calculated async, so show placeholder
@@ -141,7 +141,7 @@ pub fn create_delete_confirmation_popup<'a>(
                 } else {
                     "Permanent Delete"
                 })
-                .style(OneDarkTheme::error()),
+                .style(Style::default().fg(theme.mode_delete)),
         )
         .wrap(Wrap { trim: true })
         .centered()
@@ -155,6 +155,7 @@ pub fn render_batch_confirmation_popup(
     targets: &[String],
     listed_info: impl Fn(&str) -> Option<EntryInfo>,
     to_trash: bool,
+    theme: &ThemeColors,
 ) {
     const SHOWN: usize = 5;
     let count = match targets.len() {
@@ -201,7 +202,7 @@ pub fn render_batch_confirmation_popup(
                 } else {
                     "Permanent Delete"
                 })
-                .style(OneDarkTheme::error()),
+                .style(Style::default().fg(theme.mode_delete)),
         )
         .centered();
     f.render_widget(Clear, area);
@@ -214,6 +215,7 @@ pub fn create_create_input_popup<'a>(
     input_text: &'a str,
     is_error: bool,
     error_message: &str,
+    theme: &ThemeColors,
 ) -> Paragraph<'a> {
     let title = if is_error {
         format!("Error: {}", error_message)
@@ -226,9 +228,9 @@ pub fn create_create_input_popup<'a>(
     };
 
     let style = if is_error {
-        OneDarkTheme::error()
+        theme.error
     } else {
-        OneDarkTheme::success()
+        Style::default().fg(theme.mode_create)
     };
 
     Paragraph::new(input_text)
@@ -243,7 +245,7 @@ pub fn create_create_input_popup<'a>(
 }
 
 /// Create the rename input popup widget.
-pub fn create_rename_input_popup<'a>(input_text: &'a str) -> Paragraph<'a> {
+pub fn create_rename_input_popup<'a>(input_text: &'a str, theme: &ThemeColors) -> Paragraph<'a> {
     Paragraph::new(input_text)
         .block(
             Block::default()
@@ -251,12 +253,18 @@ pub fn create_rename_input_popup<'a>(input_text: &'a str) -> Paragraph<'a> {
                 .border_set(border::ROUNDED)
                 .title("Rename"),
         )
-        .style(OneDarkTheme::warning())
+        .style(Style::default().fg(theme.mode_rename))
 }
 
 /// Draw the "Copy to…"/"Move to…" picker over the list: the query (with the cursor at
 /// `cursor`) above the matching folders, each with its full path.
-pub fn render_folder_picker(f: &mut Frame, picker: &FolderPicker, query: &str, cursor: usize) {
+pub fn render_folder_picker(
+    f: &mut Frame,
+    picker: &FolderPicker,
+    query: &str,
+    cursor: usize,
+    theme: &ThemeColors,
+) {
     let area = draw_popup(f.size(), 70, 60);
     let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).split(area);
     let name = Path::new(&picker.source)
@@ -289,7 +297,7 @@ pub fn render_folder_picker(f: &mut Frame, picker: &FolderPicker, query: &str, c
                 Span::raw(result.display_name.clone()),
                 Span::styled(
                     format!("  {}", replace_home_with_tilde(&result.file_path)),
-                    OneDarkTheme::dotfile(),
+                    theme.dotfile,
                 ),
             ]))
         })
@@ -301,25 +309,26 @@ pub fn render_folder_picker(f: &mut Frame, picker: &FolderPicker, query: &str, c
                 .border_set(border::ROUNDED)
                 .title(hint),
         )
-        .highlight_style(OneDarkTheme::selected())
+        .highlight_style(
+            Style::default()
+                .bg(theme.cursor_bg)
+                .fg(theme.bright)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("❯ ");
     let mut list_state = ListState::default();
     list_state.select(picker.selected);
 
     f.render_widget(Clear, area);
-    f.render_widget(input.style(OneDarkTheme::info()), chunks[0]);
-    f.render_stateful_widget(
-        list.style(OneDarkTheme::normal()),
-        chunks[1],
-        &mut list_state,
-    );
+    f.render_widget(input.style(theme.info), chunks[0]);
+    f.render_stateful_widget(list.style(theme.normal), chunks[1], &mut list_state);
     let (x, y) = input_popup_cursor_position(chunks[0], cursor - scroll);
     f.set_cursor(x, y);
 }
 
 /// Draw Get Info centred and sized to its rows: labels in a column, and each value
 /// wrapped beside its label, so long names and paths are never cut off.
-pub fn render_info_popup(f: &mut Frame, rows: &[(&str, String)]) {
+pub fn render_info_popup(f: &mut Frame, rows: &[(&str, String)], theme: &ThemeColors) {
     // "Permissions: ", then the value; borders and padding take 4 columns.
     let label_width = rows
         .iter()
@@ -344,7 +353,7 @@ pub fn render_info_popup(f: &mut Frame, rows: &[(&str, String)]) {
                 String::new()
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("{label:<label_width$}"), OneDarkTheme::info()),
+                Span::styled(format!("{label:<label_width$}"), theme.info),
                 Span::raw(part),
             ]));
         }
@@ -360,7 +369,7 @@ pub fn render_info_popup(f: &mut Frame, rows: &[(&str, String)]) {
                 .padding(Padding::horizontal(1))
                 .title("Get Info (Esc to close)"),
         )
-        .style(OneDarkTheme::normal());
+        .style(theme.normal);
     f.render_widget(Clear, area);
     f.render_widget(popup, area);
 }
@@ -382,7 +391,11 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Create the sort options popup widget.
-pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> Paragraph<'a> {
+pub fn create_sort_options_popup<'a>(
+    sort_by: &SortBy,
+    sort_type: &SortType,
+    theme: &ThemeColors,
+) -> Paragraph<'a> {
     let current_indicator = generate_sort_indicator(sort_by, sort_type);
 
     let lines = vec![
@@ -402,7 +415,7 @@ pub fn create_sort_options_popup<'a>(sort_by: &SortBy, sort_type: &SortType) -> 
                 .border_set(border::ROUNDED)
                 .title("Sort Options"),
         )
-        .style(OneDarkTheme::info())
+        .style(Style::default().fg(theme.mode_sort))
 }
 
 /// The help's sections: each action and what it does. Copy to/Move to appear twice
@@ -511,8 +524,9 @@ pub fn render_keybindings_popup(
     f: &mut Frame,
     keymap: &KeymapSettings,
     scroll: usize,
+    theme: &ThemeColors,
 ) -> (usize, usize) {
-    let lines = keybinding_help_lines(keymap);
+    let lines = keybinding_help_lines(keymap, theme);
     // Borders and padding take 4 columns and 2 rows.
     let width = lines.iter().map(Line::width).max().unwrap_or(0) + 4;
     let area = draw_fixed_height_popup(
@@ -541,13 +555,13 @@ pub fn render_keybindings_popup(
                 .padding(Padding::horizontal(1))
                 .title(title),
         )
-        .style(OneDarkTheme::normal());
+        .style(theme.normal);
     f.render_widget(Clear, area);
     f.render_widget(popup, area);
     (scroll, visible)
 }
 
-fn keybinding_help_lines(keymap: &KeymapSettings) -> Vec<Line<'static>> {
+fn keybinding_help_lines(keymap: &KeymapSettings, theme: &ThemeColors) -> Vec<Line<'static>> {
     let bindings = keymap.resolve();
     // Columns as wide as the widest keys (custom ones can be long) and description.
     let key_width = Action::ALL
@@ -572,16 +586,22 @@ fn keybinding_help_lines(keymap: &KeymapSettings) -> Vec<Line<'static>> {
         if !lines.is_empty() {
             lines.push(Line::from(""));
         }
-        lines.push(Line::styled(format!("── {title} ──"), OneDarkTheme::info()));
+        lines.push(Line::styled(format!("── {title} ──"), theme.info));
         for (action, description) in rows {
             let keys = key_text(&action_key_labels(&bindings, *action));
-            lines.push(keybinding_help_row(&keys, description, widths, *action));
+            lines.push(keybinding_help_row(
+                &keys,
+                description,
+                widths,
+                *action,
+                theme,
+            ));
         }
     }
     lines.push(Line::from(""));
     lines.push(Line::styled(
         "── Fixed keys (can't be rebound) ──",
-        OneDarkTheme::info(),
+        theme.info,
     ));
     for (keys, description) in FIXED_KEYS {
         lines.push(Line::from(format!("  {keys:<key_width$} {description}")));
@@ -637,9 +657,10 @@ fn keybinding_help_row(
     description: &str,
     (key_width, width): (usize, usize),
     action: Action,
+    theme: &ThemeColors,
 ) -> Line<'static> {
     let key_style = if keys == NO_KEY {
-        OneDarkTheme::dotfile()
+        theme.dotfile
     } else {
         Style::default()
     };
@@ -647,7 +668,7 @@ fn keybinding_help_row(
         Span::raw("  "),
         Span::styled(format!("{keys:<key_width$}"), key_style),
         Span::raw(format!(" {description:<width$}  ")),
-        Span::styled(action.name(), OneDarkTheme::dotfile()),
+        Span::styled(action.name(), theme.dotfile),
     ])
 }
 
@@ -737,7 +758,7 @@ pub fn render_palette(
     let mut lines = vec![
         Line::from(vec![
             Span::styled(" › ", blue),
-            Span::styled(query, Style::default().fg(Color::White)),
+            Span::styled(query, Style::default().fg(theme.bright)),
             Span::raw(" ".repeat(inner.saturating_sub(query_width + 3 + count.chars().count()))),
             Span::styled(count, hint),
         ]),
@@ -769,7 +790,7 @@ pub fn render_palette(
             Style::default()
         };
         let text = base.fg(if i == selected {
-            Color::White
+            theme.bright
         } else {
             theme.fg
         });
@@ -799,7 +820,7 @@ pub fn render_palette(
         let mut used = 0;
         let chip = Style::default()
             .bg(theme.gray)
-            .fg(Color::White)
+            .fg(theme.bright)
             .add_modifier(Modifier::BOLD);
         for key in keys {
             if used > 0 {
@@ -954,7 +975,7 @@ mod tests {
     use super::*;
 
     fn help_text(keymap: &KeymapSettings) -> Vec<String> {
-        keybinding_help_lines(keymap)
+        keybinding_help_lines(keymap, &theme())
             .iter()
             .map(|line| {
                 let text: String = line
@@ -1077,7 +1098,7 @@ mod tests {
 
     #[test]
     fn keybinding_help_dims_no_key() {
-        let lines = keybinding_help_lines(&KeymapSettings::default());
+        let lines = keybinding_help_lines(&KeymapSettings::default(), &theme());
         let row = lines
             .iter()
             .find(|line| {
@@ -1087,7 +1108,7 @@ mod tests {
             })
             .unwrap();
         let keys = row.spans.iter().find(|span| span.content.trim() == NO_KEY);
-        assert_eq!(keys.unwrap().style, OneDarkTheme::dotfile());
+        assert_eq!(keys.unwrap().style, theme().dotfile);
     }
 
     #[test]
@@ -1148,7 +1169,9 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let mut view = (0, 0);
             terminal
-                .draw(|f| view = render_keybindings_popup(f, &KeymapSettings::default(), scroll))
+                .draw(|f| {
+                    view = render_keybindings_popup(f, &KeymapSettings::default(), scroll, &theme())
+                })
                 .unwrap();
             let text: String = terminal
                 .backend()
@@ -1159,7 +1182,7 @@ mod tests {
                 .collect();
             (view, text)
         };
-        let total = keybinding_help_lines(&KeymapSettings::default()).len();
+        let total = keybinding_help_lines(&KeymapSettings::default(), &theme()).len();
 
         let ((scroll, visible), top) = screen(80, 24, 0);
         assert_eq!((scroll, visible), (0, 20));
@@ -1343,7 +1366,7 @@ mod tests {
         let query = format!("/{}END", "x".repeat(200));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal
-            .draw(|f| render_folder_picker(f, &picker, &query, query.chars().count()))
+            .draw(|f| render_folder_picker(f, &picker, &query, query.chars().count(), &theme()))
             .unwrap();
 
         let screen: String = terminal
@@ -1364,7 +1387,9 @@ mod tests {
         let name = format!("start-{}-end", "x".repeat(150));
         let rows = [("Name", name), ("Kind", "File".to_string())];
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|f| render_info_popup(f, &rows)).unwrap();
+        terminal
+            .draw(|f| render_info_popup(f, &rows, &theme()))
+            .unwrap();
 
         let screen: String = terminal
             .backend()
@@ -1387,7 +1412,14 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    create_delete_confirmation_popup("notes.txt", false, None, Some(5), false),
+                    create_delete_confirmation_popup(
+                        "notes.txt",
+                        false,
+                        None,
+                        Some(5),
+                        false,
+                        &theme(),
+                    ),
                     draw_delete_popup(frame.size()),
                 );
             })
@@ -1411,7 +1443,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 frame.render_widget(
-                    create_delete_confirmation_popup("notes", true, None, None, true),
+                    create_delete_confirmation_popup("notes", true, None, None, true, &theme()),
                     draw_delete_popup(frame.size()),
                 );
             })
@@ -1440,6 +1472,7 @@ mod tests {
                     targets,
                     |path| Some(EntryInfo::read(Path::new(path))),
                     to_trash,
+                    &theme(),
                 )
             })
             .unwrap();
@@ -1522,7 +1555,7 @@ mod tests {
         ] {
             let area = Rect::new(0, 0, 40, 3);
             let mut buffer = Buffer::empty(area);
-            create_create_input_popup(input, false, "").render(area, &mut buffer);
+            create_create_input_popup(input, false, "", &theme()).render(area, &mut buffer);
             let rows: Vec<String> = buffer
                 .content
                 .chunks(40)

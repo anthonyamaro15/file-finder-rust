@@ -8,7 +8,7 @@ use std::{
 use ratatui::{
     backend::CrosstermBackend,
     prelude::*,
-    style::{Color, Style},
+    style::{Modifier, Style},
     symbols::border,
     widgets::{Block, Borders, Clear, List, Paragraph},
     Terminal,
@@ -30,7 +30,6 @@ use crate::{
         render_folder_picker, render_info_popup, render_keybindings_popup,
         split_popup_area_vertical,
     },
-    theme::OneDarkTheme,
     ui::{create_preview_block, Ui},
     utils::format::local_stamp,
 };
@@ -68,6 +67,9 @@ pub fn draw(
 
     // Draw UI
     terminal.draw(|f| {
+        let theme = &app.theme_colors;
+        // The mode's accent, for the hint line, the search box and a searched pane's border.
+        let mode = Style::default().fg(app.mode_color());
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
@@ -100,7 +102,7 @@ pub fn draw(
                         search_query.to_string().bold(),
                         " Enter to select file (enter)".bold(),
                     ],
-                    OneDarkTheme::normal(),
+                    theme.normal,
                 )
             },
             InputMode::Editing => {
@@ -109,25 +111,25 @@ pub fn draw(
                 } else {
                     "Local Search Mode (Esc to exit)".bold()
                 };
-                (vec![mode_text], OneDarkTheme::search_active())
+                (vec![mode_text], mode)
             },
             InputMode::Visual => (
                 vec!["Visual Select (o swaps the ends, Esc to cancel)".bold()],
-                OneDarkTheme::info(),
+                mode,
             ),
-            InputMode::WatchDelete => (vec!["Permanent Delete".bold()], OneDarkTheme::error()),
-            InputMode::WatchTrash => (vec!["Move to Trash".bold()], OneDarkTheme::error()),
-            InputMode::WatchCreate => (vec!["Create Mode".bold()], OneDarkTheme::success()),
-            InputMode::WatchRename => (vec!["Rename Mode".bold()], OneDarkTheme::warning()),
-            InputMode::WatchSort => (vec!["Sort Mode".bold()], OneDarkTheme::info()),
-            InputMode::WatchInfo => (vec!["Get Info".bold()], OneDarkTheme::info()),
+            InputMode::WatchDelete => (vec!["Permanent Delete".bold()], mode),
+            InputMode::WatchTrash => (vec!["Move to Trash".bold()], mode),
+            InputMode::WatchCreate => (vec!["Create Mode".bold()], mode),
+            InputMode::WatchRename => (vec!["Rename Mode".bold()], mode),
+            InputMode::WatchSort => (vec!["Sort Mode".bold()], mode),
+            InputMode::WatchInfo => (vec!["Get Info".bold()], theme.info),
             InputMode::PickFolder => (
                 vec!["Pick a folder (Enter to confirm, Esc to cancel)".bold()],
-                OneDarkTheme::info(),
+                theme.info,
             ),
             InputMode::Palette => (
                 vec!["Run an action (Enter to run, Esc to close)".bold()],
-                OneDarkTheme::info(),
+                theme.info,
             ),
             InputMode::CacheLoading => {
                 let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
@@ -141,10 +143,10 @@ pub fn draw(
                             " Starting cache build...".bold()
                         },
                     ],
-                    OneDarkTheme::loading(),
+                    theme.warning,
                 )
             },
-            _ => (vec!["Default".bold()], OneDarkTheme::normal()),
+            _ => (vec!["Default".bold()], theme.normal),
         };
         if let Some(progress) = app.active_sizing().progress_text(SystemTime::now()) {
             msg.push(format!("  {progress}").bold());
@@ -169,7 +171,7 @@ pub fn draw(
             .constraints(inner_constraints)
             .split(chunks[2]);
 
-        // Input field with OneDark theming
+        // Input field, in the search's color while one is typed
         let search_title = if global_search {
             "🔍 Global Search"
         } else if app.input_mode == InputMode::Editing {
@@ -182,21 +184,15 @@ pub fn draw(
                     .borders(Borders::ALL)
                     .title(search_title)
                     .style(match app.input_mode {
-                        InputMode::Normal => OneDarkTheme::inactive_border(),
-                        InputMode::Editing => {
-                            if global_search {
-                                OneDarkTheme::global_search()
-                            } else {
-                                OneDarkTheme::local_search()
-                            }
-                        },
-                        _ => OneDarkTheme::disabled(),
+                        InputMode::Normal => theme.inactive_border,
+                        InputMode::Editing => mode.add_modifier(Modifier::BOLD),
+                        _ => theme.disabled,
                     }),
             )
             .style(match app.input_mode {
-                InputMode::Editing => OneDarkTheme::normal(),
-                InputMode::Normal => OneDarkTheme::normal(),
-                _ => OneDarkTheme::disabled(),
+                InputMode::Editing => theme.normal,
+                InputMode::Normal => theme.normal,
+                _ => theme.disabled,
             });
 
         let mut list_title = String::new();
@@ -209,10 +205,10 @@ pub fn draw(
                     // Render the status bar based on style setting
         match settings.status_bar_style {
             crate::config::settings::StatusBarStyle::Classic => {
-                status_bar.render(f, chunks[3], app, &app.theme_colors);
+                status_bar.render(f, chunks[3], app, theme);
             }
             crate::config::settings::StatusBarStyle::Minimal => {
-                status_bar.render_minimal(f, chunks[3], app, &app.theme_colors);
+                status_bar.render_minimal(f, chunks[3], app, theme);
             }
         }
         let text = Text::from(Line::from(msg)).patch_style(style);
@@ -248,7 +244,7 @@ pub fn draw(
             InputMode::CacheLoading => {
                 // Render cache loading screen using helper from render module
                 let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
-                let loading_block = create_cache_loading_screen(directories_processed, &current_directory);
+                let loading_block = create_cache_loading_screen(directories_processed, &current_directory, theme);
                 f.render_widget(loading_block, chunks[2]);
             }
             _ => {
@@ -268,13 +264,13 @@ pub fn draw(
                     image_renderer.clear();
                     if let Some(highlighted_content) = file_reader_content.hightlighted_content.as_ref() {
                         let file_preview_text = highlighted_content.clone()
-                            .block(create_preview_block("Preview", settings))
+                            .block(create_preview_block("Preview", settings, theme))
                             .style(Style::default());
                         f.render_widget(file_preview_text, inner_layout[1]);
                     } else {
                         // Fallback for when highlighted content is not available
                         let preview_text = Paragraph::new(app.preview_file_content.clone())
-                            .block(create_preview_block("Preview", settings))
+                            .block(create_preview_block("Preview", settings, theme))
                             .style(Style::default());
                         f.render_widget(preview_text, inner_layout[1]);
                     }
@@ -284,7 +280,7 @@ pub fn draw(
                         if let Some(ref mut img_state) = image_state_for_render {
                             // Create a block for the image with title showing dimensions
                             let title = format!("Image ({})", image_info);
-                            let block = create_preview_block(&title, settings);
+                            let block = create_preview_block(&title, settings, theme);
 
                             // Calculate inner area for the image
                             let image_area = block.inner(inner_layout[1]);
@@ -301,7 +297,7 @@ pub fn draw(
                     {
                         // Still reading or decoding, which can take seconds for large images
                         let loading = Paragraph::new("Loading image...")
-                            .block(create_preview_block("Image", settings));
+                            .block(create_preview_block("Image", settings, theme));
                         f.render_widget(loading, inner_layout[1]);
                     } else {
                         // Show error message if image failed to load
@@ -309,41 +305,41 @@ pub fn draw(
                             "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP, WebP".to_string()
                         });
                         let error_widget = Paragraph::new(error_msg)
-                            .block(create_preview_block("Image - Error", settings))
-                            .style(Style::default().fg(Color::Yellow));
+                            .block(create_preview_block("Image - Error", settings, theme))
+                            .style(theme.warning);
                         f.render_widget(error_widget, inner_layout[1]);
                     }
                 }
                 FileType::ZIP => {
-                    let block = create_preview_block("ZIP Archive", settings);
+                    let block = create_preview_block("ZIP Archive", settings, theme);
                     let zip_list_content = List::new(file_reader_content.curr_zip_content.clone())
                         .block(block)
-                        .style(Style::default().fg(Color::Rgb(92, 99, 112)));
+                        .style(Style::default().fg(theme.muted));
                     f.render_widget(zip_list_content, inner_layout[1]);
                 }
                 FileType::Archive => {
                     let archive_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("Archive", settings))
+                        .block(create_preview_block("Archive", settings, theme))
                         .style(Style::default());
                     f.render_widget(archive_info, inner_layout[1]);
                 }
                 FileType::CSV => {
                     let csv_content = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("CSV Data", settings))
-                        .style(Style::default().fg(Color::Rgb(92, 99, 112)));
+                        .block(create_preview_block("CSV Data", settings, theme))
+                        .style(Style::default().fg(theme.muted));
                     f.render_widget(csv_content, inner_layout[1]);
                 }
                 FileType::PDF => {
                     let pdf_content = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("PDF", settings))
-                        .style(Style::default().fg(Color::White))
+                        .block(create_preview_block("PDF", settings, theme))
+                        .style(Style::default().fg(theme.bright))
                         .wrap(ratatui::widgets::Wrap { trim: false });
                     f.render_widget(pdf_content, inner_layout[1]);
                 }
                 FileType::Binary => {
                     let binary_info = Paragraph::new(app.preview_file_content.clone())
-                        .block(create_preview_block("Hex View", settings))
-                        .style(Style::default().fg(Color::White));
+                        .block(create_preview_block("Hex View", settings, theme))
+                        .style(Style::default().fg(theme.bright));
                     f.render_widget(binary_info, inner_layout[1]);
                 }
                 _ => {
@@ -379,15 +375,11 @@ pub fn draw(
             // Create block based on settings
             let block = if settings.show_borders {
                 let right_border_style = if app.searching_right_pane() {
-                    if right_pane.global_search_mode {
-                        OneDarkTheme::global_search()
-                    } else {
-                        OneDarkTheme::local_search()
-                    }
+                    mode.add_modifier(Modifier::BOLD)
                 } else if is_right_active {
-                    OneDarkTheme::active_border()
+                    theme.active_border
                 } else {
-                    OneDarkTheme::inactive_border()
+                    theme.inactive_border
                 };
                 Block::default()
                     .borders(Borders::ALL)
@@ -397,30 +389,21 @@ pub fn draw(
             } else {
                 // Borderless mode - use title style for active indicator
                 let title_style = if is_right_active {
-                    OneDarkTheme::active_title()
+                    theme.active_border
                 } else {
-                    OneDarkTheme::inactive_title()
+                    theme.inactive_border
                 };
                 Block::default()
                     .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(Color::Rgb(62, 68, 81)))
+                    .border_style(Style::default().fg(theme.dim))
                     .title(right_title)
                     .title_style(title_style)
             };
 
-            // As wide as the rows beside the highlight symbol.
-            let width = block.inner(inner_layout[1]).width.saturating_sub(1);
+            let width = block.inner(inner_layout[1]).width;
             let right_items = widgets_ui.right_pane_items(app, settings, width.into(), today);
-            let right_items = if is_right_active {
-                crate::ui::style_visual_rows(right_items, app)
-            } else {
-                right_items
-            };
 
-            let right_list = List::new(right_items)
-                .block(block)
-                .highlight_style(OneDarkTheme::selected())
-                .highlight_symbol(if settings.show_borders { "❯" } else { " " });
+            let right_list = List::new(right_items).block(block).style(theme.normal);
 
             f.render_stateful_widget(right_list, inner_layout[1], &mut right_pane_list_state);
         }
@@ -432,6 +415,7 @@ pub fn draw(
                 &app.batch_targets,
                 |path| app.listed_info(path),
                 app.input_mode == InputMode::WatchTrash,
+                theme,
             );
         } else if app.render_popup {
             let popup = create_delete_confirmation_popup(
@@ -440,6 +424,7 @@ pub fn draw(
                 app.delete_target_file_count,
                 app.delete_target_total_size,
                 app.input_mode == InputMode::WatchTrash,
+                theme,
             );
             let area = draw_delete_popup(f.size());
             f.render_widget(Clear, area);
@@ -457,48 +442,49 @@ pub fn draw(
                     &app.create_edit_file_name,
                     app.is_create_edit_error,
                     &app.error_message,
+                    theme,
                 );
                 f.render_widget(Clear, input_popup_area);
                 f.render_widget(create_input_block, input_popup_area);
             }
             InputMode::WatchRename => {
-                let rename_input_block = create_rename_input_popup(&app.create_edit_file_name);
+                let rename_input_block = create_rename_input_popup(&app.create_edit_file_name, theme);
                 f.render_widget(Clear, input_popup_area);
                 f.render_widget(rename_input_block, input_popup_area);
             }
             InputMode::WatchSort => {
-                let sort_popup = create_sort_options_popup(&app.sort_by, &app.sort_type);
+                let sort_popup = create_sort_options_popup(&app.sort_by, &app.sort_type, theme);
                 f.render_widget(Clear, sort_options_chunks[0]);
                 f.render_widget(sort_popup, sort_options_chunks[0]);
             }
             InputMode::WatchKeyBinding => {
                 (app.help_scroll, app.help_page) =
-                    render_keybindings_popup(f, &settings.keymap, app.help_scroll);
+                    render_keybindings_popup(f, &settings.keymap, app.help_scroll, theme);
             }
             InputMode::PickFolder => {
                 if let Some(picker) = &app.folder_picker {
-                    render_folder_picker(f, picker, &app.create_edit_file_name, app.char_index);
+                    render_folder_picker(f, picker, &app.create_edit_file_name, app.char_index, theme);
                 }
             }
             InputMode::WatchInfo => {
                 if let Some(info) = &app.info {
-                    render_info_popup(f, &info.rows);
+                    render_info_popup(f, &info.rows, theme);
                 }
             }
             InputMode::Palette => {
                 app.palette.scroll =
-                    render_palette(f, &app.palette, &settings.keymap, &app.theme_colors);
+                    render_palette(f, &app.palette, &settings.keymap, theme);
             }
             InputMode::Normal | InputMode::Visual => {
                 if let Some((title, keys)) = keymap_runtime.which_key(Instant::now()) {
-                    render_which_key(f, &title, &keys, &app.theme_colors);
+                    render_which_key(f, &title, &keys, theme);
                 }
             }
             _ => {}
         }
         // Render error notification overlay if there's an active error
         if status_bar.has_error() {
-            status_bar.render_error_notification(f, f.size());
+            status_bar.render_error_notification(f, f.size(), theme);
         }
     })?;
 

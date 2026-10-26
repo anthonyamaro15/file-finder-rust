@@ -4,8 +4,6 @@ use ratatui::text::Span;
 use crate::config::ThemeColors;
 use crate::sizes::{total_text, RowSize};
 
-/// Very muted gray for sizes, dates and locations (yazi-style).
-pub const SIZE_COLOR: Color = Color::Rgb(92, 99, 112);
 /// Columns of a size bar.
 pub const BAR_WIDTH: usize = 10;
 /// Columns of a size, wide enough for "≥ 1023.9 GB".
@@ -41,7 +39,7 @@ pub fn bar(bytes: u64, largest: u64) -> String {
 }
 
 /// A row's size column: the bar against `largest` (when `with_bar`), then the size,
-/// right-aligned.
+/// right-aligned and muted.
 pub fn size_column(
     size: RowSize,
     largest: u64,
@@ -55,14 +53,14 @@ pub fn size_column(
     };
     let text = Span::styled(
         format!("{text:>SIZE_WIDTH$}"),
-        Style::default().fg(SIZE_COLOR),
+        Style::default().fg(theme.muted),
     );
     if !with_bar {
         return vec![text];
     }
     let (bar_text, color) = match size {
         RowSize::Known(total) => (bar(total.bytes, largest), bar_color(total.bytes, theme)),
-        _ => (" ".repeat(BAR_WIDTH), SIZE_COLOR),
+        _ => (" ".repeat(BAR_WIDTH), theme.muted),
     };
     vec![
         Span::styled(bar_text, Style::default().fg(color)),

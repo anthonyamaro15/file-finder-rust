@@ -315,7 +315,32 @@ Configure in `~/.config/ff/settings.toml`:
 syntax_theme = "base16-ocean.dark"
 ```
 
-Colors are used for file types, syntax highlighting, and modal dialogs (🟢 create, 🔴 delete, 🟡 rename, 🔵 info).
+### Theme Colors
+
+A theme file (`~/.config/ff/themes/<name>.toml`) needs only the colors you change. Each
+mode has one color under `[statusbar]`, for its status bar badge, the cursor's `▌` mark,
+its prompt in the hint line and its popup or search box:
+
+| Key           | Mode                                       | Default              |
+| ------------- | ------------------------------------------ | -------------------- |
+| `mode_normal` | Normal                                     | blue `#4fa6ed`       |
+| `mode_search` | Search this folder                         | green `#8ebd6b`      |
+| `mode_global` | Search from the root                       | yellow `#e2b86b`     |
+| `mode_visual` | Visual select (also tints the selection)   | purple `#bf68d9`     |
+| `mode_delete` | Trash and permanent delete                 | red `#e55561`        |
+| `mode_create` | Create                                     | cyan `#48b0bd`       |
+| `mode_rename` | Rename                                     | orange `#cc9057`     |
+| `mode_sort`   | Sort                                       | foreground `#a0a8b7` |
+
+Search matches are underlined in the search's color. The cursor's band and the
+selection's are tints of `[palette] bg`, toward `fg` and `mode_visual`. In `[palette]`,
+`bright` colors the cursor's name, `muted` sizes and dates, `gray` dotfiles and `dim` the
+pane separators. `[ui] active_border` and `inactive_border` color pane borders and
+titles, `[statusbar] background` and `foreground` the status bar, and `[markdown]` the
+markdown preview. Code previews use `syntax_theme` instead of `[syntax]`.
+
+Older files' `[ui] selected_bg`, `selected_fg`, `search_match_bg`, `search_match_fg` and
+`[statusbar] mode_insert`, `mode_command` are ignored.
 
 ### Keybindings
 

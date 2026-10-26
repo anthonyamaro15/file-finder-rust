@@ -1,7 +1,6 @@
 //! Active TOML-backed theme configuration for ff.
 //!
-//! Configured runtime colors are loaded here and converted into `ThemeColors`.
-//! Widget-local static style helpers live in `src/ui/theme.rs`.
+//! Every color on screen is loaded here and converted into `ThemeColors`.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -44,18 +43,21 @@ pub struct Palette {
     pub bg_highlight: String,
     pub selection: String,
     pub black: String,
+    /// The cursor's name.
+    pub bright: String,
+    /// Sizes, dates, locations and quiet titles.
+    pub muted: String,
+    /// Separators between panes.
+    pub dim: String,
 }
 
-/// UI element colors
+/// UI element colors. Older files' `selected_*` and `search_match_*` are ignored: the
+/// cursor and search matches take the mode colors.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct UiTheme {
     pub active_border: String,
     pub inactive_border: String,
-    pub selected_bg: String,
-    pub selected_fg: String,
-    pub search_match_bg: String,
-    pub search_match_fg: String,
 }
 
 /// Syntax highlighting colors (for code preview)
@@ -139,16 +141,23 @@ pub struct MarkdownTheme {
     pub horizontal_rule: String,
 }
 
-/// Status bar colors
+/// Status bar colors, and one color per mode for its badge, cursor mark, prompt and
+/// popup. Older files' `mode_insert` and `mode_command` are ignored.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct StatusBarTheme {
     pub background: String,
     pub foreground: String,
     pub mode_normal: String,
-    pub mode_insert: String,
+    pub mode_search: String,
+    /// Searching from the root.
+    pub mode_global: String,
     pub mode_visual: String,
-    pub mode_command: String,
+    /// Trash and permanent delete.
+    pub mode_delete: String,
+    pub mode_create: String,
+    pub mode_rename: String,
+    pub mode_sort: String,
 }
 
 // Default implementations
@@ -172,6 +181,9 @@ impl Default for Palette {
             bg_highlight: "#30363f".to_string(),
             selection: "#323641".to_string(),
             black: "#0e1013".to_string(),
+            bright: "#e3e7ee".to_string(),
+            muted: "#5c6370".to_string(),
+            dim: "#3e4451".to_string(),
         }
     }
 }
@@ -181,10 +193,6 @@ impl Default for UiTheme {
         Self {
             active_border: "#4fa6ed".to_string(),   // blue
             inactive_border: "#535965".to_string(), // gray
-            selected_bg: "#4fa6ed".to_string(),     // blue
-            selected_fg: "#0e1013".to_string(),     // black
-            search_match_bg: "#e2b86b".to_string(), // yellow
-            search_match_fg: "#0e1013".to_string(), // black
         }
     }
 }
@@ -276,12 +284,16 @@ impl Default for MarkdownTheme {
 impl Default for StatusBarTheme {
     fn default() -> Self {
         Self {
-            background: "#181b20".to_string(),   // bg_dark
-            foreground: "#a0a8b7".to_string(),   // fg
-            mode_normal: "#4fa6ed".to_string(),  // blue
-            mode_insert: "#8ebd6b".to_string(),  // green
-            mode_visual: "#bf68d9".to_string(),  // purple
-            mode_command: "#e2b86b".to_string(), // yellow
+            background: "#1e2128".to_string(),
+            foreground: "#a0a8b7".to_string(),  // fg
+            mode_normal: "#4fa6ed".to_string(), // blue
+            mode_search: "#8ebd6b".to_string(), // green
+            mode_global: "#e2b86b".to_string(), // yellow
+            mode_visual: "#bf68d9".to_string(), // purple
+            mode_delete: "#e55561".to_string(), // red
+            mode_create: "#48b0bd".to_string(), // cyan
+            mode_rename: "#cc9057".to_string(), // orange
+            mode_sort: "#a0a8b7".to_string(),   // fg
         }
     }
 }
@@ -306,21 +318,31 @@ pub struct ThemeColors {
     pub bg_highlight: Color,
     pub selection: Color,
     pub black: Color,
+    pub bright: Color,
+    pub muted: Color,
+    pub dim: Color,
 
     // UI styles
     pub active_border: Style,
     pub inactive_border: Style,
-    pub selected: Style,
     pub normal: Style,
     pub disabled: Style,
-    pub search_highlight: Style,
     pub info: Style,
     pub success: Style,
     pub warning: Style,
     pub error: Style,
-    pub muted: Style,
-    pub global_search: Style,
-    pub local_search: Style,
+    /// Names starting with '.'.
+    pub dotfile: Style,
+
+    // Row bands, tinted from the background
+    /// The cursor's, in the pane keys go to.
+    pub cursor_bg: Color,
+    /// The cursor's in the other pane.
+    pub inactive_cursor_bg: Color,
+    /// The visual selection's.
+    pub visual_bg: Color,
+    /// The cursor's inside the visual selection.
+    pub visual_cursor_bg: Color,
 
     // Icon colors
     pub icon_directory: Color,
@@ -384,10 +406,16 @@ pub struct ThemeColors {
     // Status bar colors
     pub statusbar_bg: Color,
     pub statusbar_fg: Color,
-    pub statusbar_mode_normal: Color,
-    pub statusbar_mode_insert: Color,
-    pub statusbar_mode_visual: Color,
-    pub statusbar_mode_command: Color,
+
+    // Mode colors
+    pub mode_normal: Color,
+    pub mode_search: Color,
+    pub mode_global: Color,
+    pub mode_visual: Color,
+    pub mode_delete: Color,
+    pub mode_create: Color,
+    pub mode_rename: Color,
+    pub mode_sort: Color,
 }
 
 impl Theme {
@@ -479,14 +507,11 @@ impl Theme {
         let bg_highlight = Self::parse_color(&p.bg_highlight)?;
         let selection = Self::parse_color(&p.selection)?;
         let black = Self::parse_color(&p.black)?;
+        let mode_visual = Self::parse_color(&sb.mode_visual)?;
 
         // Parse UI colors
         let active_border_color = Self::parse_color(&ui.active_border)?;
         let inactive_border_color = Self::parse_color(&ui.inactive_border)?;
-        let selected_bg = Self::parse_color(&ui.selected_bg)?;
-        let selected_fg = Self::parse_color(&ui.selected_fg)?;
-        let search_match_bg = Self::parse_color(&ui.search_match_bg)?;
-        let search_match_fg = Self::parse_color(&ui.search_match_fg)?;
 
         Ok(ThemeColors {
             // Palette
@@ -506,29 +531,29 @@ impl Theme {
             bg_highlight,
             selection,
             black,
+            bright: Self::parse_color(&p.bright)?,
+            muted: Self::parse_color(&p.muted)?,
+            dim: Self::parse_color(&p.dim)?,
 
             // UI styles
             active_border: Style::default()
                 .fg(active_border_color)
                 .add_modifier(Modifier::BOLD),
             inactive_border: Style::default().fg(inactive_border_color),
-            selected: Style::default()
-                .fg(selected_fg)
-                .bg(selected_bg)
-                .add_modifier(Modifier::BOLD),
             normal: Style::default().fg(fg),
             disabled: Style::default().fg(gray),
-            search_highlight: Style::default()
-                .fg(search_match_fg)
-                .bg(search_match_bg)
-                .add_modifier(Modifier::BOLD),
             info: Style::default().fg(cyan),
             success: Style::default().fg(green),
             warning: Style::default().fg(yellow),
             error: Style::default().fg(red),
-            muted: Style::default().fg(gray),
-            global_search: Style::default().fg(yellow).add_modifier(Modifier::BOLD),
-            local_search: Style::default().fg(green).add_modifier(Modifier::BOLD),
+            dotfile: Style::default().fg(gray),
+
+            // Row bands: a little of the foreground or the visual color over the
+            // background, so a theme changes them with those colors.
+            cursor_bg: blend(bg, fg, 0.1),
+            inactive_cursor_bg: blend(bg, fg, 0.04),
+            visual_bg: blend(bg, mode_visual, 0.1),
+            visual_cursor_bg: blend(bg, mode_visual, 0.22),
 
             // Icon colors
             icon_directory: Self::parse_color(&icons.directory)?,
@@ -592,10 +617,16 @@ impl Theme {
             // Status bar colors
             statusbar_bg: Self::parse_color(&sb.background)?,
             statusbar_fg: Self::parse_color(&sb.foreground)?,
-            statusbar_mode_normal: Self::parse_color(&sb.mode_normal)?,
-            statusbar_mode_insert: Self::parse_color(&sb.mode_insert)?,
-            statusbar_mode_visual: Self::parse_color(&sb.mode_visual)?,
-            statusbar_mode_command: Self::parse_color(&sb.mode_command)?,
+
+            // Mode colors
+            mode_normal: Self::parse_color(&sb.mode_normal)?,
+            mode_search: Self::parse_color(&sb.mode_search)?,
+            mode_global: Self::parse_color(&sb.mode_global)?,
+            mode_visual,
+            mode_delete: Self::parse_color(&sb.mode_delete)?,
+            mode_create: Self::parse_color(&sb.mode_create)?,
+            mode_rename: Self::parse_color(&sb.mode_rename)?,
+            mode_sort: Self::parse_color(&sb.mode_sort)?,
         })
     }
 
@@ -625,6 +656,17 @@ impl Theme {
     }
 }
 
+/// `over` mixed into `base` by `amount`, from 0 (all `base`) to 1 (all `over`).
+fn blend(base: Color, over: Color, amount: f32) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(r2, g2, b2)) = (base, over) else {
+        return base;
+    };
+    let mix = |from: u8, to: u8| {
+        (f32::from(from) + (f32::from(to) - f32::from(from)) * amount).round() as u8
+    };
+    Color::Rgb(mix(r, r2), mix(g, g2), mix(b, b2))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,7 +687,80 @@ mod tests {
         assert_eq!(theme.palette.blue, defaults.palette.blue);
         assert_eq!(theme.icons.rust, "#00ff00");
         assert_eq!(theme.icons.directory, defaults.icons.directory);
-        assert_eq!(theme.ui.selected_bg, defaults.ui.selected_bg);
+        assert_eq!(theme.ui.active_border, defaults.ui.active_border);
         assert!(theme.to_colors().is_ok());
+    }
+
+    #[test]
+    fn each_mode_defaults_to_its_palette_color() {
+        let colors = Theme::default().to_colors().unwrap();
+        let modes = [
+            (colors.mode_normal, colors.blue),
+            (colors.mode_search, colors.green),
+            (colors.mode_global, colors.yellow),
+            (colors.mode_visual, colors.purple),
+            (colors.mode_delete, colors.red),
+            (colors.mode_create, colors.cyan),
+            (colors.mode_rename, colors.orange),
+            (colors.mode_sort, colors.fg),
+        ];
+        for (i, (mode, color)) in modes.into_iter().enumerate() {
+            assert_eq!(mode, color, "mode {i}");
+        }
+    }
+
+    #[test]
+    fn a_theme_file_overriding_one_mode_changes_only_that_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mine.toml");
+        fs::write(&path, "[statusbar]\nmode_rename = \"#ff00ff\"\n").unwrap();
+
+        let colors = Theme::load_from_file(&path).unwrap().to_colors().unwrap();
+        let defaults = Theme::default().to_colors().unwrap();
+        assert_eq!(colors.mode_rename, Color::Rgb(255, 0, 255));
+        let others = |c: &ThemeColors| {
+            [
+                c.mode_normal,
+                c.mode_search,
+                c.mode_global,
+                c.mode_visual,
+                c.mode_delete,
+                c.mode_create,
+                c.mode_sort,
+                c.visual_bg,
+                c.cursor_bg,
+            ]
+        };
+        assert_eq!(others(&colors), others(&defaults));
+    }
+
+    #[test]
+    fn older_theme_files_with_retired_keys_still_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.toml");
+        fs::write(
+            &path,
+            "[ui]\nselected_bg = \"#4fa6ed\"\nselected_fg = \"#0e1013\"\n\
+             search_match_bg = \"#e2b86b\"\nsearch_match_fg = \"#0e1013\"\n\n\
+             [statusbar]\nmode_normal = \"#4fa6ed\"\nmode_insert = \"#8ebd6b\"\n\
+             mode_visual = \"#bf68d9\"\nmode_command = \"#e2b86b\"\n",
+        )
+        .unwrap();
+
+        let colors = Theme::load_from_file(&path).unwrap().to_colors().unwrap();
+        let defaults = Theme::default().to_colors().unwrap();
+        assert_eq!(colors.mode_search, defaults.mode_search);
+        assert_eq!(colors.mode_global, defaults.mode_global);
+        assert_eq!(colors.cursor_bg, defaults.cursor_bg);
+    }
+
+    #[test]
+    fn bands_are_tinted_from_the_background() {
+        let colors = Theme::default().to_colors().unwrap();
+        // Near the design's #2a2f39, #20242b, #2b2232 and #3f2d4c.
+        assert_eq!(colors.cursor_bg, Color::Rgb(0x2c, 0x30, 0x37));
+        assert_eq!(colors.inactive_cursor_bg, Color::Rgb(0x24, 0x28, 0x2f));
+        assert_eq!(colors.visual_bg, Color::Rgb(0x2f, 0x2a, 0x3b));
+        assert_eq!(colors.visual_cursor_bg, Color::Rgb(0x42, 0x32, 0x50));
     }
 }

@@ -12,8 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::{style::Color, widgets::Paragraph};
 
-// Use centralized theme colors for markdown
-use crate::ui::theme::markdown as markdown_colors;
+use crate::config::ThemeColors;
 use crate::utils::files::{EntryInfo, Listing};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
@@ -326,8 +325,8 @@ pub fn load_image_async(
     let _ = sender.send(ImageLoadResult { path, result });
 }
 
-/// Render markdown content to styled ratatui Lines
-pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
+/// Render markdown content to styled ratatui Lines, in the theme's markdown colors
+pub fn render_markdown(content: &str, theme: &ThemeColors) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
 
@@ -340,18 +339,18 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
                 if !code_block_lang.is_empty() {
                     lines.push(Line::from(Span::styled(
                         format!("─── {} ───", code_block_lang),
-                        Style::default().fg(markdown_colors::CODE),
+                        Style::default().fg(theme.md_code),
                     )));
                 } else {
                     lines.push(Line::from(Span::styled(
                         "───────────",
-                        Style::default().fg(markdown_colors::CODE),
+                        Style::default().fg(theme.md_code),
                     )));
                 }
             } else {
                 lines.push(Line::from(Span::styled(
                     "───────────",
-                    Style::default().fg(markdown_colors::CODE),
+                    Style::default().fg(theme.md_code),
                 )));
             }
             continue;
@@ -361,9 +360,7 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
             // Code block content - monospace style with background hint
             lines.push(Line::from(Span::styled(
                 format!("  {}", line),
-                Style::default()
-                    .fg(markdown_colors::CODE)
-                    .bg(markdown_colors::CODE_BG),
+                Style::default().fg(theme.md_code).bg(theme.md_code_bg),
             )));
             continue;
         }
@@ -373,28 +370,28 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(
                 line.trim_start_matches('#').trim().to_string(),
                 Style::default()
-                    .fg(markdown_colors::HEADER_4)
+                    .fg(theme.md_header_4)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if line.starts_with("### ") {
             lines.push(Line::from(Span::styled(
                 line.trim_start_matches('#').trim().to_string(),
                 Style::default()
-                    .fg(markdown_colors::HEADER_3)
+                    .fg(theme.md_header_3)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if line.starts_with("## ") {
             lines.push(Line::from(Span::styled(
                 line.trim_start_matches('#').trim().to_string(),
                 Style::default()
-                    .fg(markdown_colors::HEADER_2)
+                    .fg(theme.md_header_2)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if line.starts_with("# ") {
             lines.push(Line::from(Span::styled(
                 line.trim_start_matches('#').trim().to_string(),
                 Style::default()
-                    .fg(markdown_colors::HEADER_1)
+                    .fg(theme.md_header_1)
                     .add_modifier(Modifier::BOLD),
             )));
         }
@@ -402,18 +399,18 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
         else if line.trim() == "---" || line.trim() == "***" || line.trim() == "___" {
             lines.push(Line::from(Span::styled(
                 "────────────────────────────────────────",
-                Style::default().fg(markdown_colors::HORIZONTAL_RULE),
+                Style::default().fg(theme.md_horizontal_rule),
             )));
         }
         // Blockquote
         else if line.starts_with("> ") {
             let quote_content = line.trim_start_matches('>').trim();
             lines.push(Line::from(vec![
-                Span::styled("│ ", Style::default().fg(markdown_colors::BLOCKQUOTE)),
+                Span::styled("│ ", Style::default().fg(theme.md_blockquote)),
                 Span::styled(
                     quote_content.to_string(),
                     Style::default()
-                        .fg(markdown_colors::BLOCKQUOTE)
+                        .fg(theme.md_blockquote)
                         .add_modifier(Modifier::ITALIC),
                 ),
             ]));
@@ -428,7 +425,7 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
             let indent_str = " ".repeat(indent);
             lines.push(Line::from(vec![
                 Span::raw(indent_str),
-                Span::styled("• ", Style::default().fg(markdown_colors::LIST_MARKER)),
+                Span::styled("• ", Style::default().fg(theme.md_list_marker)),
                 Span::raw(render_inline_markdown(content)),
             ]));
         }
@@ -440,7 +437,7 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
                 Span::raw(indent_str),
                 Span::styled(
                     format!("{}. ", rest.0),
-                    Style::default().fg(markdown_colors::LIST_MARKER),
+                    Style::default().fg(theme.md_list_marker),
                 ),
                 Span::raw(render_inline_markdown(rest.1)),
             ]));
@@ -454,17 +451,17 @@ pub fn render_markdown(content: &str) -> Vec<Line<'static>> {
             {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
-                    Style::default().fg(markdown_colors::TABLE_BORDER),
+                    Style::default().fg(theme.md_table_border),
                 )));
             } else {
                 // Regular table row - style the pipes
-                let styled_line = render_table_row(line);
+                let styled_line = render_table_row(line, theme);
                 lines.push(styled_line);
             }
         }
         // Regular text with inline formatting
         else {
-            lines.push(render_inline_markdown_line(line));
+            lines.push(render_inline_markdown_line(line, theme));
         }
     }
 
@@ -490,13 +487,13 @@ fn parse_ordered_list_item(line: &str) -> Option<(String, &str)> {
 }
 
 /// Render a table row with styled pipes
-fn render_table_row(line: &str) -> Line<'static> {
+fn render_table_row(line: &str, theme: &ThemeColors) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     for part in line.split('|') {
         if !spans.is_empty() {
             spans.push(Span::styled(
                 "│",
-                Style::default().fg(markdown_colors::TABLE_BORDER),
+                Style::default().fg(theme.md_table_border),
             ));
         }
         spans.push(Span::raw(part.to_string()));
@@ -513,7 +510,7 @@ fn render_inline_markdown(text: &str) -> String {
 }
 
 /// Render a line with inline markdown formatting
-fn render_inline_markdown_line(line: &str) -> Line<'static> {
+fn render_inline_markdown_line(line: &str, theme: &ThemeColors) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut current_text = String::new();
     let chars: Vec<char> = line.chars().collect();
@@ -531,9 +528,7 @@ fn render_inline_markdown_line(line: &str) -> Line<'static> {
                 let code: String = chars[i + 1..end].iter().collect();
                 spans.push(Span::styled(
                     code,
-                    Style::default()
-                        .fg(markdown_colors::CODE)
-                        .bg(markdown_colors::CODE_BG),
+                    Style::default().fg(theme.md_code).bg(theme.md_code_bg),
                 ));
                 i = end + 1;
                 continue;
@@ -551,7 +546,7 @@ fn render_inline_markdown_line(line: &str) -> Line<'static> {
                 spans.push(Span::styled(
                     bold,
                     Style::default()
-                        .fg(markdown_colors::BOLD)
+                        .fg(theme.md_bold)
                         .add_modifier(Modifier::BOLD),
                 ));
                 i = end + 2;
@@ -577,7 +572,7 @@ fn render_inline_markdown_line(line: &str) -> Line<'static> {
                 spans.push(Span::styled(
                     italic,
                     Style::default()
-                        .fg(markdown_colors::ITALIC)
+                        .fg(theme.md_italic)
                         .add_modifier(Modifier::ITALIC),
                 ));
                 i = end + 1;
@@ -595,12 +590,12 @@ fn render_inline_markdown_line(line: &str) -> Line<'static> {
                 spans.push(Span::styled(
                     text,
                     Style::default()
-                        .fg(markdown_colors::LINK)
+                        .fg(theme.md_link)
                         .add_modifier(Modifier::UNDERLINED),
                 ));
                 spans.push(Span::styled(
                     format!(" ({})", url),
-                    Style::default().fg(markdown_colors::LINK_URL),
+                    Style::default().fg(theme.md_link_url),
                 ));
                 i = end;
                 continue;
@@ -978,7 +973,7 @@ impl FileContent<'_> {
     }
 
     /// Render markdown content with formatting (headers, bold, italic, code, links, etc.)
-    pub fn render_markdown_content(&mut self, content: &str, path: &str) {
+    pub fn render_markdown_content(&mut self, content: &str, path: &str, theme: &ThemeColors) {
         self.curr_selected_path = path.to_string();
 
         // Check cache first
@@ -990,7 +985,7 @@ impl FileContent<'_> {
         }
 
         // Render markdown
-        let lines = render_markdown(content);
+        let lines = render_markdown(content, theme);
 
         // Store in cache
         self.preview_cache.insert(path.to_string(), lines.clone());

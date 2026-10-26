@@ -1,51 +1,15 @@
 //! Preview panel rendering utilities.
 
-use ratatui::{
-    style::{Color, Style},
-    widgets::{Block, Borders, Paragraph},
-};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
-/// Create a file preview paragraph widget with highlighted content.
-pub fn create_file_preview<'a>(content: &'a str) -> Paragraph<'a> {
-    Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title("File Preview"))
-        .style(Style::default())
-}
-
-/// Create an image preview info widget.
-pub fn create_image_preview<'a>(image_info: &'a str, has_image: bool) -> Paragraph<'a> {
-    if has_image {
-        Paragraph::new(image_info)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Image Preview"),
-            )
-            .style(Style::default().fg(Color::Green))
-    } else {
-        let display_text = if image_info.is_empty() {
-            "Unable to load image preview\n\nPossible reasons:\n• Unsupported image format\n• Corrupted image file\n• Insufficient permissions\n\nSupported formats: PNG, JPEG, GIF, BMP"
-        } else {
-            image_info
-        };
-
-        Paragraph::new(display_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Image Preview - Error"),
-            )
-            .style(Style::default().fg(Color::Yellow))
-    }
-}
+use crate::config::ThemeColors;
 
 /// Create the cache loading screen widget.
 pub fn create_cache_loading_screen<'a>(
     directories_processed: usize,
     current_directory: &str,
+    theme: &ThemeColors,
 ) -> Paragraph<'a> {
-    use crate::theme::OneDarkTheme;
-
     let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinner_index = (directories_processed / 10) % spinner_chars.len();
     let spinner = spinner_chars[spinner_index];
@@ -72,9 +36,9 @@ pub fn create_cache_loading_screen<'a>(
             Block::default()
                 .borders(Borders::ALL)
                 .title("⚡ Directory Cache Loading")
-                .style(OneDarkTheme::loading()),
+                .style(theme.warning),
         )
-        .style(OneDarkTheme::normal())
+        .style(theme.normal)
         .alignment(ratatui::layout::Alignment::Center)
 }
 
@@ -84,45 +48,15 @@ mod tests {
     use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
     #[test]
-    fn test_create_file_preview() {
-        let area = Rect::new(0, 0, 40, 4);
-        let mut buffer = Buffer::empty(area);
-        create_file_preview("test content").render(area, &mut buffer);
-        let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(rendered.contains("File Preview"));
-        assert!(rendered.contains("test content"));
-    }
-
-    #[test]
-    fn test_create_image_preview_with_image() {
-        let area = Rect::new(0, 0, 40, 4);
-        let mut buffer = Buffer::empty(area);
-        create_image_preview("100x100 PNG", true).render(area, &mut buffer);
-        let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(rendered.contains("Image Preview"));
-        assert!(rendered.contains("100x100 PNG"));
-        assert_eq!(buffer.get(1, 1).fg, Color::Green);
-    }
-
-    #[test]
-    fn test_create_image_preview_error() {
-        let area = Rect::new(0, 0, 80, 12);
-        let mut buffer = Buffer::empty(area);
-        create_image_preview("", false).render(area, &mut buffer);
-        let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
-        assert!(rendered.contains("Image Preview - Error"));
-        assert!(rendered.contains("Unable to load image preview"));
-        assert_eq!(buffer.get(1, 1).fg, Color::Yellow);
-    }
-
-    #[test]
     fn test_create_cache_loading_screen() {
+        let theme = crate::config::Theme::default().to_colors().unwrap();
         let area = Rect::new(0, 0, 80, 10);
         let mut buffer = Buffer::empty(area);
-        create_cache_loading_screen(100, "/some/path").render(area, &mut buffer);
+        create_cache_loading_screen(100, "/some/path", &theme).render(area, &mut buffer);
         let rendered: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
         assert!(rendered.contains("Directory Cache Loading"));
         assert!(rendered.contains("Directories processed: 100"));
         assert!(rendered.contains("Current: /some/path"));
+        assert_eq!(buffer.get(0, 0).fg, theme.yellow);
     }
 }

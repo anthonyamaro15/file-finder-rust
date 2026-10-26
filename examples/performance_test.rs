@@ -1,7 +1,14 @@
 use file_finder::highlight::highlight_search_term;
-use file_finder::ui::theme::OneDarkTheme;
-use ratatui::{text::Line, widgets::ListItem};
+use ratatui::{
+    style::{Modifier, Style},
+    text::Line,
+    widgets::ListItem,
+};
 use std::time::Instant;
+
+/// A name's plain and matched styles, as in the lists (colors don't change the timings).
+const NORMAL: Style = Style::new();
+const HIT: Style = Style::new().add_modifier(Modifier::BOLD.union(Modifier::UNDERLINED));
 
 fn main() {
     println!("🚀 Search Highlighting Performance Analysis");
@@ -37,14 +44,7 @@ fn main() {
     let start = Instant::now();
     let _highlighted: Vec<Line> = test_files
         .iter()
-        .map(|file| {
-            highlight_search_term(
-                file,
-                "src",
-                OneDarkTheme::normal(),
-                OneDarkTheme::search_highlight(),
-            )
-        })
+        .map(|file| highlight_search_term(file, "src", NORMAL, HIT))
         .collect();
     let highlighting_duration = start.elapsed();
 
@@ -53,14 +53,9 @@ fn main() {
     let _ui_items: Vec<ListItem> = test_files
         .iter()
         .map(|file| {
-            let highlighted_line = highlight_search_term(
-                file,
-                "src",
-                OneDarkTheme::normal(),
-                OneDarkTheme::search_highlight(),
-            );
+            let highlighted_line = highlight_search_term(file, "src", NORMAL, HIT);
 
-            let mut spans = vec![ratatui::text::Span::styled("📄 ", OneDarkTheme::normal())];
+            let mut spans = vec![ratatui::text::Span::styled("📄 ", NORMAL)];
             spans.extend(highlighted_line.spans);
 
             ListItem::from(Line::from(spans))
@@ -104,14 +99,7 @@ fn main() {
         // Simulate 1000 UI renders
         let _: Vec<Line> = visible_files
             .iter()
-            .map(|file| {
-                highlight_search_term(
-                    file,
-                    "src",
-                    OneDarkTheme::normal(),
-                    OneDarkTheme::search_highlight(),
-                )
-            })
+            .map(|file| highlight_search_term(file, "src", NORMAL, HIT))
             .collect();
     }
     let realistic_duration = start.elapsed();
@@ -134,14 +122,7 @@ fn main() {
         let start = Instant::now();
         let _: Vec<Line> = visible_files
             .iter()
-            .map(|file| {
-                highlight_search_term(
-                    file,
-                    term,
-                    OneDarkTheme::normal(),
-                    OneDarkTheme::search_highlight(),
-                )
-            })
+            .map(|file| highlight_search_term(file, term, NORMAL, HIT))
             .collect();
         let duration = start.elapsed();
 
@@ -198,14 +179,7 @@ fn test_match_frequency() {
     let start = Instant::now();
     let _: Vec<Line> = high_match_files
         .iter()
-        .map(|file| {
-            highlight_search_term(
-                file,
-                "src",
-                OneDarkTheme::normal(),
-                OneDarkTheme::search_highlight(),
-            )
-        })
+        .map(|file| highlight_search_term(file, "src", NORMAL, HIT))
         .collect();
     let high_freq_duration = start.elapsed();
 
@@ -213,14 +187,7 @@ fn test_match_frequency() {
     let start = Instant::now();
     let _: Vec<Line> = low_match_files
         .iter()
-        .map(|file| {
-            highlight_search_term(
-                file,
-                "rare",
-                OneDarkTheme::normal(),
-                OneDarkTheme::search_highlight(),
-            )
-        })
+        .map(|file| highlight_search_term(file, "rare", NORMAL, HIT))
         .collect();
     let low_freq_duration = start.elapsed();
 
