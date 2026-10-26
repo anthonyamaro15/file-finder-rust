@@ -37,6 +37,20 @@ pub enum WatcherEvent {
     WatcherError(String),
 }
 
+impl WatcherEvent {
+    /// The paths the event names.
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        let (first, second): (&[PathBuf], &[PathBuf]) = match self {
+            Self::FilesCreated(paths) | Self::FilesDeleted(paths) | Self::FilesModified(paths) => {
+                (paths, &[])
+            }
+            Self::FilesRenamed { from, to } => (from, to),
+            Self::DirectoryChanged | Self::WatcherError(_) => (&[], &[]),
+        };
+        first.iter().chain(second)
+    }
+}
+
 /// File system watcher that monitors a directory for changes
 #[derive(Debug)]
 pub struct FileSystemWatcher {

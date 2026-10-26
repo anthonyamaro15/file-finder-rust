@@ -17,7 +17,7 @@ use crate::{
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
     status_bar::StatusBar,
-    utils::{format_file_size, get_file_path_data, read_listing},
+    utils::{format_file_size, get_file_path_data, read_listing, SortBy},
 };
 
 /// Preview debounce delay in milliseconds
@@ -384,6 +384,7 @@ pub fn refresh_after_copy(
     let succeeded = poll_copy_messages(app, status_bar, receiver);
     if let Some(copied) = copied.as_ref().filter(|_| receiver.is_none()) {
         index.changed(copied);
+        app.forget_sizes([copied.as_path()]);
     }
     if succeeded {
         let refresh_dir = current_refresh_directory(app, fallback_start_path);
@@ -414,6 +415,9 @@ pub fn poll_job(
     let select = app.job.as_ref().and_then(|job| job.select.clone());
     if let Some((result, changes)) = app.poll_job() {
         index.changed_all(changes.iter().map(PathBuf::as_path));
+        // A compression changes nothing the index holds, only the archive's folder.
+        let made = select.iter().map(|(_, path)| Path::new(path));
+        app.forget_sizes(changes.iter().map(PathBuf::as_path).chain(made));
         let (select_left, select_right) = match select.filter(|_| result.is_ok()) {
             Some((PanePosition::Right, path)) => (None, Some(path)),
             other => (other.map(|(_, path)| path), None),
@@ -486,6 +490,7 @@ pub fn poll_delete(
             ) {
                 if let Some(path) = app.delete_path.take() {
                     index.changed(Path::new(&path));
+                    app.forget_sizes([Path::new(&path)]);
                 }
             }
             match msg {
@@ -588,7 +593,10 @@ pub fn poll_info(app: &mut App) {
 /// Process file system events
 pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_start_path: &str) {
     // The right pane watches its own folder, even when it's the same as the left's.
-    app.right_pane.poll_watcher();
+    let changed = app.right_pane.poll_watcher();
+    if !changed.is_empty() {
+        app.forget_sizes(changed.iter().map(PathBuf::as_path));
+    }
     let fs_events = app.process_file_system_events();
     if !fs_events.is_empty() {
         // File system changes detected, refresh the CURRENT directory (not the start path)
@@ -607,6 +615,48 @@ pub fn poll_file_system_events(app: &mut App, state: &mut ListState, fallback_st
                 debug!("File system event: {}", event_msg);
             }
         }
+    }
+}
+
+/// Size the folders of each listing sorted by size, and move each into place once it's
+/// sized. A listing being selected in, searched, or behind a prompt or popup keeps its
+/// order until Normal mode. Runs before drawing, so no frame shows a listing unsorted.
+pub fn poll_sizes(app: &mut App, state: &mut ListState) {
+    let right_shown = app.view_mode.is_dual_pane();
+    let left = (app.sort_by == SortBy::Size).then(|| app.left_directory_path());
+    let right = (right_shown && app.right_pane.sort_by == SortBy::Size)
+        .then(|| PathBuf::from(&app.right_pane.current_directory));
+    app.sizing
+        .follow(left.clone(), right.as_deref(), &mut app.folder_sizes);
+    app.right_pane
+        .sizing
+        .follow(right, left.as_deref(), &mut app.folder_sizes);
+
+    let arrived = app.folder_sizes.poll();
+    app.sizing
+        .update(&app.files, &app.file_info, &mut app.folder_sizes, arrived);
+    let pane = &mut app.right_pane;
+    pane.sizing
+        .update(&pane.files, &pane.file_info, &mut app.folder_sizes, arrived);
+
+    let right_active = right_shown && app.is_right_pane_active();
+    let normal = app.input_mode == InputMode::Normal;
+    if (normal || right_active)
+        && app.search_results.is_empty()
+        && app
+            .sizing
+            .take_resort(&app.files, &app.file_info, &app.folder_sizes)
+    {
+        app.resort_by_size(state);
+    }
+    let pane = &mut app.right_pane;
+    if (normal || !right_active)
+        && !pane.is_searching()
+        && pane
+            .sizing
+            .take_resort(&pane.files, &pane.file_info, &app.folder_sizes)
+    {
+        pane.resort_by_size();
     }
 }
 
@@ -1237,5 +1287,178 @@ pub(crate) mod tests {
         assert!(app.right_pane.files.contains(&created));
         assert_eq!(app.right_pane.get_selected_path(), highlighted);
         assert_eq!(app.current_directory, directory);
+    }
+
+    /// The root folder sorted by size, biggest first: big/ (2 GB, sparse), mid.txt
+    /// (1000 B) and small/ (1 B), read before any folder is sized.
+    fn size_ordered(root: &Path) -> (App, ListState) {
+        for (folder, len) in [("big", 2 << 30), ("small", 1)] {
+            std::fs::create_dir(root.join(folder)).unwrap();
+            let data = std::fs::File::create(root.join(folder).join("data")).unwrap();
+            data.set_len(len).unwrap();
+        }
+        std::fs::write(root.join("mid.txt"), "x".repeat(1000)).unwrap();
+        let mut app = App::with_listing(size_listing(root));
+        app.current_directory = spelled(root);
+        app.sort_by = SortBy::Size;
+        app.sort_type = SortType::DESC;
+        (app, ListState::default().with_selected(Some(0)))
+    }
+
+    fn size_listing(root: &Path) -> crate::utils::Listing {
+        read_listing(spelled(root), false, SortBy::Size, &SortType::DESC).unwrap()
+    }
+
+    fn names(files: &[String]) -> Vec<String> {
+        files
+            .iter()
+            .map(|file| {
+                Path::new(file)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    /// Poll until every folder of the left listing is sized.
+    fn size_left(app: &mut App, state: &mut ListState) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        poll_sizes(app, state);
+        while app.sizing.here.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sizing did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            poll_sizes(app, state);
+        }
+    }
+
+    #[test]
+    fn sized_folders_move_into_place_only_once_back_in_normal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut state) = size_ordered(dir.path());
+        // Unsized folders come after every sized item.
+        assert_eq!(names(&app.files)[0], "mid.txt");
+        let before = app.files.clone();
+        app.start_visual(state.selected()).unwrap();
+
+        size_left(&mut app, &mut state);
+        // Read again, as after a watcher event: still the order the selection was made in.
+        app.refresh_files_from_watcher(size_listing(dir.path()), &mut state);
+        poll_sizes(&mut app, &mut state);
+        assert_eq!(app.sync_visual(&mut state), None);
+        assert_eq!(app.input_mode, InputMode::Visual);
+        assert_eq!(app.files, before);
+        // The totals show in place meanwhile.
+        let big = app.folder_sizes.total(&dir.path().join("big"));
+        assert_eq!(big.map(|total| total.bytes), Some(2 << 30));
+        let here = app.sizing.here.map(|here| here.bytes);
+        assert_eq!(here, Some((2 << 30) + 1000 + 1));
+
+        app.end_visual();
+        poll_sizes(&mut app, &mut state);
+        assert_eq!(names(&app.files), ["big", "mid.txt", "small"]);
+        assert_eq!(app.read_only_files, app.files);
+        // The highlight stayed on the same item.
+        assert_eq!(
+            app.get_selected_path(state.selected()),
+            Some(spelled(&dir.path().join("mid.txt")))
+        );
+    }
+
+    #[test]
+    fn leaving_size_order_stops_sizing_and_drops_late_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut state) = size_ordered(dir.path());
+        poll_sizes(&mut app, &mut state);
+        assert_eq!(app.sizing.progress, Some((0, 2)));
+        // Let the walks finish: their totals wait for the next poll.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        app.sort_by = SortBy::Name;
+        poll_sizes(&mut app, &mut state);
+
+        assert_eq!(app.sizing.folder, None);
+        assert_eq!(app.sizing.progress, None);
+        for folder in ["big", "small"] {
+            assert_eq!(app.folder_sizes.total(&dir.path().join(folder)), None);
+        }
+    }
+
+    #[test]
+    fn a_finished_operation_drops_the_totals_of_the_folders_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::create_dir(root.join("a/x")).unwrap();
+        let mut app = App::new(Vec::new());
+        let folders = ["a", "a/b", "a/b/c", "a/x"].map(|folder| root.join(folder));
+        for folder in &folders {
+            app.folder_sizes.request(folder);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while folders
+            .iter()
+            .any(|folder| app.folder_sizes.total(folder).is_none())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sizing did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.folder_sizes.poll();
+        }
+        let (mut state, mut status, mut index) =
+            (ListState::default(), StatusBar::new(), memory_index(root));
+
+        let photo = root.join("a/b/c/photo.jpg");
+        app.start_job("trash", "Moving…".into(), vec![photo], |_| {
+            Ok("Moved".into())
+        })
+        .unwrap();
+        while app.job.is_some() {
+            poll_job(
+                &mut app,
+                &mut state,
+                &mut status,
+                &mut index,
+                &spelled(root),
+            );
+            assert!(std::time::Instant::now() < deadline, "trash did not finish");
+            std::thread::yield_now();
+        }
+
+        for gone in &folders[..3] {
+            assert_eq!(app.folder_sizes.total(gone), None, "{}", gone.display());
+        }
+        assert!(app.folder_sizes.total(&folders[3]).is_some());
+    }
+
+    #[test]
+    fn a_later_reorder_keeps_the_highlight_where_it_was_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, mut state) = size_ordered(dir.path());
+        size_left(&mut app, &mut state);
+        assert_eq!(names(&app.files), ["big", "mid.txt", "small"]);
+        app.select_active_row(&mut state, 2);
+
+        // small grows past big and is sized again.
+        let data = std::fs::File::create(dir.path().join("small/data")).unwrap();
+        data.set_len(3 << 30).unwrap();
+        app.forget_sizes([dir.path().join("small/data").as_path()]);
+        size_left(&mut app, &mut state);
+
+        assert_eq!(names(&app.files), ["small", "big", "mid.txt"]);
+        assert_eq!(
+            app.get_selected_path(state.selected()),
+            Some(spelled(&dir.path().join("small")))
+        );
+        // The status line shows the folder's total, not the folder entry's size.
+        let mut status_bar = StatusBar::new();
+        status_bar.update(&app);
+        assert_eq!(status_bar.selected_item_info, "small | Directory | 3.0 GB");
     }
 }

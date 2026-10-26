@@ -174,8 +174,15 @@ pub fn count_folder(
 ) -> Option<FolderCount> {
     let mut count = FolderCount::default();
     let mut reported = Instant::now();
-    // Not even the root is followed, in case it became a link after it was read.
-    for entry in WalkDir::new(root).follow_root_links(false).min_depth(1) {
+    // Not even the root is followed, in case it became a link after it was read. Disks
+    // mounted inside aren't counted.
+    // ponytail: macOS firmlinks share the root's device, so counting `/` counts
+    // /System/Volumes/Data twice; skipping firmlinked paths would fix it.
+    let walk = WalkDir::new(root)
+        .follow_root_links(false)
+        .same_file_system(true)
+        .min_depth(1);
+    for entry in walk {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }

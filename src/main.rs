@@ -310,6 +310,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main loop
     loop {
+        background::poll_sizes(&mut loop_state.app, &mut loop_state.state);
         // Update status bar with current app state
         loop_state.status_bar.update(&loop_state.app);
 

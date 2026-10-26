@@ -916,6 +916,7 @@ dependencies = [
  "thiserror",
  "toml",
  "trash",
+ "unicode-width",
  "walkdir",
  "zip",
 ]

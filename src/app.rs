@@ -13,6 +13,7 @@ use rayon::prelude::*;
 use crate::directory_store::DirectoryStore;
 use crate::errors::AppResult;
 use crate::file_reader_content::FileType;
+use crate::sizes::{FolderSizes, ListingSizes};
 use crate::watcher::{FileSystemWatcher, WatcherEvent};
 
 use crate::config::{Settings, Theme, ThemeColors};
@@ -510,6 +511,10 @@ pub struct App {
     // Sort state - persisted across file operations
     pub sort_by: SortBy,
     pub sort_type: SortType,
+    /// Folder totals for both panes' listings sorted by size.
+    pub folder_sizes: FolderSizes,
+    /// The left listing's folder sizing.
+    pub sizing: ListingSizes,
 
     // Selection preservation for file operations
     pub preserved_selection_index: Option<usize>,
@@ -742,6 +747,8 @@ impl App {
             // Initialize sort state - defaults to ascending by name
             sort_by: SortBy::Default,
             sort_type: SortType::ASC,
+            folder_sizes: FolderSizes::default(),
+            sizing: ListingSizes::default(),
 
             // Initialize selection preservation
             preserved_selection_index: None,
@@ -1094,10 +1101,51 @@ impl App {
     }
 
     /// Show `listing` in the left listing, each path beside its record.
-    fn set_listing(&mut self, listing: Listing) {
+    fn set_listing(&mut self, mut listing: Listing) {
+        if self.sort_by == SortBy::Size {
+            self.sizing.sort(&mut listing, &self.sort_type);
+        }
+        self.sizing.changed = true;
         self.read_only_files = listing.files.clone();
         self.files = listing.files;
         self.file_info = listing.info;
+    }
+
+    /// Sort the left listing again by its folders' latest totals, keeping the highlight
+    /// on the same item.
+    pub fn resort_by_size(&mut self, state: &mut ListState) {
+        // The live highlight: `preserved_selection_index` can be left over from an
+        // earlier refresh.
+        let selected = self.get_selected_path(state.selected());
+        self.curr_index = state.selected();
+        let listing = Listing {
+            files: std::mem::take(&mut self.files),
+            info: std::mem::take(&mut self.file_info),
+        };
+        self.set_listing(listing);
+        self.update_file_references_with_selection_preservation(selected);
+        state.select(self.curr_index);
+    }
+
+    /// Drop the folder totals of `paths` and the folders above them, which changed, so
+    /// a listing sorted by size walks them again; then read its disk's free space anew.
+    pub fn forget_sizes<'a>(&mut self, paths: impl IntoIterator<Item = &'a Path>) {
+        for path in paths {
+            self.folder_sizes.forget_with_ancestors(path);
+        }
+        for sizing in [&mut self.sizing, &mut self.right_pane.sizing] {
+            sizing.changed = true;
+            sizing.free = sizing.folder.as_deref().and_then(crate::sizes::free_space);
+        }
+    }
+
+    /// The active pane's folder sizing, like `active_selected_path`.
+    pub fn active_sizing(&self) -> &ListingSizes {
+        if self.view_mode.is_dual_pane() && self.is_right_pane_active() {
+            &self.right_pane.sizing
+        } else {
+            &self.sizing
+        }
     }
 
     /// Re-read the records of `paths`, which the watcher saw change, wherever they're
@@ -1214,6 +1262,14 @@ impl App {
 
         if let Some(ref watcher) = self.file_watcher {
             let events = watcher.poll_events();
+            let changed: Vec<PathBuf> = events
+                .iter()
+                .flat_map(WatcherEvent::paths)
+                .cloned()
+                .collect();
+            if !changed.is_empty() {
+                self.forget_sizes(changed.iter().map(PathBuf::as_path));
+            }
 
             for event in events {
                 match event {

@@ -2,16 +2,20 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     symbols::border,
-    text::Span,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 use std::{path::Path, rc::Rc};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, InputMode, SearchResult, ViewMode};
-use crate::config::Settings;
+use crate::config::{Settings, ThemeColors};
 use crate::icons::IconProvider;
 use crate::render::create_size_text;
+use crate::render::size_bar::{size_column, BAR_WIDTH, SIZE_WIDTH};
+use crate::sizes::{FolderSizes, RowSize};
+use crate::utils::files::{EntryInfo, SortBy};
 pub mod theme;
 use self::theme::OneDarkTheme;
 use crate::highlight::highlight_search_term;
@@ -92,12 +96,6 @@ impl Ui {
         // Create enhanced title with search feedback
         let list_title = self.generate_list_title(app, settings);
 
-        // Generate list items based on search mode
-        let mut filtered_read_only_items = self.generate_list_items(app, settings);
-        if !(app.view_mode == ViewMode::DualPane && app.is_right_pane_active()) {
-            filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
-        }
-
         // Dynamic layout based on view mode
         let inner_constraints = match app.view_mode {
             ViewMode::FullList => vec![Constraint::Percentage(100)],
@@ -150,6 +148,14 @@ impl Ui {
                 .title_style(title_style)
                 .padding(ratatui::widgets::Padding::horizontal(1))
         };
+
+        // Generate list items based on search mode, as wide as the rows beside the
+        // highlight symbol.
+        let width = block.inner(inner_layout[0]).width.saturating_sub(1);
+        let mut filtered_read_only_items = self.generate_list_items(app, settings, width.into());
+        if !(app.view_mode == ViewMode::DualPane && app.is_right_pane_active()) {
+            filtered_read_only_items = style_visual_rows(filtered_read_only_items, app);
+        }
 
         let list_block = List::new(filtered_read_only_items.clone())
             .block(block)
@@ -289,8 +295,14 @@ impl Ui {
         }
     }
 
-    /// Generate list items based on current search state (optimized with pagination)
-    fn generate_list_items(&self, app: &App, settings: &Settings) -> Vec<ListItem<'_>> {
+    /// Generate list items based on current search state (optimized with pagination),
+    /// `width` columns wide.
+    fn generate_list_items(
+        &self,
+        app: &App,
+        settings: &Settings,
+        width: usize,
+    ) -> Vec<ListItem<'_>> {
         let show_file_sizes = settings.show_size_bars;
         let search_term = highlight_term(app, false);
 
@@ -300,6 +312,42 @@ impl Ui {
                 .iter()
                 .take(50) // Limit to top 50 results for performance
                 .map(|result| self.search_result_item(result, search_term, app, show_file_sizes))
+                .collect()
+        } else if app.sort_by == SortBy::Size
+            && show_file_sizes
+            && app.search_results.is_empty()
+            && search_term.is_empty()
+        {
+            let sizes = row_sizes(&app.files, &app.file_info, &app.folder_sizes);
+            let largest = largest(&sizes);
+            app.file_read_only_label_list
+                .iter()
+                .zip(&app.files)
+                .zip(&app.file_info)
+                .zip(sizes)
+                .map(|(((file_name, file_path), info), size)| {
+                    let colored_icon = self.icon_provider.get_colored_for_path(
+                        Path::new(file_path),
+                        info.is_dir(),
+                        &app.theme_colors,
+                    );
+                    // Dotfiles are dimmed, as in the other orders.
+                    let (icon_style, name_style) = if file_name.starts_with('.') {
+                        (OneDarkTheme::dotfile(), OneDarkTheme::dotfile())
+                    } else {
+                        (Style::default().fg(colored_icon.color), Style::default())
+                    };
+                    let prefix = Span::styled(format!("{} ", colored_icon.icon), icon_style);
+                    size_order_row(
+                        prefix,
+                        file_name,
+                        name_style,
+                        size,
+                        largest,
+                        width,
+                        &app.theme_colors,
+                    )
+                })
                 .collect()
         } else {
             // Use all filtered indexes (or all files if no filter)
@@ -393,9 +441,14 @@ impl Ui {
         }
     }
 
-    /// The right pane's rows: its listing, or its search's results, highlighted like the
-    /// left listing's while the query is typed.
-    pub fn right_pane_items(&self, app: &App, settings: &Settings) -> Vec<ListItem<'static>> {
+    /// The right pane's rows, `width` columns wide: its listing, or its search's
+    /// results, highlighted like the left listing's while the query is typed.
+    pub fn right_pane_items(
+        &self,
+        app: &App,
+        settings: &Settings,
+        width: usize,
+    ) -> Vec<ListItem<'static>> {
         let right_pane = &app.right_pane;
         // Generate list items for right pane using icon provider (with dotfile dimming)
         let listing_item = |path: &str, label: &str, is_dir: bool| {
@@ -433,6 +486,36 @@ impl Ui {
                         &result.file_path,
                         &result.display_name,
                         result.info.is_dir(),
+                    )
+                })
+                .collect()
+        } else if right_pane.sort_by == SortBy::Size && settings.show_size_bars {
+            let sizes = row_sizes(&right_pane.files, &right_pane.file_info, &app.folder_sizes);
+            let largest = largest(&sizes);
+            right_pane
+                .files
+                .iter()
+                .zip(&right_pane.file_labels)
+                .zip(&right_pane.file_info)
+                .zip(sizes)
+                .map(|(((path, label), info), size)| {
+                    let icon = self
+                        .icon_provider
+                        .get_for_path(Path::new(path), info.is_dir());
+                    let style = if label.starts_with('.') {
+                        crate::theme::OneDarkTheme::dotfile()
+                    } else {
+                        Style::default()
+                    };
+                    let prefix = Span::styled(format!("{icon} "), style);
+                    size_order_row(
+                        prefix,
+                        label,
+                        style,
+                        size,
+                        largest,
+                        width,
+                        &app.theme_colors,
                     )
                 })
                 .collect()
@@ -508,6 +591,80 @@ impl Ui {
             ListItem::from(ratatui::text::Line::from(spans))
         }
     }
+}
+
+/// Fewest columns a name keeps before its row gives up the size bar.
+const MIN_NAME_WIDTH: usize = 12;
+
+/// What each item of a listing sorted by size shows.
+fn row_sizes(files: &[String], info: &[EntryInfo], sizes: &FolderSizes) -> Vec<RowSize> {
+    files
+        .iter()
+        .zip(info)
+        .map(|(file, info)| sizes.row_size(file, info))
+        .collect()
+}
+
+/// The largest known size, which the bars are relative to.
+fn largest(sizes: &[RowSize]) -> u64 {
+    sizes
+        .iter()
+        .filter_map(|size| match size {
+            RowSize::Known(total) => Some(total.bytes),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// A row of a listing sorted by size, `width` columns wide: `prefix` (its icon) and
+/// `name`, then the size column at the right edge, so the bars line up. A long name is
+/// cut short with …, and the bar goes when the list is too narrow for it.
+fn size_order_row(
+    prefix: Span<'static>,
+    name: &str,
+    name_style: Style,
+    size: RowSize,
+    largest: u64,
+    width: usize,
+    theme: &ThemeColors,
+) -> ListItem<'static> {
+    let prefix_width = prefix.width();
+    let with_bar = width >= prefix_width + MIN_NAME_WIDTH + BAR_WIDTH + SIZE_WIDTH + 2;
+    let column = size_column(size, largest, with_bar, theme);
+    let column_width: usize = column.iter().map(Span::width).sum();
+    // The name's room, keeping a space before the column.
+    let room = width.saturating_sub(prefix_width + column_width + 1);
+    let name = truncate(name, room);
+    let gap = room - name.width() + 1;
+    let mut spans = vec![
+        prefix,
+        Span::styled(name, name_style),
+        Span::raw(" ".repeat(gap)),
+    ];
+    spans.extend(column);
+    ListItem::from(Line::from(spans))
+}
+
+/// `name` cut to `width` columns, ending in … when it doesn't fit.
+fn truncate(name: &str, width: usize) -> String {
+    if name.width() <= width {
+        return name.to_string();
+    }
+    let mut cut = String::new();
+    let mut used = 0;
+    for c in name.chars() {
+        let c_width = c.width().unwrap_or(0);
+        if used + c_width + 1 > width {
+            break;
+        }
+        used += c_width;
+        cut.push(c);
+    }
+    if width > 0 {
+        cut.push('…');
+    }
+    cut
 }
 
 /// Mark the active pane's selected rows (visual mode) in the theme's selection colour,
@@ -622,6 +779,51 @@ mod tests {
     }
 
     #[test]
+    fn size_order_rows_line_their_sizes_up_at_the_right_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        let long = "a-name-far-too-long-to-fit-beside-the-size-column.bin";
+        fs::write(dir.path().join(long), "x".repeat(2048)).unwrap();
+        fs::write(dir.path().join("notes.txt"), "notes").unwrap();
+        fs::create_dir(dir.path().join("photos")).unwrap();
+        let start = dir.path().to_string_lossy().into_owned();
+        let listing = read_listing(start, false, SortBy::Size, &SortType::DESC).unwrap();
+        let mut app = App::with_listing(listing);
+        app.sort_by = SortBy::Size;
+        app.view_mode = ViewMode::FullList;
+        // Nerd font icons are one character in one column.
+        let settings = Settings {
+            use_nerd_fonts: crate::config::settings::NerdFontSetting::Always,
+            ..Settings::default()
+        };
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut draw_left = |width| {
+            draw(width, |f| {
+                let area = f.size();
+                let chunks: Rc<[Rect]> = vec![area, area, area].into();
+                let mut state = ListState::default().with_selected(Some(0));
+                ui.render_list_preview(f, &chunks, &mut state, &app, &settings);
+            })
+        };
+
+        let wide = draw_left(60);
+        let long_row = row(&wide, "a-name");
+        assert!(long_row.contains('…') && !long_row.contains(".bin"));
+        assert!(long_row.contains("██████████ "));
+        assert!(row(&wide, "photos").contains("sizing…"));
+        // Every size ends in the list's last column, inside its padding.
+        for name in ["a-name", "notes.txt", "photos"] {
+            assert_eq!(row(&wide, name).trim_end().chars().count(), 59, "{name}");
+        }
+        assert!(row(&wide, "notes.txt").trim_end().ends_with(" 5 B"));
+
+        let narrow = draw_left(36);
+        assert!(!narrow.iter().any(|row| row.contains('█')));
+        let long_row = row(&narrow, "a-name").trim_end();
+        assert!(long_row.contains("lon… ") && long_row.ends_with(" 2.0 KB"));
+        assert!(row(&narrow, "notes.txt").contains("5 B"));
+    }
+
+    #[test]
     fn right_pane_rows_draw_from_the_records_until_the_listing_is_read_again() {
         let (dir, start) = notes_and_photos();
         let settings = Settings::default();
@@ -635,7 +837,7 @@ mod tests {
         assert_ne!(folder_row, file_row);
         let draw_right = |app: &App| {
             draw(40, |f| {
-                f.render_widget(List::new(ui.right_pane_items(app, &settings)), f.size())
+                f.render_widget(List::new(ui.right_pane_items(app, &settings, 40)), f.size())
             })
         };
 
@@ -655,7 +857,12 @@ mod tests {
         app.right_pane = crate::pane::Pane::new("/w".into(), vec!["/w/.hidden".into()]);
         let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
         terminal
-            .draw(|f| f.render_widget(List::new(ui.right_pane_items(&app, &settings)), f.size()))
+            .draw(|f| {
+                f.render_widget(
+                    List::new(ui.right_pane_items(&app, &settings, 20)),
+                    f.size(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let dot = buffer

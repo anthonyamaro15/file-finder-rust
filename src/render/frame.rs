@@ -1,6 +1,9 @@
 //! Drawing one frame of the main screen.
 
-use std::{io, time::Instant};
+use std::{
+    io,
+    time::{Instant, SystemTime},
+};
 
 use ratatui::{
     backend::CrosstermBackend,
@@ -78,7 +81,7 @@ pub fn draw(
 
         // The search box shows the active pane's search
         let (search_query, global_search) = app.search_box();
-        let (msg, style) = match app.input_mode {
+        let (mut msg, style) = match app.input_mode {
             InputMode::Normal => {
                 let search_indicator = if global_search {
                     " [Global Search]".bold()
@@ -140,6 +143,9 @@ pub fn draw(
             },
             _ => (vec!["Default".bold()], OneDarkTheme::normal()),
         };
+        if let Some(progress) = app.active_sizing().progress_text(SystemTime::now()) {
+            msg.push(format!("  {progress}").bold());
+        }
 
         // Dynamic layout based on view mode
         let inner_constraints = match app.view_mode {
@@ -347,14 +353,6 @@ pub fn draw(
             let right_pane = &app.right_pane;
             let is_right_active = app.is_right_pane_active();
 
-            let right_items = widgets_ui.right_pane_items(app, settings);
-
-            let right_items = if is_right_active {
-                crate::ui::style_visual_rows(right_items, app)
-            } else {
-                right_items
-            };
-
             // Create title with directory info and active indicator
             let dir_name = std::path::Path::new(&right_pane.current_directory)
                 .file_name()
@@ -405,6 +403,15 @@ pub fn draw(
                     .border_style(Style::default().fg(Color::Rgb(62, 68, 81)))
                     .title(right_title)
                     .title_style(title_style)
+            };
+
+            // As wide as the rows beside the highlight symbol.
+            let width = block.inner(inner_layout[1]).width.saturating_sub(1);
+            let right_items = widgets_ui.right_pane_items(app, settings, width.into());
+            let right_items = if is_right_active {
+                crate::ui::style_visual_rows(right_items, app)
+            } else {
+                right_items
             };
 
             let right_list = List::new(right_items)

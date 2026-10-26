@@ -1,5 +1,6 @@
 use crate::app::{App, InputMode, ViewMode};
 use crate::config::theme::ThemeColors;
+use crate::sizes::total_text;
 use crate::utils::files::{EntryInfo, EntryKind};
 use crate::utils::format::format_path_for_display;
 use ratatui::{
@@ -89,7 +90,7 @@ impl StatusBar {
                         EntryKind::Other => "Other",
                     };
 
-                    let size = Self::format_file_size(info.size);
+                    let size = Self::selected_size(app, path, &info);
                     self.selected_item_info = format!("{} | {} | {}", name, file_type, size);
                 } else {
                     self.selected_item_info = format!("{} | Unknown", name);
@@ -99,6 +100,16 @@ impl StatusBar {
             }
         } else {
             self.selected_item_info = "No selection".to_string();
+        }
+    }
+
+    /// The selected item's size; in size order a folder shows its total, as its row does.
+    fn selected_size(app: &App, path: &Path, info: &EntryInfo) -> String {
+        match app.folder_sizes.total(path) {
+            Some(total) if info.is_dir() && app.active_sizing().folder.is_some() => {
+                total_text(total)
+            }
+            _ => Self::format_file_size(info.size),
         }
     }
 
@@ -166,6 +177,12 @@ impl StatusBar {
         let mode_text = Self::mode_label(app, mode_text);
         // Wide enough for "VISUAL · 5 selected" inside its borders.
         let mode_width = u16::try_from(mode_text.chars().count() + 4).map_or(15, |w| w.max(15));
+        // In size order: "7.1 GB here · 212 GB free".
+        let size_text = app
+            .active_sizing()
+            .summary()
+            .unwrap_or_else(|| Self::format_file_size(self.total_size));
+        let size_width = u16::try_from(size_text.chars().count() + 4).map_or(15, |w| w.max(15));
         // Split the status bar into multiple sections
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -174,7 +191,7 @@ impl StatusBar {
                 Constraint::Length(14),         // View mode indicator
                 Constraint::Min(20),            // Directory path
                 Constraint::Length(25),         // File counts
-                Constraint::Length(15),         // Total size
+                Constraint::Length(size_width), // Total size
                 Constraint::Length(20),         // System info
             ])
             .split(area);
@@ -232,7 +249,6 @@ impl StatusBar {
         frame.render_widget(counts_widget, chunks[3]);
 
         // Total size
-        let size_text = Self::format_file_size(self.total_size);
         let size_widget = Paragraph::new(size_text)
             .block(
                 Block::default()
@@ -295,6 +311,18 @@ impl StatusBar {
             // Permissions
             Span::styled(perms_text, Style::default().fg(theme.gray)), // Muted
         ];
+        // In size order: the folder's total and its disk's free space.
+        let spans = match app.active_sizing().summary() {
+            Some(summary) => [
+                spans,
+                vec![
+                    Span::raw("  "),
+                    Span::styled(summary, Style::default().fg(theme.gray)),
+                ],
+            ]
+            .concat(),
+            None => spans,
+        };
 
         let paragraph = Paragraph::new(Line::from(spans));
         frame.render_widget(paragraph, area);
@@ -361,9 +389,10 @@ impl StatusBar {
 
     /// Get size and permissions for selected file
     fn get_selected_file_info(&self, app: &App) -> (String, String) {
+        let path = app.active_selected_path(app.curr_index).unwrap_or_default();
         match app.active_selected_info(app.curr_index) {
             Some(info) if info.kind.is_some() => (
-                Self::format_file_size(info.size),
+                Self::selected_size(app, Path::new(&path), &info),
                 Self::format_permissions(&info),
             ),
             _ => ("--".to_string(), "----------".to_string()),
