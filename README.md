@@ -3,9 +3,11 @@
 A blazing-fast, developer-focused terminal file explorer built with Rust.  
 Navigate your projects with ease using fuzzy search, file previews, and powerful keyboard shortcuts.
 
-![File Finder Demo](https://img.shields.io/badge/Platform-MacOS%20%7C%20Linux-blue)
+![Platform](https://img.shields.io/badge/Platform-MacOS%20%7C%20Linux-blue)
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
+
+![ff: browse with previews, find a folder nine levels deep with root search, and move a file by picking its new folder by name](assets/demo.gif)
 
 ---
 
