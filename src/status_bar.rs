@@ -86,7 +86,6 @@ impl StatusBar {
             InputMode::WatchRename => "RENAME",
             InputMode::WatchSort => "SORT",
             InputMode::WatchKeyBinding => "HELP",
-            InputMode::CacheLoading => "LOADING",
             InputMode::PickFolder => "PICK",
             InputMode::WatchInfo => "INFO",
             InputMode::Visual => "VISUAL",
@@ -94,7 +93,6 @@ impl StatusBar {
         };
         let color = match app.input_mode {
             InputMode::WatchKeyBinding => theme.fg,
-            InputMode::CacheLoading => theme.yellow,
             InputMode::PickFolder | InputMode::Palette => theme.blue,
             InputMode::WatchInfo => theme.cyan,
             _ => app.mode_color(),

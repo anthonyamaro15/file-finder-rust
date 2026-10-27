@@ -17,6 +17,7 @@ use crate::config::{
     Action, KeySequence, KeymapSettings, ThemeColors,
 };
 use crate::event::palette::palette_matches;
+use crate::ui::INDEX_FILLING;
 use crate::utils::format::replace_home_with_tilde;
 use crate::utils::{format_file_size, EntryInfo, SortBy, SortType};
 
@@ -257,12 +258,14 @@ pub fn create_rename_input_popup<'a>(input_text: &'a str, theme: &ThemeColors) -
 }
 
 /// Draw the "Copy to…"/"Move to…" picker over the list: the query (with the cursor at
-/// `cursor`) above the matching folders, each with its full path.
+/// `cursor`) above the matching folders, each with its full path. `index_filling` says
+/// the folder index has nothing to match yet.
 pub fn render_folder_picker(
     f: &mut Frame,
     picker: &FolderPicker,
     query: &str,
     cursor: usize,
+    index_filling: bool,
     theme: &ThemeColors,
 ) {
     let area = draw_popup(f.size(), 70, 60);
@@ -284,6 +287,8 @@ pub fn render_folder_picker(
 
     let hint = if query.trim().is_empty() {
         "Type a folder name, or a path starting with / or ~"
+    } else if picker.results.is_empty() && index_filling {
+        INDEX_FILLING
     } else if picker.results.is_empty() {
         "No matching folders"
     } else {
@@ -1376,7 +1381,9 @@ mod tests {
         let query = format!("/{}END", "x".repeat(200));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal
-            .draw(|f| render_folder_picker(f, &picker, &query, query.chars().count(), &theme()))
+            .draw(|f| {
+                render_folder_picker(f, &picker, &query, query.chars().count(), false, &theme())
+            })
             .unwrap();
 
         let screen: String = terminal
@@ -1389,6 +1396,39 @@ mod tests {
         assert!(screen.contains("Move 'notes.txt' to…"));
         assert!(screen.contains("Projects  /w/Projects"));
         assert!(screen.contains("xEND"));
+    }
+
+    #[test]
+    fn folder_picker_says_the_folder_index_is_being_built_while_it_is_empty() {
+        use crate::app::TransferKind;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let picker = FolderPicker {
+            kind: TransferKind::Copy,
+            source: "/w/notes.txt".into(),
+            results: Vec::new(),
+            selected: None,
+        };
+        let hint = |query: &str, filling: bool| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal
+                .draw(|f| render_folder_picker(f, &picker, query, query.len(), filling, &theme()))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            [INDEX_FILLING, "No matching folders", "Type a folder name"]
+                .into_iter()
+                .find(|hint| screen.contains(hint))
+        };
+
+        assert_eq!(hint("proj", true), Some(INDEX_FILLING));
+        assert_eq!(hint("proj", false), Some("No matching folders"));
+        assert_eq!(hint("", true), Some("Type a folder name"));
     }
 
     #[test]

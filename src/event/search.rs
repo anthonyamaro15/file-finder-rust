@@ -5,7 +5,7 @@ use crate::{
     directory_store::DirectoryStore,
 };
 
-fn refresh_root_search(app: &mut App, store: &DirectoryStore) {
+pub(crate) fn refresh_root_search(app: &mut App, store: &DirectoryStore) {
     if app.searching_right_pane() {
         app.right_pane
             .search(&app.input, store, app.max_search_results);

@@ -56,7 +56,6 @@ pub enum InputMode {
     WatchRename,
     WatchSort,
     WatchKeyBinding,
-    CacheLoading,
     /// Choosing the folder for "Copy to…" or "Move to…".
     PickFolder,
     /// The Get Info popup.
@@ -494,17 +493,9 @@ pub struct App {
     pub file_watcher: Option<FileSystemWatcher>,
     pub current_directory: String,
 
-    // Cache loading progress tracking
-    pub cache_loading_progress:
-        Option<std::sync::mpsc::Receiver<crate::directory_store::CacheBuildProgress>>,
-    pub cache_directories_processed: usize,
-    pub cache_current_directory: String,
-    pub cache_loading_complete: bool,
-    pub completed_cache_store: Option<crate::directory_store::DirectoryStore>,
-
-    // Cache build timing
-    pub cache_build_started_at: Option<Instant>,
-    pub cache_build_elapsed_ms: Option<u128>,
+    /// The folder index is empty until its first walk finishes; global search and the
+    /// folder picker say so.
+    pub index_filling: bool,
 
     // Configuration and theming
     pub settings: Settings,
@@ -729,16 +720,7 @@ impl App {
             file_watcher: None,
             current_directory: String::new(),
 
-            // Initialize cache loading progress tracking
-            cache_loading_progress: None,
-            cache_directories_processed: 0,
-            cache_current_directory: String::new(),
-            cache_loading_complete: false,
-            completed_cache_store: None,
-
-            // Cache build timing
-            cache_build_started_at: None,
-            cache_build_elapsed_ms: None,
+            index_filling: false,
 
             // Load default configuration - this will be replaced with proper loading
             settings: Settings::default(),
@@ -1391,100 +1373,6 @@ impl App {
             "File list refresh requested for: {}",
             self.current_directory
         );
-    }
-
-    /// Start cache loading and set up progress tracking
-    pub fn start_cache_loading(
-        &mut self,
-        receiver: std::sync::mpsc::Receiver<crate::directory_store::CacheBuildProgress>,
-        started_at: Instant,
-    ) {
-        self.input_mode = InputMode::CacheLoading;
-        self.cache_loading_progress = Some(receiver);
-        self.cache_directories_processed = 0;
-        self.cache_current_directory = String::new();
-        self.cache_loading_complete = false;
-        self.cache_build_started_at = Some(started_at);
-        self.cache_build_elapsed_ms = None;
-    }
-
-    /// Process cache loading progress messages
-    pub fn process_cache_loading_progress(&mut self) -> bool {
-        if let Some(ref receiver) = self.cache_loading_progress {
-            // Check for new progress messages
-            while let Ok(progress) = receiver.try_recv() {
-                match progress {
-                    crate::directory_store::CacheBuildProgress::Progress {
-                        directories_found,
-                        current_path,
-                    } => {
-                        self.cache_directories_processed = directories_found;
-                        self.cache_current_directory = current_path;
-                    }
-                    crate::directory_store::CacheBuildProgress::Completed { store } => {
-                        // Store the completed cache for later use
-                        self.completed_cache_store = Some(store);
-                        self.cache_loading_complete = true;
-                        self.cache_loading_progress = None;
-
-                        // Compute elapsed time if we have a start timestamp
-                        if let Some(started) = self.cache_build_started_at.take() {
-                            let elapsed = started.elapsed();
-                            self.cache_build_elapsed_ms = Some(elapsed.as_millis());
-                            debug!(
-                                "Cache build completed in {:.3}s ({} ms) - processed {} directories",
-                                elapsed.as_secs_f64(),
-                                elapsed.as_millis(),
-                                self.cache_directories_processed
-                            );
-                        }
-                        return true; // Cache loading is complete
-                    }
-                    crate::directory_store::CacheBuildProgress::Error(error_msg) => {
-                        // Handle cache loading error
-                        debug!("Cache loading error: {}", error_msg);
-                        self.cache_loading_complete = true;
-                        self.cache_loading_progress = None;
-                        // Set input mode back to normal even on error
-                        self.input_mode = InputMode::Normal;
-                        return true; // Stop loading even on error
-                    }
-                }
-            }
-        }
-        false // Cache loading is still in progress
-    }
-
-    /// Finish cache loading and switch back to normal mode
-    pub fn finish_cache_loading(&mut self, _directories: Vec<String>) {
-        // Do NOT override the current file list here. We want to remain focused on the
-        // current directory (e.g., start_path) after cache creation completes.
-        // The completed cache is used for global search and saved to disk separately.
-
-        // Keep current files, but refresh labels/indexes just in case other state needs updating.
-        self.update_file_references();
-
-        // Switch back to normal input mode
-        self.input_mode = InputMode::Normal;
-
-        // Clear cache loading state
-        self.cache_loading_progress = None;
-        self.cache_directories_processed = 0;
-        self.cache_current_directory = String::new();
-        self.cache_loading_complete = false;
-        self.completed_cache_store = None;
-    }
-
-    /// Get cache loading progress information for display
-    pub fn get_cache_loading_info(&self) -> Option<(usize, String)> {
-        if self.input_mode == InputMode::CacheLoading {
-            Some((
-                self.cache_directories_processed,
-                self.cache_current_directory.clone(),
-            ))
-        } else {
-            None
-        }
     }
 
     /// Initialize configuration and theme from files or defaults

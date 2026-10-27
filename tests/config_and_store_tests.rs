@@ -184,7 +184,7 @@ mod directory_store_file_operations_tests {
 #[cfg(test)]
 mod build_directory_store_tests {
     use super::*;
-    use file_finder::directory_store::{build_directory_from_store_async, CacheBuildProgress};
+    use file_finder::directory_store::build_directory_from_store_async;
     use std::path::Path;
     use std::time::Duration;
 
@@ -193,13 +193,7 @@ mod build_directory_store_tests {
         let ignored: Vec<String> = ignored.iter().map(|name| name.to_string()).collect();
         let sync_store = build_directory_from_store(root, ignored.clone());
         let receiver = build_directory_from_store_async(root.to_string(), ignored, 2);
-        let async_store = loop {
-            match receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
-                CacheBuildProgress::Completed { store } => break store,
-                CacheBuildProgress::Error(message) => panic!("{message}"),
-                CacheBuildProgress::Progress { .. } => {}
-            }
-        };
+        let async_store = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         [sync_store, async_store]
     }
 

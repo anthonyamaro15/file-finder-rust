@@ -1,5 +1,5 @@
 //! Per-iteration polling of background work: previews, images, copies, moves,
-//! deletes, file system events and the directory cache build.
+//! deletes, file system events and the folder index's walk.
 
 use std::{
     path::{Path, PathBuf},
@@ -10,14 +10,17 @@ use log::{debug, warn};
 use ratatui::widgets::ListState;
 
 use crate::{
-    app::{App, InputMode, PanePosition},
+    app::{App, InputMode, PanePosition, SearchScope},
     directory_store::DirectoryIndex,
-    event::file_actions::current_refresh_directory,
+    event::{
+        file_actions::current_refresh_directory, search::refresh_root_search,
+        transfer::refresh_folder_picker,
+    },
     file_reader_content::{self, FileContent, FileType},
     operations::{CopyMessage, DeleteMessage},
     render::image_renderer::ImageRenderer,
     status_bar::StatusBar,
-    utils::{format_file_size, get_file_path_data, read_listing, Listing, SortBy},
+    utils::{format_file_size, read_listing, Listing, SortBy},
 };
 
 /// Preview debounce delay in milliseconds
@@ -664,49 +667,19 @@ pub fn poll_sizes(app: &mut App, state: &mut ListState) {
     }
 }
 
-/// Process cache loading progress
-pub fn poll_cache_loading(app: &mut App, index: &mut DirectoryIndex, fallback_start_path: &str) {
-    if app.input_mode == InputMode::CacheLoading && app.process_cache_loading_progress() {
-        // Cache loading is complete, finish setup
-        debug!("Cache loading completed, finalizing...");
-
-        // Use the completed cache if available, otherwise fallback to current directory
-        // Capture the completed cache and persist it; also update the in-memory store used for global search
-        let completed_directories = if let Some(ref cache_store) = app.completed_cache_store {
-            debug!(
-                "Using completed cache with {} directories",
-                cache_store.directories.len()
-            );
-
-            // Update the in-memory store so global search starts working immediately
-            index.store = cache_store.clone();
-
-            // Save the cache to file for future use
-            index.save();
-            if let Some(ms) = app.cache_build_elapsed_ms {
-                debug!("Directory cache built in {} ms", ms);
+/// Swap in the folder index's finished walk. A search or folder pick typed while the
+/// index was empty runs again on it; others keep the rows they show.
+pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
+    if index.poll_refresh() && app.index_filling {
+        match app.input_mode {
+            InputMode::Editing if app.search_scope == SearchScope::Root => {
+                refresh_root_search(app, &index.store)
             }
-
-            // We no longer replace the current file list with the entire cache; keep current directory view.
-            // Still return directories for compatibility (ignored by finish_cache_loading).
-            cache_store.directories.clone()
-        } else {
-            debug!("No completed cache available, falling back to current directory");
-            // Fallback to current directory files
-            get_file_path_data(
-                fallback_start_path.to_string(),
-                false,
-                app.sort_by.clone(),
-                &app.sort_type,
-            )
-            .unwrap_or_else(|_| Vec::new())
-        };
-
-        // Finalize cache loading without changing the current directory view
-        app.finish_cache_loading(completed_directories);
-
-        debug!("Cache loading finished, app is now in normal mode");
+            InputMode::PickFolder => refresh_folder_picker(app, &index.store),
+            _ => {}
+        }
     }
+    app.index_filling = index.is_filling();
 }
 
 /// Apply preserved selection and clamp after all refreshes, before handling a key.
@@ -738,7 +711,7 @@ pub(crate) mod tests {
     use crate::app::ViewMode;
     use crate::operations::copy_dir_file_with_progress_cancellable;
     use crate::status_bar::NotificationKind;
-    use crate::utils::{generate_copy_file_dir_name, SortBy, SortType};
+    use crate::utils::{generate_copy_file_dir_name, get_file_path_data, SortBy, SortType};
     use std::path::PathBuf;
 
     /// A folder index over `root` that is never saved.
@@ -749,6 +722,93 @@ pub(crate) mod tests {
             Vec::new(),
             None,
         )
+    }
+
+    /// Poll the index until its walk swaps in, failing after 5 seconds.
+    fn poll_until_walked(app: &mut App, index: &mut DirectoryIndex) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while index.is_refreshing() {
+            poll_index(app, index);
+            assert!(std::time::Instant::now() < deadline, "walk never finished");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn what_was_typed_while_the_index_filled_runs_again_once_it_is_built() {
+        use crate::app::{FolderPicker, TransferKind};
+        use crate::event::search::handle_search_key;
+        use crossterm::event::KeyCode;
+
+        for picking in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("home");
+            std::fs::create_dir_all(root.join("projects")).unwrap();
+            let cache = dir.path().join("cache.json");
+            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            let mut app = App::new(Vec::new());
+            app.index_filling = index.is_filling();
+            assert!(app.index_filling);
+            if picking {
+                app.folder_picker = Some(FolderPicker {
+                    kind: TransferKind::Copy,
+                    source: "/w/notes.txt".into(),
+                    results: Vec::new(),
+                    selected: None,
+                });
+                app.input_mode = InputMode::PickFolder;
+                app.create_edit_file_name = "proj".into();
+            } else {
+                app.enter_search(SearchScope::Root);
+                for c in "proj".chars() {
+                    handle_search_key(&mut app, KeyCode::Char(c), &index.store);
+                }
+                assert!(app.search_results.is_empty());
+            }
+
+            poll_until_walked(&mut app, &mut index);
+
+            assert!(!app.index_filling);
+            let found = match &app.folder_picker {
+                Some(picker) => &picker.results,
+                None => &app.search_results,
+            };
+            assert_eq!(found[0].file_path, root.join("projects").to_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn picker_rows_from_a_searchable_index_stay_when_a_new_walk_swaps_in() {
+        use crate::app::{FolderPicker, TransferKind};
+        use crate::directory_store::{build_directory_from_store, save_directory_to_file};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (old_root, root) = (dir.path().join("projects"), dir.path().join("home"));
+        std::fs::create_dir_all(old_root.join("app")).unwrap();
+        std::fs::create_dir_all(root.join("apple")).unwrap();
+        let cache = dir.path().join("cache.json");
+        let old = build_directory_from_store(old_root.to_str().unwrap(), Vec::new());
+        save_directory_to_file(&old, cache.to_str().unwrap()).unwrap();
+        let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+        let mut app = App::new(Vec::new());
+        app.folder_picker = Some(FolderPicker {
+            kind: TransferKind::Move,
+            source: "/w/notes.txt".into(),
+            results: Vec::new(),
+            selected: None,
+        });
+        app.input_mode = InputMode::PickFolder;
+        app.create_edit_file_name = "app".into();
+        refresh_folder_picker(&mut app, &index.store);
+        let shown = app.folder_picker.as_ref().unwrap().results.clone();
+        assert_eq!(shown[0].file_path, old_root.join("app").to_str().unwrap());
+
+        poll_until_walked(&mut app, &mut index);
+
+        // Enter still moves to the folder the cursor was on.
+        let picker = app.folder_picker.as_ref().unwrap();
+        assert_eq!(picker.results[0].file_path, shown[0].file_path);
+        assert_eq!(index.root, root);
     }
 
     pub(crate) fn running_copy_app() -> App {

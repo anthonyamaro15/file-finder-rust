@@ -183,7 +183,7 @@ fn close_folder_picker(app: &mut App) {
     app.input_mode = InputMode::Normal;
 }
 
-fn refresh_folder_picker(app: &mut App, store: &DirectoryStore) {
+pub(crate) fn refresh_folder_picker(app: &mut App, store: &DirectoryStore) {
     let results = folder_picker_results(&app.create_edit_file_name, store, app.max_search_results);
     if let Some(picker) = app.folder_picker.as_mut() {
         picker.selected = (!results.is_empty()).then_some(0);

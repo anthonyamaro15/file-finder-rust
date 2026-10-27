@@ -14,7 +14,7 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 ### 🔍 **Search**
 
 - Local fuzzy search in current directory
-- Root/global search across the directory cache
+- Root/global search across every folder under `root_dir` (your home folder by default)
 - Configurable search keybindings
 - Smart ranking & real-time filtering
 
@@ -142,7 +142,7 @@ ff [OPTIONS] [PATH] [COMMAND]
 | `--theme <THEME>`   | `-t`  | Theme name or theme file             | `ff -t onedark`      |
 | `--print-path`      |       | Print path to stdout (shell cd)      | `ff --print-path`    |
 | `--reset-config`    |       | Reset config to defaults             | `ff --reset-config`  |
-| `--rebuild-cache`   |       | Rebuild directory cache              | `ff --rebuild-cache` |
+| `--rebuild-cache`   |       | Rebuild the folder index of root_dir | `ff --rebuild-cache` |
 | `--help`            | `-h`  | Show help                            | `ff --help`          |
 | `--version`         | `-V`  | Show version                         | `ff --version`       |
 
@@ -496,9 +496,14 @@ use_nerd_fonts = "auto"    # Auto-detect (default)
 ## ⚙️ Configuration
 
 - **Config file**: `~/.config/ff/settings.toml`
-- **Cache**: `~/.config/ff/cache_directory.json` (folders for root search; ff's own
-  folder changes update it at once, and a cache older than an hour is refreshed in the
-  background at startup)
+- **Cache**: `~/.config/ff/cache_directory.json` (folders for root search and Copy
+  to…/Move to…, read from `root_dir`, your home folder by default, whatever folder ff
+  opens in; hidden and ignored folders and `~/Library` are left out). The first start,
+  `--rebuild-cache` and a changed `root_dir` read the folders in the background while
+  you browse; until the first read finishes, root search says "Building the folder
+  index…", and after a `root_dir` change the old folders stay searchable meanwhile.
+  ff's own folder changes update it at once, and a cache older than an hour is
+  refreshed in the background at startup.
 - **Themes**: `~/.config/ff/themes/`
 
 `ff` stores active TOML settings under `~/.config/ff/settings.toml`. Any setting or
@@ -548,7 +553,8 @@ cp target/release/ff /usr/local/bin/
 
 **Performance issues?**
 
-- First cache build may take time on large dirs
+- The folder index is read in the background, so ff is usable at once; a large
+  `root_dir` only makes root search wait longer for its first results
 - Toggle hidden files (`.`) to speed things up
 
 ---

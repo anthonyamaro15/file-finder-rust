@@ -1,14 +1,11 @@
 use ignore::{DirEntry, WalkBuilder};
-use log::debug;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    mpsc, Arc, Mutex,
-};
+use std::sync::{mpsc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// folders created or removed outside ff stay unseen.
 pub const REFRESH_AFTER: Duration = Duration::from_secs(60 * 60);
 
-/// Walker threads for a background refresh; few, so browsing stays responsive.
+/// Walker threads for a background build or refresh; few, so browsing stays responsive.
 pub const REFRESH_THREADS: usize = 2;
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -27,6 +24,10 @@ pub struct DirectoryStore {
     /// ff's own changes keeps it, so they don't postpone the next refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_at: Option<u64>,
+    /// The folder walked, spelled as the entries are; `None` until a walk or a cache
+    /// fills the store. Older caches don't record it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 impl DirectoryStore {
@@ -59,11 +60,21 @@ fn now_secs() -> u64 {
         .map_or(0, |age| age.as_secs())
 }
 
-/// Walker with the rules every index build uses: hidden and gitignored entries and the
-/// configured folder names are pruned. `keep` can prune more entries below `root`.
+/// `~/Library`: about 100k folders of macOS app data. Only the home folder's is
+/// skipped; other folders named Library are indexed. Resolved, as the root the index
+/// walks is.
+fn home_library() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(fs::canonicalize(&home).unwrap_or(home).join("Library"))
+}
+
+/// Walker with the rules every index build uses: hidden and gitignored entries, the
+/// configured folder names and the `skipped` folder are pruned. `keep` can prune more
+/// entries below `root`.
 fn index_walker(
     root: &Path,
     ignore_directories: &[String],
+    skipped: Option<PathBuf>,
     keep: impl Fn(&DirEntry) -> bool + Send + Sync + 'static,
 ) -> WalkBuilder {
     let ignore_lower: Vec<String> = ignore_directories
@@ -83,7 +94,10 @@ fn index_walker(
 
     // Prune exact folder names while always walking the root itself.
     builder.filter_entry(move |e| {
-        e.depth() == 0 || (!is_ignored(e.file_name(), &ignore_lower) && keep(e))
+        e.depth() == 0
+            || (!is_ignored(e.file_name(), &ignore_lower)
+                && skipped.as_deref() != Some(e.path())
+                && keep(e))
     });
     builder
 }
@@ -114,11 +128,13 @@ pub fn build_directory_from_store_ignore(
     let directories = walk_directories(&index_walker(
         Path::new(root_dir),
         &ignore_directories,
+        home_library(),
         |_| true,
     ));
     DirectoryStore {
         directories,
         built_at,
+        root: Some(root_dir.to_string()),
     }
 }
 
@@ -177,7 +193,7 @@ pub struct DirectoryIndex {
     ignore_directories: Vec<String>,
     /// Where changes are saved; `None` keeps them in memory.
     cache_path: Option<PathBuf>,
-    refresh: Option<mpsc::Receiver<CacheBuildProgress>>,
+    refresh: Option<mpsc::Receiver<DirectoryStore>>,
     /// Paths ff changed while a refresh was walking, re-read once it finishes.
     changed_during_refresh: Vec<PathBuf>,
 }
@@ -199,9 +215,57 @@ impl DirectoryIndex {
         }
     }
 
-    /// Load the cache at `cache_path`. Its root is the parent of its shallowest folder:
-    /// every indexed folder's parent is the root or indexed itself. An empty cache
-    /// uses `fallback_root`, the folder a rebuild would walk.
+    /// The index of `root`, saved at `cache_path`: the cache there, refreshed in the
+    /// background when stale. When `rebuild` asks for it, or the cache is missing,
+    /// unreadable, empty or covers another folder, `root` is walked in the background;
+    /// a cache of another folder stays searchable until that walk swaps in.
+    pub fn open(
+        cache_path: &Path,
+        root: &Path,
+        ignore_directories: Vec<String>,
+        rebuild: bool,
+    ) -> Self {
+        let loaded = if rebuild {
+            None
+        } else {
+            Self::load(cache_path, root, ignore_directories.clone())
+                .inspect_err(|e| {
+                    if e.kind() != io::ErrorKind::NotFound {
+                        warn!(
+                            "Could not read the folder index {}: {e}",
+                            cache_path.display()
+                        );
+                    }
+                })
+                .ok()
+        };
+        let mut index = loaded
+            .filter(|index| !index.store.directories.is_empty())
+            .unwrap_or_else(|| {
+                Self::new(
+                    DirectoryStore::new(),
+                    root.to_path_buf(),
+                    ignore_directories,
+                    Some(cache_path.to_path_buf()),
+                )
+            });
+        if index.root != root {
+            debug!(
+                "Folder index covers {}, walking {}",
+                index.root.display(),
+                root.display()
+            );
+            index.walk(root, REFRESH_THREADS);
+        } else {
+            // A store never walked counts as stale.
+            index.refresh_if_stale(SystemTime::now(), REFRESH_THREADS);
+        }
+        index
+    }
+
+    /// Load the cache at `cache_path`. Its root is the one it records or, for older
+    /// caches, the parent of its shallowest folder: every indexed folder's parent is
+    /// the root or indexed itself. An empty cache uses `fallback_root`.
     pub fn load(
         cache_path: &Path,
         fallback_root: &Path,
@@ -217,13 +281,17 @@ impl DirectoryIndex {
                 .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
                 .map(|age| age.as_secs());
         }
-        let root = store
-            .directories
-            .iter()
-            .min_by_key(|dir| Path::new(dir).components().count())
-            .and_then(|dir| Path::new(dir).parent())
-            .unwrap_or(fallback_root)
-            .to_path_buf();
+        let root = match &store.root {
+            Some(root) => PathBuf::from(root),
+            None => store
+                .directories
+                .iter()
+                .min_by_key(|dir| Path::new(dir).components().count())
+                .and_then(|dir| Path::new(dir).parent())
+                .unwrap_or(fallback_root)
+                .to_path_buf(),
+        };
+        store.root = Some(root.to_string_lossy().into_owned());
         Ok(Self::new(
             store,
             root,
@@ -243,17 +311,28 @@ impl DirectoryIndex {
         if !needs_refresh(built_at, now) || !self.root.is_dir() {
             return false;
         }
+        self.walk(&self.root.clone(), threads);
+        true
+    }
+
+    /// Walk `root` in the background with `threads` walkers; the index becomes it
+    /// when the walk finishes.
+    fn walk(&mut self, root: &Path, threads: usize) {
         self.refresh = Some(build_directory_from_store_async(
-            self.root.to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
             self.ignore_directories.clone(),
             threads,
         ));
         self.changed_during_refresh.clear();
-        true
     }
 
     pub fn is_refreshing(&self) -> bool {
         self.refresh.is_some()
+    }
+
+    /// Whether searches find nothing yet because the first walk hasn't finished.
+    pub fn is_filling(&self) -> bool {
+        self.is_refreshing() && self.store.root.is_none()
     }
 
     /// Swap in a finished refresh, re-reading what ff changed meanwhile, and save it.
@@ -262,26 +341,29 @@ impl DirectoryIndex {
         let Some(receiver) = &self.refresh else {
             return false;
         };
-        let store = loop {
-            match receiver.try_recv() {
-                Ok(CacheBuildProgress::Completed { store }) => break Some(store),
-                Ok(CacheBuildProgress::Progress { .. }) => {}
-                Err(mpsc::TryRecvError::Empty) => return false,
-                Ok(CacheBuildProgress::Error(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-                    break None
-                }
-            }
+        let store = match receiver.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return false,
+            result => result.ok(),
         };
         self.refresh = None;
         let changed = std::mem::take(&mut self.changed_during_refresh);
-        // A root that vanished walks as empty; keep the old index rather than save that.
-        let Some(store) = store.filter(|_| self.root.is_dir()) else {
+        let Some(store) = store else {
             return false;
         };
+        let root = store
+            .root
+            .as_ref()
+            .map_or_else(|| self.root.clone(), PathBuf::from);
+        // A root that vanished walks as empty; keep the old index rather than save that.
+        if !root.is_dir() {
+            return false;
+        }
         debug!(
-            "Refreshed directory cache: {} folders",
+            "Refreshed directory cache of {}: {} folders",
+            root.display(),
             store.directories.len()
         );
+        self.root = root;
         self.store = store;
         for path in changed {
             self.resync(&path);
@@ -342,9 +424,13 @@ impl DirectoryIndex {
         self.save();
     }
 
+    /// Save the index, unless no walk has filled it yet: the next start walks again.
     /// ponytail: saves the whole index, so with several ff instances the last save wins
     /// until the next refresh re-reads the folders.
     pub fn save(&self) {
+        if self.store.root.is_none() {
+            return;
+        }
         if let Some(path) = &self.cache_path {
             match save_directory_to_file(&self.store, &path.to_string_lossy()) {
                 Ok(()) => debug!("Saved directory cache to {}", path.display()),
@@ -382,9 +468,10 @@ impl DirectoryIndex {
         }
         // Walk from the parent so its ignore files and the name rules apply to `indexed`.
         let name = name.to_os_string();
-        let added = walk_directories(&index_walker(parent, &self.ignore_directories, move |e| {
+        let walker = index_walker(parent, &self.ignore_directories, home_library(), move |e| {
             e.depth() > 1 || e.file_name() == name
-        }));
+        });
+        let added = walk_directories(&walker);
         let added_any = !added.is_empty();
         self.store.directories.extend(added);
         removed > 0 || added_any
@@ -422,91 +509,50 @@ impl DirectoryIndex {
     }
 }
 
-// Progress message for directory cache building
-#[derive(Debug, Clone)]
-pub enum CacheBuildProgress {
-    Progress {
-        directories_found: usize,
-        current_path: String,
-    },
-    Completed {
-        store: DirectoryStore,
-    },
-    Error(String),
-}
-
-// Async directory building with progress tracking (ignore::WalkBuilder, parallel)
+/// Walk `root_dir` with `threads` walkers on a background thread; the receiver gets
+/// the store when the walk finishes.
 pub fn build_directory_from_store_async(
     root_dir: String,
     ignore_directories: Vec<String>,
     threads: usize,
-) -> mpsc::Receiver<CacheBuildProgress> {
+) -> mpsc::Receiver<DirectoryStore> {
     let (tx, rx) = mpsc::channel();
 
     thread::spawn(move || {
-        let store = Arc::new(Mutex::new(DirectoryStore {
-            directories: Vec::new(),
-            built_at: Some(now_secs()),
-        }));
-        const UPDATE_INTERVAL: usize = 100; // Update progress every 100 directories
-        let counter = Arc::new(AtomicUsize::new(0));
-
-        let mut builder = index_walker(Path::new(&root_dir), &ignore_directories, |_| true);
+        let built_at = Some(now_secs());
+        let directories = Mutex::new(Vec::new());
+        let mut builder = index_walker(
+            Path::new(&root_dir),
+            &ignore_directories,
+            home_library(),
+            |_| true,
+        );
         builder.threads(threads);
-
-        let walker = builder.build_parallel();
-        let tx_progress = tx.clone();
-        let store_arc = store.clone();
-        let counter_arc = counter.clone();
-
-        walker.run(|| {
-            let tx_progress = tx_progress.clone();
-            let store_arc = store_arc.clone();
-            let counter_arc = counter_arc.clone();
-            Box::new(move |res| {
-                match res {
-                    Ok(entry) => {
-                        if entry.depth() == 0 {
-                            return ignore::WalkState::Continue;
-                        }
-                        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                            if let Some(s) = entry.path().to_str() {
-                                {
-                                    let mut guard = store_arc.lock().unwrap();
-                                    guard.insert(s);
-                                }
-                                let new_count = counter_arc.fetch_add(1, Ordering::Relaxed) + 1;
-                                if new_count.is_multiple_of(UPDATE_INTERVAL) {
-                                    let _ = tx_progress.send(CacheBuildProgress::Progress {
-                                        directories_found: new_count,
-                                        current_path: s.to_string(),
-                                    });
-                                }
-                            }
+        builder.build_parallel().run(|| {
+            let directories = &directories;
+            Box::new(move |result| {
+                match result {
+                    Ok(entry)
+                        if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) =>
+                    {
+                        if let Some(path) = entry.path().to_str() {
+                            directories.lock().unwrap().push(path.to_string());
                         }
                     }
-                    Err(e) => {
-                        debug!("Error processing directory entry: {}", e);
-                    }
+                    Ok(_) => {}
+                    Err(err) => debug!("Error processing directory entry: {}", err),
                 }
                 ignore::WalkState::Continue
             })
         });
-
-        // Final progress update
-        let final_count = counter.load(Ordering::Relaxed);
-        let _ = tx.send(CacheBuildProgress::Progress {
-            directories_found: final_count,
-            current_path: "Finalizing...".to_string(),
-        });
-
-        // Send completion message without risking a panic if Arc still has clones
-        let store_cloned = {
-            let guard = store.lock().unwrap();
-            guard.clone()
+        // A walker that panicked leaves no store; the old index stays.
+        let Ok(directories) = directories.into_inner() else {
+            return;
         };
-        let _ = tx.send(CacheBuildProgress::Completed {
-            store: store_cloned,
+        let _ = tx.send(DirectoryStore {
+            directories,
+            built_at,
+            root: Some(root_dir),
         });
     });
 
@@ -693,6 +739,7 @@ mod tests {
         let store = DirectoryStore {
             directories: vec!["/a".into(), "/a/b".into()],
             built_at: Some(42),
+            root: Some("/".into()),
         };
 
         save_directory_to_file(&store, path.to_str().unwrap()).unwrap();
@@ -749,12 +796,136 @@ mod tests {
 
         let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
         assert_eq!(index.root, PathBuf::from("/r"));
+        assert_eq!(index.store.root.as_deref(), Some("/r"));
         assert_eq!(index.store.built_at, Some(file_time));
+
+        // A root the cache records wins over the inferred one.
+        fs::write(&path, r#"{"directories":["/r/a"],"root":"/elsewhere"}"#).unwrap();
+        let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
+        assert_eq!(index.root, PathBuf::from("/elsewhere"));
 
         fs::write(&path, r#"{"directories":[],"built_at":7}"#).unwrap();
         let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
         assert_eq!(index.root, PathBuf::from("/fallback"));
         assert_eq!(index.store.built_at, Some(7));
+    }
+
+    /// Swap in the index's walk, failing after 5 seconds.
+    fn finish_walk(index: &mut DirectoryIndex) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !index.poll_refresh() {
+            assert!(std::time::Instant::now() < deadline, "walk never finished");
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn walks_skip_the_home_library_but_no_other_library() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        for path in [
+            "Library/Caches",
+            "Library2",
+            "Library.old",
+            "Projects/Library/notes",
+        ] {
+            fs::create_dir_all(home.join(path)).unwrap();
+        }
+        // What a walk from `root` finds, spelled below home.
+        let walk = |root: &Path, keep: fn(&DirEntry) -> bool| {
+            let walker = index_walker(root, &[], Some(home.join("Library")), keep);
+            let mut dirs: Vec<String> = walk_directories(&walker)
+                .iter()
+                .map(|dir| below(dir, home.to_str().unwrap()).unwrap().to_string())
+                .collect();
+            dirs.sort();
+            dirs
+        };
+
+        let expected = [
+            "/Library.old",
+            "/Library2",
+            "/Projects",
+            "/Projects/Library",
+            "/Projects/Library/notes",
+        ];
+        assert_eq!(walk(&home, |_| true), expected);
+        // Re-reading home from its parent, as ff does after changing it, skips it too.
+        let from_parent = walk(dir.path(), |e| {
+            e.depth() > 1 || e.file_name() == OsStr::new("home")
+        });
+        assert_eq!(from_parent[0], "");
+        assert_eq!(from_parent[1..], expected);
+    }
+
+    #[test]
+    fn a_cache_of_another_folder_stays_searchable_while_root_dir_is_walked() {
+        for records_root in [true, false] {
+            let dir = tempdir().unwrap();
+            let (old_root, root) = (dir.path().join("projects"), dir.path().join("home"));
+            fs::create_dir_all(old_root.join("app")).unwrap();
+            fs::create_dir_all(root.join("alpha")).unwrap();
+            let cache = dir.path().join("cache.json");
+            let mut old = build_directory_from_store(old_root.to_str().unwrap(), Vec::new());
+            if !records_root {
+                old.root = None;
+            }
+            save_directory_to_file(&old, cache.to_str().unwrap()).unwrap();
+
+            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            assert!(index.is_refreshing() && !index.is_filling());
+            assert_eq!(
+                (&index.root, listed(&index)),
+                (&old_root, vec!["/app".into()])
+            );
+            // ff's own change while it walks lands too.
+            fs::create_dir(root.join("mine")).unwrap();
+            index.changed(&root.join("mine"));
+            finish_walk(&mut index);
+
+            assert_eq!(index.root, root);
+            assert_eq!(listed(&index), ["/alpha", "/mine"]);
+            let saved = load_directory_from_file(cache.to_str().unwrap()).unwrap();
+            assert_eq!(saved.root.as_deref(), root.to_str());
+            assert_eq!(saved.directories, index.store.directories);
+            // The next start keeps it.
+            let index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            assert!(!index.is_refreshing());
+        }
+    }
+
+    #[test]
+    fn without_a_usable_cache_root_dir_is_walked_in_the_background() {
+        for case in ["missing", "unreadable", "empty", "rebuild"] {
+            let dir = tempdir().unwrap();
+            let root = dir.path().join("home");
+            fs::create_dir_all(root.join("alpha")).unwrap();
+            let cache = dir.path().join("cache.json");
+            match case {
+                "unreadable" => fs::write(&cache, "not json").unwrap(),
+                "empty" => fs::write(&cache, r#"{"directories":[],"built_at":1}"#).unwrap(),
+                "rebuild" => {
+                    let store = build_directory_from_store(root.to_str().unwrap(), Vec::new());
+                    save_directory_to_file(&store, cache.to_str().unwrap()).unwrap();
+                }
+                _ => {}
+            }
+            let before = fs::read_to_string(&cache).ok();
+
+            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), case == "rebuild");
+            assert!(index.is_filling(), "{case}");
+            // Changes before the walk ends aren't saved: the next start walks again.
+            fs::create_dir(root.join("mine")).unwrap();
+            index.changed(&root.join("mine"));
+            index.mark_stale();
+            assert_eq!(fs::read_to_string(&cache).ok(), before, "{case}");
+            finish_walk(&mut index);
+
+            assert!(!index.is_filling(), "{case}");
+            assert_eq!(listed(&index), ["/alpha", "/mine"], "{case}");
+            let saved = load_directory_from_file(cache.to_str().unwrap()).unwrap();
+            assert_eq!(saved.root.as_deref(), root.to_str(), "{case}");
+        }
     }
 
     #[test]
@@ -767,6 +938,7 @@ mod tests {
         let fresh = DirectoryStore {
             directories: Vec::new(),
             built_at: Some(now_secs()),
+            root: Some(root.to_string_lossy().into_owned()),
         };
         let mut index = DirectoryIndex::new(fresh, root.clone(), Vec::new(), Some(cache.clone()));
         assert!(!index.refresh_if_stale(now, REFRESH_THREADS));
@@ -781,14 +953,7 @@ mod tests {
         assert!(!missing.refresh_if_stale(now, REFRESH_THREADS));
 
         assert!(index.refresh_if_stale(now, REFRESH_THREADS));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !index.poll_refresh() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "refresh never finished"
-            );
-            thread::yield_now();
-        }
+        finish_walk(&mut index);
 
         assert!(!index.is_refreshing());
         assert_eq!(listed(&index), ["/alpha"]);
@@ -814,11 +979,10 @@ mod tests {
         // The walk read the folders before ff's changes, but saw one made elsewhere.
         let walked = [root.join("alpha"), root.join("outside")];
         walker
-            .send(CacheBuildProgress::Completed {
-                store: DirectoryStore {
-                    directories: walked.iter().map(|p| p.to_str().unwrap().into()).collect(),
-                    built_at: Some(1),
-                },
+            .send(DirectoryStore {
+                directories: walked.iter().map(|p| p.to_str().unwrap().into()).collect(),
+                built_at: Some(1),
+                root: None,
             })
             .unwrap();
 
@@ -836,11 +1000,7 @@ mod tests {
         let (walker, receiver) = mpsc::channel();
         index.refresh = Some(receiver);
         fs::remove_dir_all(&root).unwrap();
-        walker
-            .send(CacheBuildProgress::Completed {
-                store: DirectoryStore::new(),
-            })
-            .unwrap();
+        walker.send(DirectoryStore::new()).unwrap();
 
         assert!(!index.poll_refresh());
         assert!(!index.is_refreshing());

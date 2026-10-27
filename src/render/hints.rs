@@ -155,7 +155,6 @@ fn hints(app: &App, keymap: &KeymapRuntime, selected: Option<usize>) -> Vec<Hint
             fixed("⏎", "run"),
             fixed("Esc", "close"),
         ],
-        InputMode::CacheLoading => vec![fixed("Ctrl-C", "quit")],
     }
 }
 
