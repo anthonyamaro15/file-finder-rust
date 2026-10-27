@@ -3,11 +3,7 @@
 // ============================================================
 
 // Standard library imports
-use std::{
-    io,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{io, path::PathBuf};
 
 // External crate imports
 use crossterm::{
@@ -29,9 +25,7 @@ use file_finder::{
 use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
-    directory_store::{
-        build_directory_from_store_async, DirectoryIndex, DirectoryStore, REFRESH_THREADS,
-    },
+    directory_store::DirectoryIndex,
     event::{
         handle_modifier_key, keymap::KeymapRuntime, search::handle_search_key,
         transfer::handle_folder_picker_key, LoopControl, LoopState,
@@ -47,7 +41,6 @@ use file_finder::{
 struct StartupPaths {
     file_list_path: String,
     watcher_path: String,
-    cache_path: String,
     refresh_fallback_path: String,
 }
 
@@ -57,7 +50,6 @@ fn startup_paths(effective_config: &file_finder::cli::EffectiveConfig) -> Startu
     StartupPaths {
         file_list_path: start_path.clone(),
         watcher_path: start_path.clone(),
-        cache_path: start_path.clone(),
         refresh_fallback_path: start_path,
     }
 }
@@ -179,57 +171,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut keymap_runtime = KeymapRuntime::from_settings(&settings.keymap);
 
-    let cache_path = PathBuf::from(&settings.cache_directory);
-    let loaded = if !cli_args.rebuild_cache && cache_path.exists() {
-        match DirectoryIndex::load(
-            &cache_path,
-            Path::new(&startup_paths.cache_path),
-            settings.ignore_directories.clone(),
-        ) {
-            Ok(index) => {
-                debug!("Loading directory cache from file");
-                Some(index)
-            }
-            Err(e) => {
-                eprintln!("Warning: Could not load cache file ({}), rebuilding...", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let index = match loaded {
-        Some(mut index) => {
-            // A cache read a while ago misses folders changed outside ff; re-read
-            // them quietly while ff runs.
-            if index.refresh_if_stale(SystemTime::now(), REFRESH_THREADS) {
-                debug!("Refreshing directory cache in the background");
-            }
-            index
-        }
-        None => {
-            debug!("Starting asynchronous directory cache build...");
-
-            // Start async cache building
-            let start_time = std::time::Instant::now();
-            let rx = build_directory_from_store_async(
-                startup_paths.cache_path.clone(),
-                settings.ignore_directories.clone(),
-                num_cpus::get(),
-            );
-
-            // Set up the app to display loading progress and record start time
-            app.start_cache_loading(rx, start_time);
-
-            // Empty for now - it will be populated when cache building completes
-            DirectoryIndex::new(
-                DirectoryStore::new(),
-                PathBuf::from(&startup_paths.cache_path),
-                settings.ignore_directories.clone(),
-                Some(cache_path),
-            )
-        }
-    };
+    // The index covers root_dir whatever folder ff opens in; when it must be walked,
+    // that happens in the background and ff is usable at once.
+    let index = DirectoryIndex::open(
+        &PathBuf::from(&settings.cache_directory),
+        &effective_config.index_root,
+        settings.ignore_directories.clone(),
+        cli_args.rebuild_cache,
+    );
+    app.index_filling = index.is_filling();
 
     let widgets_ui = Ui::new(app.files.clone(), &settings);
     let mut status_bar = StatusBar::new();
@@ -240,6 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let notices: Vec<String> = effective_config
         .start_notice
         .into_iter()
+        .chain(effective_config.index_notice)
         .chain(keymap_warning)
         .collect();
     if !notices.is_empty() {
@@ -350,12 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut loop_state.state,
             &startup_paths.refresh_fallback_path,
         );
-        background::poll_cache_loading(
-            &mut loop_state.app,
-            &mut loop_state.index,
-            &startup_paths.refresh_fallback_path,
-        );
-        loop_state.index.poll_refresh();
+        background::poll_index(&mut loop_state.app, &mut loop_state.index);
         if let Some(message) = loop_state.app.sync_visual(&mut loop_state.state) {
             loop_state.status_bar.show_warning(message, None);
         }
@@ -511,7 +457,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn startup_paths_use_effective_start_path_for_display_watch_and_cache() {
+    fn startup_paths_use_effective_start_path_for_display_and_watch() {
         let effective_config = file_finder::cli::EffectiveConfig {
             start_path: PathBuf::from("/tmp/ff-cli-start"),
             theme: None,
@@ -519,13 +465,14 @@ mod tests {
             layout_style: file_finder::config::settings::LayoutStyle::Modern,
             print_path: false,
             start_notice: None,
+            index_root: PathBuf::from("/tmp/ff-root"),
+            index_notice: None,
         };
 
         let paths = startup_paths(&effective_config);
 
         assert_eq!(paths.file_list_path, "/tmp/ff-cli-start");
         assert_eq!(paths.watcher_path, "/tmp/ff-cli-start");
-        assert_eq!(paths.cache_path, "/tmp/ff-cli-start");
         assert_eq!(paths.refresh_fallback_path, "/tmp/ff-cli-start");
     }
 }

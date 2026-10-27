@@ -2,7 +2,10 @@ use crate::config::settings::LayoutStyle;
 use crate::config::Settings;
 use clap::{Parser, Subcommand, ValueEnum};
 use log::{debug, warn};
-use std::{env, io, path::PathBuf};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+};
 
 /// File Finder - Terminal-based file navigation and search tool
 #[derive(Parser)]
@@ -30,7 +33,7 @@ pub struct CliArgs {
     #[arg(long)]
     pub reset_config: bool,
 
-    /// Rebuild directory cache
+    /// Rebuild the folder index of root_dir, in the background
     #[arg(long)]
     pub rebuild_cache: bool,
 
@@ -162,6 +165,10 @@ pub struct EffectiveConfig {
     pub print_path: bool,
     /// Shown once in the UI when the settings start path was unusable
     pub start_notice: Option<String>,
+    /// The folder the folder index covers: `root_dir`, whatever folder ff opens in
+    pub index_root: PathBuf,
+    /// Shown once in the UI when `root_dir` was unusable
+    pub index_notice: Option<String>,
 }
 
 impl CliArgs {
@@ -193,7 +200,6 @@ impl CliArgs {
 pub(crate) mod path_utils {
     use super::*;
     use std::io;
-    use std::path::Path;
 
     /// Normalize a path by:
     /// 1. Expanding ~ to home directory
@@ -259,11 +265,7 @@ fn resolve_start_path(
     if settings_path.is_dir() {
         return Ok((settings_path, None));
     }
-    let reason = if settings_path.exists() {
-        "is not a directory"
-    } else {
-        "not found"
-    };
+    let reason = not_a_folder(&settings_path);
     let fallback = fallback.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -281,6 +283,32 @@ fn resolve_start_path(
         fallback.display()
     );
     Ok((fallback, Some(notice)))
+}
+
+/// Why `path`, which isn't a folder, can't be used.
+fn not_a_folder(path: &Path) -> &'static str {
+    if path.exists() {
+        "is not a directory"
+    } else {
+        "not found"
+    }
+}
+
+/// The folder to index: `root_dir`, or `start_path` with a notice for the UI when
+/// `root_dir` isn't a folder.
+fn resolve_index_root(root_dir: &str, start_path: &Path) -> (PathBuf, Option<String>) {
+    let root =
+        path_utils::normalize_path(Path::new(root_dir)).unwrap_or_else(|_| PathBuf::from(root_dir));
+    if root.is_dir() {
+        return (root, None);
+    }
+    let notice = format!(
+        "root_dir '{}' {} — global search covers {}",
+        root.display(),
+        not_a_folder(&root),
+        start_path.display()
+    );
+    (start_path.to_path_buf(), Some(notice))
 }
 
 /// Compute effective configuration by applying precedence rules
@@ -307,7 +335,8 @@ pub fn compute_effective_config(
         .filter(|dir| dir.is_dir())
         .or_else(dirs::home_dir);
     let (start_path, start_notice) = resolve_start_path(cli_path, settings_path, fallback)?;
-    if let Some(notice) = &start_notice {
+    let (index_root, index_notice) = resolve_index_root(&settings.root_dir, &start_path);
+    for notice in start_notice.iter().chain(&index_notice) {
         warn!("{}", notice);
     }
 
@@ -346,6 +375,8 @@ pub fn compute_effective_config(
         layout_style,
         print_path,
         start_notice,
+        index_root,
+        index_notice,
     })
 }
 
@@ -424,6 +455,68 @@ mod tests {
                 missing.display(),
                 cwd.path().display()
             )
+        );
+    }
+
+    #[test]
+    fn the_index_covers_root_dir_whatever_folder_ff_opens_in() {
+        let root = tempfile::tempdir().unwrap();
+        let start = tempfile::tempdir().unwrap();
+        let opened = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            root_dir: root.path().to_string_lossy().into_owned(),
+            start_path: start.path().to_string_lossy().into_owned(),
+            ..Settings::default()
+        };
+        let canonical = |dir: &tempfile::TempDir| dir.path().canonicalize().unwrap();
+
+        for args in [
+            vec!["ff"],
+            vec!["ff", opened.path().to_str().unwrap()],
+            vec!["ff", "--rebuild-cache", opened.path().to_str().unwrap()],
+        ] {
+            let cli = CliArgs::try_parse_from(&args).unwrap();
+            let config = compute_effective_config(&cli, &settings).unwrap();
+            let start_path = if args.len() == 1 {
+                canonical(&start)
+            } else {
+                canonical(&opened)
+            };
+            assert_eq!(config.start_path, start_path, "{args:?}");
+            assert_eq!(config.index_root, canonical(&root), "{args:?}");
+            assert_eq!(config.index_notice, None, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn root_dir_that_is_not_a_folder_falls_back_to_the_start_path_with_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = dir.path().join("start");
+        std::fs::create_dir(&start).unwrap();
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "").unwrap();
+        let missing = dir.path().join("missing");
+
+        for (root_dir, reason) in [(&missing, "not found"), (&file, "is not a directory")] {
+            let (root, notice) = resolve_index_root(root_dir.to_str().unwrap(), &start);
+            assert_eq!(root, start);
+            assert_eq!(
+                notice.unwrap(),
+                format!(
+                    "root_dir '{}' {reason} — global search covers {}",
+                    root_dir
+                        .canonicalize()
+                        .unwrap_or(root_dir.clone())
+                        .display(),
+                    start.display()
+                )
+            );
+        }
+        // `~` is the home folder, as for the start path.
+        let (root, notice) = resolve_index_root("~", &start);
+        assert_eq!(
+            (root, notice),
+            (dirs::home_dir().unwrap().canonicalize().unwrap(), None)
         );
     }
 

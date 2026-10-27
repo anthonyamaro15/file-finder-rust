@@ -14,4 +14,3 @@ pub use popups::{
     create_sort_options_popup, draw_input_popup, draw_popup, input_popup_cursor_position,
     render_folder_picker, render_info_popup, render_keybindings_popup, split_popup_area_vertical,
 };
-pub use preview::create_cache_loading_screen;

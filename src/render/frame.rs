@@ -20,8 +20,8 @@ use crate::{
     event::{keymap::KeymapRuntime, LoopState},
     file_reader_content::FileType,
     render::{
-        create_cache_loading_screen, create_create_input_popup, create_delete_confirmation_popup,
-        create_rename_input_popup, create_sort_options_popup, draw_input_popup, draw_popup,
+        create_create_input_popup, create_delete_confirmation_popup, create_rename_input_popup,
+        create_sort_options_popup, draw_input_popup, draw_popup,
         hints::hint_line,
         input_popup_cursor_position,
         popups::{
@@ -127,22 +127,8 @@ pub fn draw(
             _ => {}
         }
 
-        // Handle cache loading screen or normal list rendering
-        let left_rows = match app.input_mode {
-            InputMode::CacheLoading => {
-                // Render cache loading screen using helper from render module
-                let (directories_processed, current_directory) = app.get_cache_loading_info().unwrap_or((0, String::new()));
-                let loading_block = create_cache_loading_screen(directories_processed, &current_directory, theme);
-                f.render_widget(loading_block, lists);
-                None
-            }
-            _ => {
-                // Normal file list rendering
-                let (rows, total) =
-                    widgets_ui.clone().render_list_preview(f, lists, state, app, settings, today);
-                Some((rows, total, state.offset()))
-            }
-        };
+        let (list_rows, total) =
+            widgets_ui.clone().render_list_preview(f, lists, state, app, settings, today);
 
         // Only render preview in Normal view mode
         // In FullList mode, there's no preview pane
@@ -269,15 +255,13 @@ pub fn draw(
 
         // The divider beside the left list doubles as its scrollbar: its own right border,
         // or the left edge of the pane beside it.
-        if let Some((rows, total, offset)) = left_rows {
-            let divider = if settings.show_borders {
-                Some(rows.right())
-            } else {
-                (app.view_mode != ViewMode::FullList).then(|| inner_layout[0].right())
-            };
-            if let Some(x) = divider {
-                draw_scrollbar(f.buffer_mut(), x, rows, total, offset, theme.light_gray);
-            }
+        let divider = if settings.show_borders {
+            Some(list_rows.right())
+        } else {
+            (app.view_mode != ViewMode::FullList).then(|| inner_layout[0].right())
+        };
+        if let Some(x) = divider {
+            draw_scrollbar(f.buffer_mut(), x, list_rows, total, state.offset(), theme.light_gray);
         }
 
         if app.render_popup && !app.batch_targets.is_empty() {
@@ -334,7 +318,7 @@ pub fn draw(
             }
             InputMode::PickFolder => {
                 if let Some(picker) = &app.folder_picker {
-                    render_folder_picker(f, picker, &app.create_edit_file_name, app.char_index, theme);
+                    render_folder_picker(f, picker, &app.create_edit_file_name, app.char_index, app.index_filling, theme);
                 }
             }
             InputMode::WatchInfo => {

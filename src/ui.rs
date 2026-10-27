@@ -19,6 +19,18 @@ use crate::sizes::{FolderSizes, FolderTotal, RowSize};
 use crate::utils::files::{EntryInfo, SortBy};
 use crate::utils::format::{date_label, replace_home_with_tilde, LocalStamp};
 
+/// Said in place of a global search's results while the folder index is empty until
+/// its first walk finishes.
+pub const INDEX_FILLING: &str = "Building the folder index…";
+
+/// The row saying the folder index is still being built.
+fn filling_row(theme: &ThemeColors) -> ListItem<'static> {
+    ListItem::new(Span::styled(
+        INDEX_FILLING,
+        Style::default().fg(theme.light_gray),
+    ))
+}
+
 /// The preview's block: a box with borders, else a dim divider on its left and a
 /// column of padding each side, like the list's.
 pub fn create_preview_block(settings: &Settings, theme: &ThemeColors) -> Block<'static> {
@@ -227,6 +239,15 @@ impl Ui {
         cursor: Option<usize>,
     ) -> Vec<ListItem<'static>> {
         let term = highlight_term(app, false);
+        // Only while typing, when no key acts on the rows it hides.
+        if app.index_filling
+            && app.global_search_mode
+            && app.search_results.is_empty()
+            && app.input_mode == InputMode::Editing
+            && !app.searching_right_pane()
+        {
+            return vec![filling_row(&app.theme_colors)];
+        }
         if app.global_search_mode && !app.search_results.is_empty() {
             let rows = Rows {
                 term,
@@ -298,7 +319,13 @@ impl Ui {
             ..Rows::new(self, app, settings, width, today)
         }
         .with_cursor(app, true, pane.list_state.selected());
-        if pane.is_searching() {
+        if app.index_filling
+            && app.searching_right_pane()
+            && pane.global_search_mode
+            && pane.search_results.is_empty()
+        {
+            vec![filling_row(&app.theme_colors)]
+        } else if pane.is_searching() {
             pane.search_results
                 .iter()
                 .enumerate()
@@ -952,6 +979,66 @@ mod tests {
             ("p", theme.mode_global, theme.cursor_bg)
         );
         assert!(underlined(&p) && !underlined(&cell(&buffer, "photos", None, 3)));
+    }
+
+    #[test]
+    fn global_search_says_the_folder_index_is_being_built_while_it_is_empty() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        app.index_filling = true;
+        let says = |rows: Vec<String>| rows.iter().any(|row| row.contains(INDEX_FILLING));
+
+        // Typing a search from the root finds nothing yet, so it says why.
+        app.enter_search(crate::app::SearchScope::Root);
+        app.input = "pho".into();
+        assert!(says(text(&draw_left(
+            &mut ui,
+            &app,
+            &settings,
+            60,
+            Some(0)
+        ))));
+        // Out of the box the folder's rows stay, as keys act on them.
+        app.input_mode = InputMode::Normal;
+        let rows = text(&draw_left(&mut ui, &app, &settings, 60, Some(0)));
+        assert!(!says(rows.clone()) && rows.iter().any(|row| row.contains("photos")));
+        // A search of the folder doesn't use the index.
+        app.enter_search(crate::app::SearchScope::CurrentDirectory);
+        assert!(!says(text(&draw_left(
+            &mut ui,
+            &app,
+            &settings,
+            60,
+            Some(0)
+        ))));
+        // Once built, an empty result is just that.
+        app.enter_search(crate::app::SearchScope::Root);
+        app.index_filling = false;
+        assert!(!says(text(&draw_left(
+            &mut ui,
+            &app,
+            &settings,
+            60,
+            Some(0)
+        ))));
+
+        // The right pane's search says it too.
+        app.index_filling = true;
+        app.view_mode = ViewMode::DualPane;
+        app.active_pane = PanePosition::Right;
+        app.right_pane = Pane::with_listing("/w".into(), fixture());
+        app.enter_search(crate::app::SearchScope::Root);
+        let right = |app: &App| {
+            draw(60, |f| {
+                let items = ui.right_pane_items(app, &settings, 60, TODAY);
+                f.render_widget(List::new(items), f.size())
+            })
+        };
+        assert!(says(right(&app)));
+        app.index_filling = false;
+        assert!(!says(right(&app)));
     }
 
     #[test]
