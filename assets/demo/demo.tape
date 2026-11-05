@@ -24,13 +24,18 @@ Type "l" Sleep 800ms
 Show
 
 # 1. The preview shows the highlighted file, with syntax highlighting
-Sleep 3s
+Sleep 1.8s
 
 # 2. Root search looks through every folder under home, from anywhere...
-Space Sleep 100ms Type "/" Sleep 400ms
-Type@110ms "contracts" Sleep 2s
+Space Sleep 100ms Type "/" Sleep 200ms
+Type@60ms "contracts" Sleep 1.3s
 
 # ...and narrows to a folder nine levels down
-Type@130ms "/signed" Sleep 1.8s
-Escape Sleep 300ms
-Type "l" Sleep 4s
+Type@70ms "/signed" Sleep 1.1s
+Escape Sleep 150ms
+Type "l" Sleep 2.2s
+
+# 3. Move the file into another folder, picked by name the same way
+Type "M" Sleep 300ms
+Type@70ms "north/arch" Sleep 1.2s
+Enter Sleep 2.2s
