@@ -222,7 +222,10 @@ mod tests {
 
     fn entry_names(archive: &Path) -> Vec<String> {
         let archive = zip::ZipArchive::new(File::open(archive).unwrap()).unwrap();
-        archive.file_names().map(str::to_string).collect()
+        archive
+            .file_names()
+            .map(|name| name.unwrap().into_owned())
+            .collect()
     }
 
     fn sorted_listing(dir: &Path) -> Vec<String> {

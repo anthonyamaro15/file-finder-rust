@@ -116,7 +116,7 @@ eval "$(ff init bash)"  # For bash
 
 ### From Source
 
-Prerequisites: Rust 1.81+, macOS or Linux
+Prerequisites: Rust 1.88+, macOS or Linux
 
 ```bash
 git clone https://github.com/anthonyamaro15/file-finder-rust.git
