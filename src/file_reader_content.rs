@@ -1177,14 +1177,12 @@ impl FileContent<'_> {
 
     /// Modification time stored for a ZIP entry: the UTC extended timestamp if present,
     /// otherwise the DOS date/time read as local time, like `unzip`.
-    fn zip_modified_time(file: &zip::read::ZipFile<'_>) -> Option<SystemTime> {
+    fn zip_modified_time<R: io::Read>(file: &zip::read::ZipFile<'_, R>) -> Option<SystemTime> {
         for field in file.extra_data_fields() {
-            match field {
-                zip::extra_fields::ExtraField::ExtendedTimestamp(timestamp) => {
-                    if let Some(seconds) = timestamp.mod_time() {
-                        return SystemTime::UNIX_EPOCH
-                            .checked_add(Duration::from_secs(u64::from(seconds)));
-                    }
+            if let zip::extra_fields::ExtraField::ExtendedTimestamp(timestamp) = field {
+                if let Some(seconds) = timestamp.mod_time() {
+                    return SystemTime::UNIX_EPOCH
+                        .checked_add(Duration::from_secs(u64::from(seconds)));
                 }
             }
         }
@@ -1257,7 +1255,7 @@ impl FileContent<'_> {
             let result = (|| -> io::Result<bool> {
                 let mut file = archive.by_index(i)?;
                 let enclosed_name = match file.enclosed_name() {
-                    Some(path) => path.to_owned(),
+                    Some(path) => path,
                     None => return Ok(false),
                 };
                 let outpath = target_dir.join(&enclosed_name);
@@ -1267,7 +1265,7 @@ impl FileContent<'_> {
                 {
                     return Err(io::Error::other(format!(
                         "Refusing ZIP symlink '{}'",
-                        file.name()
+                        enclosed_name.display()
                     )));
                 }
 
@@ -1599,9 +1597,7 @@ mod extraction_tests {
             );
             let mut extra = vec![1]; // The extended timestamp contains an mtime.
             extra.extend_from_slice(&timestamp.to_le_bytes());
-            options
-                .add_extra_data(0x5455, extra.into_boxed_slice(), false)
-                .unwrap();
+            options.add_extra_field(0x5455, extra, false).unwrap();
             if name.ends_with('/') {
                 writer.add_directory(name, options).unwrap();
             } else {
