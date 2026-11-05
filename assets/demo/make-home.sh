@@ -86,6 +86,15 @@ pub struct Day {
     pub sky: &'static str,
 }
 
+fn sky(code: u8) -> &'static str {
+    match code {
+        0 => "clear",
+        1..=3 => "cloudy",
+        51..=67 => "rain",
+        _ => "mixed",
+    }
+}
+
 pub fn summarize(report: &Report) -> Vec<Day> {
     let daily = &report.daily;
     daily.time.iter().enumerate().map(|(i, date)| Day {
@@ -93,15 +102,6 @@ pub fn summarize(report: &Report) -> Vec<Day> {
         high: daily.temperature_2m_max[i].round() as i32,
         sky: sky(daily.weather_code[i]),
     }).collect()
-}
-
-fn sky(code: u8) -> &'static str {
-    match code {
-        0 => "☀ clear",
-        1..=3 => "⛅ cloudy",
-        51..=67 => "🌧 rain",
-        _ => "🌫 mixed",
-    }
 }
 T
 printf 'target/\n.env\n' > $P/.gitignore

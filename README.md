@@ -7,7 +7,7 @@ Navigate your projects with ease using fuzzy search, file previews, and powerful
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-![ff: browse with previews, find a folder nine levels deep with root search, and move a file by picking its new folder by name](assets/demo.gif)
+![ff: preview a Rust file with syntax highlighting, then root search narrows 161 matching folders to one nine levels deep and previews the PDF inside](assets/demo.gif)
 
 ---
 
