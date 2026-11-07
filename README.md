@@ -1,13 +1,28 @@
-# 🚀 Rust File Finder
+# ff
 
-A blazing-fast, developer-focused terminal file explorer built with Rust.  
-Navigate your projects with ease using fuzzy search, file previews, and powerful keyboard shortcuts.
+A terminal file finder: type a folder's name, and you're there.
 
+I keep my files in a very structured set of folders, and some projects end up nested
+quite deep. Opening one in Neovim meant `cd`-ing through every level first. With ff you
+type part of the folder's name and your shell lands in it, even nine levels down, with
+search across every folder under your home.
+
+[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 ![Platform](https://img.shields.io/badge/Platform-MacOS%20%7C%20Linux-blue)
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 ![ff: preview a Rust file with syntax highlighting, root search narrows 161 matching folders to one nine levels deep, then a PDF there moves to another folder picked by name](assets/demo.gif)
+
+## ⚡ Quick start
+
+```bash
+brew install anthonyamaro15/tap/ff
+echo 'eval "$(ff init zsh)"' >> ~/.zshrc && source ~/.zshrc   # bash: use ~/.bashrc and "ff init bash"
+```
+
+Run `ff`, press `Space` then `/`, and type part of a folder's name. Press `Esc` to browse
+the results, then `Enter` on the folder you want: ff quits and your shell is in it.
 
 ---
 
