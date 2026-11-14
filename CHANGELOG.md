@@ -5,6 +5,18 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `ignore_paths` setting: exact folders to leave out of the folder index with everything
+  below them, e.g. `ignore_paths = ["~/Movies", "~/go"]`. Unlike `ignore_directories`,
+  `"~/go"` doesn't skip other folders named `go`. Renaming an excluded folder in ff keeps
+  it excluded; moving one elsewhere with Move to… doesn't carry the setting along yet.
+  ([#162](https://github.com/anthonyamaro15/file-finder-rust/pull/162))
+- When `ignore_paths` or `ignore_directories` change, ff drops the newly skipped
+  folders from the index as soon as it starts and re-reads the rest in the background,
+  instead of waiting up to an hour for the next refresh.
+  ([#162](https://github.com/anthonyamaro15/file-finder-rust/pull/162))
+
 ### Changed
 
 - `Enter` while typing a root search goes straight to the top result, so the flow is

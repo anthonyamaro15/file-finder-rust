@@ -1,6 +1,7 @@
 use ignore::{DirEntry, WalkBuilder};
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
@@ -28,6 +29,108 @@ pub struct DirectoryStore {
     /// fills the store. Older caches don't record it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
+    /// The rules the last full walk used; `None` in older caches. When settings ask for
+    /// other rules, ff prunes the index at once and walks again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<IndexRules>,
+    /// Each `ignore_paths` folder's count (it and the folders below it) when it was
+    /// last indexed, so what's excluded can still be shown.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub excluded: BTreeMap<String, usize>,
+}
+
+/// What the index leaves out besides hidden and gitignored folders and `~/Library`:
+/// folders with these names at any depth, and these folders with everything below.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct IndexRules {
+    /// Lowercased, sorted names (`ignore_directories`).
+    pub ignore_directories: Vec<String>,
+    /// Sorted folders strictly below the root, spelled as the index spells them
+    /// (`ignore_paths`).
+    pub ignore_paths: Vec<String>,
+    /// Each `ignore_paths` folder as settings.toml spells it, so it can be found
+    /// there again after its folder is gone.
+    #[serde(skip)]
+    pub sources: BTreeMap<String, String>,
+}
+
+/// Rules are the same when they leave out the same folders, however they're spelled.
+impl PartialEq for IndexRules {
+    fn eq(&self, other: &Self) -> bool {
+        self.ignore_directories == other.ignore_directories
+            && self.ignore_paths == other.ignore_paths
+    }
+}
+
+impl Eq for IndexRules {}
+
+impl IndexRules {
+    /// The rules for an index of `root`. `ignore_paths` entries may start with `~`;
+    /// relative ones are taken under `root`. They're spelled as the walk of `root`
+    /// spells folders, so aliases such as /tmp and /private/tmp match.
+    pub fn new(ignore_directories: &[String], ignore_paths: &[String], root: &Path) -> Self {
+        let mut names: Vec<String> = ignore_directories
+            .iter()
+            .map(|name| name.to_lowercase())
+            .collect();
+        names.sort();
+        names.dedup();
+        let mut sources = BTreeMap::new();
+        for entry in ignore_paths {
+            if let Some(path) = index_spelling(Path::new(entry.trim()), root) {
+                sources.entry(path).or_insert_with(|| entry.clone());
+            }
+        }
+        Self {
+            ignore_directories: names,
+            ignore_paths: sources.keys().cloned().collect(),
+            sources,
+        }
+    }
+
+    /// Rules with only folder names, as builds without `ignore_paths` use.
+    pub fn names(ignore_directories: &[String]) -> Self {
+        Self::new(ignore_directories, &[], Path::new("/"))
+    }
+
+    /// Whether `path` is an `ignore_paths` folder or inside one.
+    pub fn excludes(&self, path: &str) -> bool {
+        self.ignore_paths
+            .iter()
+            .any(|excluded| below(path, excluded).is_some())
+    }
+
+    /// Whether a folder named `name` is skipped wherever it is.
+    fn ignores_name(&self, name: &OsStr) -> bool {
+        is_ignored(name, &self.ignore_directories)
+    }
+}
+
+/// `path` (`~`-relative, absolute, or relative to `root`) spelled as a walk of `root`
+/// spells it, or `None` unless it's strictly below `root`: the walk never meets the
+/// root or a folder outside it, so excluding one would only confuse the pruning.
+fn index_spelling(path: &Path, root: &Path) -> Option<String> {
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    let expanded = crate::cli::path_utils::expand_home(path).ok()?;
+    let absolute = if expanded.is_relative() {
+        root.join(expanded)
+    } else {
+        expanded
+    };
+    let resolved = fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
+    let canonical_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let relative: PathBuf = resolved
+        .strip_prefix(&canonical_root)
+        .or_else(|_| absolute.strip_prefix(root))
+        .ok()?
+        .components()
+        .collect();
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    root.join(relative).to_str().map(String::from)
 }
 
 impl DirectoryStore {
@@ -68,18 +171,19 @@ fn home_library() -> Option<PathBuf> {
     Some(fs::canonicalize(&home).unwrap_or(home).join("Library"))
 }
 
-/// Walker with the rules every index build uses: hidden and gitignored entries, the
-/// configured folder names and the `skipped` folder are pruned. `keep` can prune more
-/// entries below `root`.
+/// Walker with the rules every index build uses: hidden and gitignored entries,
+/// `~/Library` and what `rules` leave out are pruned. `keep` can prune more entries
+/// below `root`.
 fn index_walker(
     root: &Path,
-    ignore_directories: &[String],
-    skipped: Option<PathBuf>,
+    rules: &IndexRules,
     keep: impl Fn(&DirEntry) -> bool + Send + Sync + 'static,
 ) -> WalkBuilder {
-    let ignore_lower: Vec<String> = ignore_directories
-        .iter()
-        .map(|s| s.to_lowercase())
+    let ignore_lower = rules.ignore_directories.clone();
+    // ponytail: a linear scan per folder; a set if people list hundreds of paths.
+    let skipped: Vec<PathBuf> = home_library()
+        .into_iter()
+        .chain(rules.ignore_paths.iter().map(PathBuf::from))
         .collect();
 
     let mut builder = WalkBuilder::new(root);
@@ -96,7 +200,7 @@ fn index_walker(
     builder.filter_entry(move |e| {
         e.depth() == 0
             || (!is_ignored(e.file_name(), &ignore_lower)
-                && skipped.as_deref() != Some(e.path())
+                && !skipped.iter().any(|skip| skip.as_path() == e.path())
                 && keep(e))
     });
     builder
@@ -125,16 +229,14 @@ pub fn build_directory_from_store_ignore(
     ignore_directories: Vec<String>,
 ) -> DirectoryStore {
     let built_at = Some(now_secs());
-    let directories = walk_directories(&index_walker(
-        Path::new(root_dir),
-        &ignore_directories,
-        home_library(),
-        |_| true,
-    ));
+    let rules = IndexRules::names(&ignore_directories);
+    let directories = walk_directories(&index_walker(Path::new(root_dir), &rules, |_| true));
     DirectoryStore {
         directories,
         built_at,
         root: Some(root_dir.to_string()),
+        rules: Some(rules),
+        excluded: BTreeMap::new(),
     }
 }
 
@@ -190,7 +292,7 @@ pub struct DirectoryIndex {
     pub store: DirectoryStore,
     /// Folder the index covers, spelled as its entries are.
     pub root: PathBuf,
-    ignore_directories: Vec<String>,
+    rules: IndexRules,
     /// Where changes are saved; `None` keeps them in memory.
     cache_path: Option<PathBuf>,
     refresh: Option<mpsc::Receiver<DirectoryStore>>,
@@ -202,13 +304,13 @@ impl DirectoryIndex {
     pub fn new(
         store: DirectoryStore,
         root: PathBuf,
-        ignore_directories: Vec<String>,
+        rules: IndexRules,
         cache_path: Option<PathBuf>,
     ) -> Self {
         Self {
             store,
             root,
-            ignore_directories,
+            rules,
             cache_path,
             refresh: None,
             changed_during_refresh: Vec::new(),
@@ -218,43 +320,49 @@ impl DirectoryIndex {
     /// The index of `root`, saved at `cache_path`: the cache there, refreshed in the
     /// background when stale. When `rebuild` asks for it, or the cache is missing,
     /// unreadable, empty or covers another folder, `root` is walked in the background;
-    /// a cache of another folder stays searchable until that walk swaps in.
-    pub fn open(
-        cache_path: &Path,
-        root: &Path,
-        ignore_directories: Vec<String>,
-        rebuild: bool,
-    ) -> Self {
-        let loaded = if rebuild {
-            None
-        } else {
-            Self::load(cache_path, root, ignore_directories.clone())
-                .inspect_err(|e| {
-                    if e.kind() != io::ErrorKind::NotFound {
-                        warn!(
-                            "Could not read the folder index {}: {e}",
-                            cache_path.display()
-                        );
-                    }
-                })
-                .ok()
-        };
+    /// a cache of another folder stays searchable until that walk swaps in. A cache
+    /// built with other `rules` is pruned to them at once, then walked again.
+    pub fn open(cache_path: &Path, root: &Path, rules: IndexRules, rebuild: bool) -> Self {
+        let loaded = Self::load(cache_path, root, rules.clone())
+            .inspect_err(|e| {
+                if e.kind() != io::ErrorKind::NotFound {
+                    warn!(
+                        "Could not read the folder index {}: {e}",
+                        cache_path.display()
+                    );
+                }
+            })
+            .ok();
+        // A walk can't count the folders it skips, so keep the counts a rebuild or an
+        // empty cache would lose.
+        let excluded = loaded
+            .as_ref()
+            .map(|index| index.store.excluded.clone())
+            .unwrap_or_default();
         let mut index = loaded
-            .filter(|index| !index.store.directories.is_empty())
+            .filter(|index| !rebuild && !index.store.directories.is_empty())
             .unwrap_or_else(|| {
                 Self::new(
                     DirectoryStore::new(),
                     root.to_path_buf(),
-                    ignore_directories,
+                    rules,
                     Some(cache_path.to_path_buf()),
                 )
             });
+        if index.store.excluded.is_empty() {
+            index.store.excluded = excluded;
+        }
         if index.root != root {
             debug!(
                 "Folder index covers {}, walking {}",
                 index.root.display(),
                 root.display()
             );
+            index.walk(root, REFRESH_THREADS);
+        } else if index.store.root.is_some() && index.store.rules.as_ref() != Some(&index.rules) {
+            debug!("Folder index rules changed; pruning and walking again");
+            index.prune_to_rules();
+            index.save();
             index.walk(root, REFRESH_THREADS);
         } else {
             // A store never walked counts as stale.
@@ -266,11 +374,7 @@ impl DirectoryIndex {
     /// Load the cache at `cache_path`. Its root is the one it records or, for older
     /// caches, the parent of its shallowest folder: every indexed folder's parent is
     /// the root or indexed itself. An empty cache uses `fallback_root`.
-    pub fn load(
-        cache_path: &Path,
-        fallback_root: &Path,
-        ignore_directories: Vec<String>,
-    ) -> io::Result<Self> {
+    pub fn load(cache_path: &Path, fallback_root: &Path, rules: IndexRules) -> io::Result<Self> {
         let mut store = load_directory_from_file(&cache_path.to_string_lossy())?;
         // Older caches don't record their walk; the file's time stands in for it
         // (none counts as stale).
@@ -295,7 +399,7 @@ impl DirectoryIndex {
         Ok(Self::new(
             store,
             root,
-            ignore_directories,
+            rules,
             Some(cache_path.to_path_buf()),
         ))
     }
@@ -320,7 +424,7 @@ impl DirectoryIndex {
     fn walk(&mut self, root: &Path, threads: usize) {
         self.refresh = Some(build_directory_from_store_async(
             root.to_string_lossy().into_owned(),
-            self.ignore_directories.clone(),
+            self.rules.clone(),
             threads,
         ));
         self.changed_during_refresh.clear();
@@ -364,12 +468,65 @@ impl DirectoryIndex {
             store.directories.len()
         );
         self.root = root;
+        let excluded = std::mem::take(&mut self.store.excluded);
         self.store = store;
+        // The walk can't count what it skipped, so keep the counts from before.
+        self.store.excluded = excluded;
+        // A walk started before the rules changed may hold folders they now leave out.
+        if self.store.rules.as_ref() != Some(&self.rules) {
+            self.prune_to_rules();
+        }
         for path in changed {
             self.resync(&path);
         }
         self.save();
         true
+    }
+
+    /// The rules the index follows.
+    pub fn rules(&self) -> &IndexRules {
+        &self.rules
+    }
+
+    /// Follow `rules` from now on: drop what they leave out at once, and walk again in
+    /// the background for what they let back in.
+    pub fn set_rules(&mut self, rules: IndexRules) {
+        if rules == self.rules {
+            return;
+        }
+        self.rules = rules;
+        self.prune_to_rules();
+        self.save();
+        if self.root.is_dir() {
+            self.walk(&self.root.clone(), REFRESH_THREADS);
+        }
+    }
+
+    /// Drop the folders the rules leave out, counting each `ignore_paths` folder's as
+    /// it goes, and forget the counts of folders no longer excluded.
+    fn prune_to_rules(&mut self) {
+        let root = &self.root;
+        let rules = &self.rules;
+        let excluded = &mut self.store.excluded;
+        excluded.retain(|path, _| rules.ignore_paths.contains(path));
+        for path in &rules.ignore_paths {
+            let count = self
+                .store
+                .directories
+                .iter()
+                .filter(|dir| below(dir, path).is_some())
+                .count();
+            if count > 0 {
+                excluded.insert(path.clone(), count);
+            }
+        }
+        self.store.directories.retain(|dir| {
+            !rules.excludes(dir)
+                && !Path::new(dir).strip_prefix(root).is_ok_and(|rest| {
+                    rest.components()
+                        .any(|part| rules.ignores_name(part.as_os_str()))
+                })
+        });
     }
 
     /// ff created, copied, moved, extracted or deleted `path`: re-read it and save.
@@ -392,11 +549,14 @@ impl DirectoryIndex {
     }
 
     /// ff renamed the folder `from` to `to`: rewrite the paths under it and save.
-    pub fn renamed(&mut self, from: &Path, to: &Path) {
+    /// `ignore_paths` folders at or below `from` move with it; returns, for each, its
+    /// settings.toml entry and its new path, so settings.toml can follow.
+    pub fn renamed(&mut self, from: &Path, to: &Path) -> Vec<(String, String)> {
         if self.is_refreshing() {
             self.changed_during_refresh
                 .extend([from.to_path_buf(), to.to_path_buf()]);
         }
+        let moved_rules = self.rename_rules(from, to);
         let changed = match (self.index_path(from), self.index_path(to)) {
             (Some(old), Some(new)) if self.contains(&old) && self.keeps_name(&new) => {
                 self.store
@@ -407,14 +567,54 @@ impl DirectoryIndex {
                         *dir = format!("{new}{rest}");
                     }
                 }
+                // An `ignore_paths` folder may lie below the new name.
+                let rules = &self.rules;
+                self.store.directories.retain(|dir| !rules.excludes(dir));
                 true
             }
             // The rules may treat the new name differently, so read it from disk.
             _ => self.resync(from) | self.resync(to),
         };
-        if changed {
+        if changed || !moved_rules.is_empty() {
             self.save();
         }
+        moved_rules
+    }
+
+    /// Move the `ignore_paths` folders at or below `from` (and their counts) to `to`.
+    fn rename_rules(&mut self, from: &Path, to: &Path) -> Vec<(String, String)> {
+        let (Some(old), Some(new)) = (self.index_path(from), self.index_path(to)) else {
+            return Vec::new();
+        };
+        let in_step = self.store.rules.as_ref() == Some(&self.rules);
+        let mut moved = Vec::new();
+        for path in &mut self.rules.ignore_paths {
+            if let Some(rest) = below(path, &old) {
+                let renamed = format!("{new}{rest}");
+                moved.push((std::mem::replace(path, renamed.clone()), renamed));
+            }
+        }
+        if moved.is_empty() {
+            return moved;
+        }
+        self.rules.ignore_paths.sort();
+        self.rules.ignore_paths.dedup();
+        let mut entries = Vec::new();
+        for (old_path, new_path) in moved {
+            if let Some(count) = self.store.excluded.remove(&old_path) {
+                self.store.excluded.insert(new_path.clone(), count);
+            }
+            let entry = self.rules.sources.remove(&old_path).unwrap_or(old_path);
+            self.rules
+                .sources
+                .insert(new_path.clone(), new_path.clone());
+            entries.push((entry, new_path));
+        }
+        // A cache that followed the rules still does: the folders moved with them.
+        if in_step {
+            self.store.rules = Some(self.rules.clone());
+        }
+        entries
     }
 
     /// Make the next start refresh the index, e.g. when quitting stopped an operation
@@ -468,7 +668,7 @@ impl DirectoryIndex {
         }
         // Walk from the parent so its ignore files and the name rules apply to `indexed`.
         let name = name.to_os_string();
-        let walker = index_walker(parent, &self.ignore_directories, home_library(), move |e| {
+        let walker = index_walker(parent, &self.rules, move |e| {
             e.depth() > 1 || e.file_name() == name
         });
         let added = walk_directories(&walker);
@@ -495,17 +695,14 @@ impl DirectoryIndex {
         self.store.directories.iter().any(|dir| dir == path)
     }
 
-    /// Whether a full walk could index a folder with this name: not hidden or ignored.
+    /// Whether a full walk could index a folder at `path`: not hidden, ignored by name
+    /// or inside an `ignore_paths` folder.
     /// ponytail: gitignore patterns aren't checked here; the next refresh applies them.
     fn keeps_name(&self, path: &str) -> bool {
-        let ignore_lower: Vec<String> = self
-            .ignore_directories
-            .iter()
-            .map(|s| s.to_lowercase())
-            .collect();
-        Path::new(path).file_name().is_some_and(|name| {
-            !name.to_string_lossy().starts_with('.') && !is_ignored(name, &ignore_lower)
-        })
+        !self.rules.excludes(path)
+            && Path::new(path).file_name().is_some_and(|name| {
+                !name.to_string_lossy().starts_with('.') && !self.rules.ignores_name(name)
+            })
     }
 }
 
@@ -513,7 +710,7 @@ impl DirectoryIndex {
 /// the store when the walk finishes.
 pub fn build_directory_from_store_async(
     root_dir: String,
-    ignore_directories: Vec<String>,
+    rules: IndexRules,
     threads: usize,
 ) -> mpsc::Receiver<DirectoryStore> {
     let (tx, rx) = mpsc::channel();
@@ -521,12 +718,7 @@ pub fn build_directory_from_store_async(
     thread::spawn(move || {
         let built_at = Some(now_secs());
         let directories = Mutex::new(Vec::new());
-        let mut builder = index_walker(
-            Path::new(&root_dir),
-            &ignore_directories,
-            home_library(),
-            |_| true,
-        );
+        let mut builder = index_walker(Path::new(&root_dir), &rules, |_| true);
         builder.threads(threads);
         builder.build_parallel().run(|| {
             let directories = &directories;
@@ -553,6 +745,8 @@ pub fn build_directory_from_store_async(
             directories,
             built_at,
             root: Some(root_dir),
+            rules: Some(rules),
+            excluded: BTreeMap::new(),
         });
     });
 
@@ -568,7 +762,7 @@ mod tests {
     fn index_over(root: &Path, ignore: &[&str]) -> DirectoryIndex {
         let ignore: Vec<String> = ignore.iter().map(|name| name.to_string()).collect();
         let store = build_directory_from_store(root.to_str().unwrap(), ignore.clone());
-        DirectoryIndex::new(store, root.to_path_buf(), ignore, None)
+        DirectoryIndex::new(store, root.to_path_buf(), IndexRules::names(&ignore), None)
     }
 
     /// The index's folders below its root, sorted, e.g. ["/alpha", "/alpha/beta"].
@@ -740,6 +934,7 @@ mod tests {
             directories: vec!["/a".into(), "/a/b".into()],
             built_at: Some(42),
             root: Some("/".into()),
+            ..Default::default()
         };
 
         save_directory_to_file(&store, path.to_str().unwrap()).unwrap();
@@ -794,18 +989,21 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
+        let index =
+            DirectoryIndex::load(&path, Path::new("/fallback"), IndexRules::default()).unwrap();
         assert_eq!(index.root, PathBuf::from("/r"));
         assert_eq!(index.store.root.as_deref(), Some("/r"));
         assert_eq!(index.store.built_at, Some(file_time));
 
         // A root the cache records wins over the inferred one.
         fs::write(&path, r#"{"directories":["/r/a"],"root":"/elsewhere"}"#).unwrap();
-        let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
+        let index =
+            DirectoryIndex::load(&path, Path::new("/fallback"), IndexRules::default()).unwrap();
         assert_eq!(index.root, PathBuf::from("/elsewhere"));
 
         fs::write(&path, r#"{"directories":[],"built_at":7}"#).unwrap();
-        let index = DirectoryIndex::load(&path, Path::new("/fallback"), Vec::new()).unwrap();
+        let index =
+            DirectoryIndex::load(&path, Path::new("/fallback"), IndexRules::default()).unwrap();
         assert_eq!(index.root, PathBuf::from("/fallback"));
         assert_eq!(index.store.built_at, Some(7));
     }
@@ -833,7 +1031,11 @@ mod tests {
         }
         // What a walk from `root` finds, spelled below home.
         let walk = |root: &Path, keep: fn(&DirEntry) -> bool| {
-            let walker = index_walker(root, &[], Some(home.join("Library")), keep);
+            let rules = IndexRules {
+                ignore_paths: vec![home.join("Library").to_string_lossy().into_owned()],
+                ..Default::default()
+            };
+            let walker = index_walker(root, &rules, keep);
             let mut dirs: Vec<String> = walk_directories(&walker)
                 .iter()
                 .map(|dir| below(dir, home.to_str().unwrap()).unwrap().to_string())
@@ -872,7 +1074,7 @@ mod tests {
             }
             save_directory_to_file(&old, cache.to_str().unwrap()).unwrap();
 
-            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            let mut index = DirectoryIndex::open(&cache, &root, IndexRules::default(), false);
             assert!(index.is_refreshing() && !index.is_filling());
             assert_eq!(
                 (&index.root, listed(&index)),
@@ -889,7 +1091,7 @@ mod tests {
             assert_eq!(saved.root.as_deref(), root.to_str());
             assert_eq!(saved.directories, index.store.directories);
             // The next start keeps it.
-            let index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            let index = DirectoryIndex::open(&cache, &root, IndexRules::default(), false);
             assert!(!index.is_refreshing());
         }
     }
@@ -912,7 +1114,8 @@ mod tests {
             }
             let before = fs::read_to_string(&cache).ok();
 
-            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), case == "rebuild");
+            let mut index =
+                DirectoryIndex::open(&cache, &root, IndexRules::default(), case == "rebuild");
             assert!(index.is_filling(), "{case}");
             // Changes before the walk ends aren't saved: the next start walks again.
             fs::create_dir(root.join("mine")).unwrap();
@@ -939,15 +1142,21 @@ mod tests {
             directories: Vec::new(),
             built_at: Some(now_secs()),
             root: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
         };
-        let mut index = DirectoryIndex::new(fresh, root.clone(), Vec::new(), Some(cache.clone()));
+        let mut index = DirectoryIndex::new(
+            fresh,
+            root.clone(),
+            IndexRules::default(),
+            Some(cache.clone()),
+        );
         assert!(!index.refresh_if_stale(now, REFRESH_THREADS));
 
         index.store.built_at = Some(0);
         let mut missing = DirectoryIndex::new(
             index.store.clone(),
             dir.path().join("gone"),
-            Vec::new(),
+            IndexRules::default(),
             None,
         );
         assert!(!missing.refresh_if_stale(now, REFRESH_THREADS));
@@ -983,6 +1192,7 @@ mod tests {
                 directories: walked.iter().map(|p| p.to_str().unwrap().into()).collect(),
                 built_at: Some(1),
                 root: None,
+                ..Default::default()
             })
             .unwrap();
 
@@ -1005,5 +1215,285 @@ mod tests {
         assert!(!index.poll_refresh());
         assert!(!index.is_refreshing());
         assert_eq!(listed(&index), ["/alpha"]);
+    }
+
+    /// Rules excluding `paths`, given as settings.toml would (relative to `root` here).
+    fn excluding(root: &Path, paths: &[&str]) -> IndexRules {
+        let paths: Vec<String> = paths.iter().map(|path| path.to_string()).collect();
+        IndexRules::new(&[], &paths, root)
+    }
+
+    /// Make a folder tree: Movies/CapCut/Cache, Movies2, go/pkg, gopher, work/app.
+    fn media_tree(root: &Path) {
+        for path in [
+            "Movies/CapCut/Cache",
+            "Movies2",
+            "go/pkg",
+            "gopher",
+            "work/app",
+        ] {
+            fs::create_dir_all(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn ignore_paths_skip_exactly_those_folders_and_what_is_below_them() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        media_tree(root);
+        let rules = excluding(root, &["Movies", "go"]);
+        let walked = walk_directories(&index_walker(root, &rules, |_| true));
+        let index = DirectoryIndex::new(
+            DirectoryStore {
+                directories: walked,
+                ..Default::default()
+            },
+            root.to_path_buf(),
+            rules,
+            None,
+        );
+        // Movies2 and gopher only share a prefix with an excluded folder.
+        assert_eq!(
+            listed(&index),
+            ["/Movies2", "/gopher", "/work", "/work/app"]
+        );
+    }
+
+    #[test]
+    fn rules_spell_paths_as_the_index_does() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("Movies")).unwrap();
+        let spelled = root.join("Movies").to_string_lossy().into_owned();
+        // Relative, through the resolved alias (/var vs /private/var on macOS), absolute.
+        let canonical = fs::canonicalize(root).unwrap().join("Movies");
+        for given in ["Movies", canonical.to_str().unwrap(), spelled.as_str()] {
+            let rules = IndexRules::new(&[], &[given.to_string()], root);
+            assert_eq!(
+                rules.ignore_paths,
+                std::slice::from_ref(&spelled),
+                "{given}"
+            );
+        }
+        let home = dirs::home_dir().unwrap();
+        let rules = IndexRules::new(&[], &["~/ff-no-such-folder".to_string()], &home);
+        assert_eq!(
+            rules.ignore_paths,
+            [home
+                .join("ff-no-such-folder")
+                .to_string_lossy()
+                .into_owned()]
+        );
+        // Names are compared lowercased, in a stable order.
+        let rules = IndexRules::names(&["Target".to_string(), "node_modules".to_string()]);
+        assert_eq!(rules.ignore_directories, ["node_modules", "target"]);
+    }
+
+    #[test]
+    fn a_cache_built_with_other_rules_is_pruned_at_once_then_walked_again() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("home");
+        media_tree(&root);
+        let cache = dir.path().join("cache.json");
+        let walked = build_directory_from_store(root.to_str().unwrap(), Vec::new());
+        save_directory_to_file(&walked, cache.to_str().unwrap()).unwrap();
+
+        let rules = excluding(&root, &["Movies", "work/app"]);
+        let mut index = DirectoryIndex::open(&cache, &root, rules.clone(), false);
+        // Searchable without Movies before the walk ends, with what it held counted.
+        assert_eq!(
+            listed(&index),
+            ["/Movies2", "/go", "/go/pkg", "/gopher", "/work"]
+        );
+        let movies = root.join("Movies").to_string_lossy().into_owned();
+        let app = root.join("work/app").to_string_lossy().into_owned();
+        assert_eq!(index.store.excluded.get(&movies), Some(&3));
+        assert_eq!(index.store.excluded.get(&app), Some(&1));
+        assert!(index.is_refreshing());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !index.poll_refresh() {
+            assert!(std::time::Instant::now() < deadline, "walk never finished");
+            thread::yield_now();
+        }
+        assert_eq!(
+            listed(&index),
+            ["/Movies2", "/go", "/go/pkg", "/gopher", "/work"]
+        );
+        assert_eq!(index.store.rules.as_ref(), Some(&rules));
+        // The walk can't count what it skipped; the counts from before stay.
+        assert_eq!(index.store.excluded.get(&movies), Some(&3));
+
+        // Same rules next time: nothing to redo.
+        let index = DirectoryIndex::open(&cache, &root, rules, false);
+        assert!(!index.is_refreshing());
+        assert_eq!(index.store.excluded.get(&movies), Some(&3));
+
+        // Letting Movies back in forgets its count and walks to find it again.
+        let rules = excluding(&root, &["work/app"]);
+        let mut index = DirectoryIndex::open(&cache, &root, rules, false);
+        assert!(index.is_refreshing());
+        assert!(!index.store.excluded.contains_key(&movies));
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+        assert!(listed(&index).contains(&"/Movies/CapCut/Cache".to_string()));
+    }
+
+    #[test]
+    fn a_walk_that_started_under_old_rules_is_pruned_when_it_lands() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        media_tree(root);
+        let mut index = index_over(root, &[]);
+        index.rules = excluding(root, &["Movies"]);
+        let (walker, receiver) = mpsc::channel();
+        index.refresh = Some(receiver);
+        walker
+            .send(build_directory_from_store(
+                root.to_str().unwrap(),
+                Vec::new(),
+            ))
+            .unwrap();
+
+        assert!(index.poll_refresh());
+        assert!(!listed(&index).iter().any(|dir| dir.starts_with("/Movies/")));
+        assert!(listed(&index).contains(&"/Movies2".to_string()));
+    }
+
+    #[test]
+    fn set_rules_prunes_at_once_and_walks_for_what_comes_back() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        media_tree(root);
+        let mut index = index_over(root, &[]);
+
+        index.set_rules(excluding(root, &["Movies"]));
+        assert!(!listed(&index).iter().any(|dir| dir.starts_with("/Movies/")));
+        assert!(index.is_refreshing());
+
+        index.set_rules(IndexRules::default());
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+        assert!(listed(&index).contains(&"/Movies/CapCut".to_string()));
+    }
+
+    #[test]
+    fn renaming_an_excluded_folder_keeps_it_excluded() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        media_tree(root);
+        let mut index = index_over(root, &[]);
+        index.set_rules(excluding(root, &["Movies", "Movies/CapCut"]));
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+
+        fs::rename(root.join("Movies"), root.join("Films")).unwrap();
+        let moved = index.renamed(&root.join("Movies"), &root.join("Films"));
+
+        let spell = |path: &str| root.join(path).to_string_lossy().into_owned();
+        // Each settings.toml entry as written, and where its folder is now.
+        assert_eq!(
+            moved,
+            [
+                ("Movies".to_string(), spell("Films")),
+                ("Movies/CapCut".to_string(), spell("Films/CapCut"))
+            ]
+        );
+        assert_eq!(
+            index.rules().ignore_paths,
+            [spell("Films"), spell("Films/CapCut")]
+        );
+        assert!(!listed(&index).iter().any(|dir| dir.starts_with("/Films")));
+        assert_eq!(index.store.excluded.get(&spell("Films")), Some(&3));
+    }
+
+    #[test]
+    fn renaming_a_folder_onto_an_excluded_path_drops_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        media_tree(root);
+        let mut index = index_over(root, &[]);
+        index.rules = excluding(root, &["archive"]);
+
+        fs::rename(root.join("work"), root.join("archive")).unwrap();
+        let moved = index.renamed(&root.join("work"), &root.join("archive"));
+
+        assert!(moved.is_empty());
+        assert!(!listed(&index)
+            .iter()
+            .any(|dir| dir.contains("work") || dir.contains("archive")));
+    }
+
+    #[test]
+    fn rules_drop_the_root_its_ancestors_and_folders_outside_it() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("home");
+        fs::create_dir_all(root.join("a")).unwrap();
+        let given: Vec<String> = [
+            dir.path().to_str().unwrap(),
+            root.to_str().unwrap(),
+            "/elsewhere",
+            "",
+            "a/",
+        ]
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
+        let rules = IndexRules::new(&[], &given, &root);
+        assert_eq!(
+            rules.ignore_paths,
+            [root.join("a").to_string_lossy().into_owned()]
+        );
+
+        // An ancestor of the root doesn't empty the index.
+        let mut index = index_over(&root, &[]);
+        index.set_rules(rules);
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+        assert!(listed(&index).is_empty());
+        index.set_rules(IndexRules::new(&[], &given[..1], &root));
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+        assert_eq!(listed(&index), ["/a"]);
+    }
+
+    #[test]
+    fn renaming_onto_a_parent_of_an_excluded_folder_keeps_that_folder_out() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a/raw/deep")).unwrap();
+        let mut index = index_over(root, &[]);
+        index.rules = excluding(root, &["b/raw"]);
+
+        fs::rename(root.join("a"), root.join("b")).unwrap();
+        index.renamed(&root.join("a"), &root.join("b"));
+        assert_eq!(listed(&index), ["/b"]);
+    }
+
+    #[test]
+    fn a_rebuild_keeps_the_counts_of_excluded_folders() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("home");
+        media_tree(&root);
+        let cache = dir.path().join("cache.json");
+        let walked = build_directory_from_store(root.to_str().unwrap(), Vec::new());
+        save_directory_to_file(&walked, cache.to_str().unwrap()).unwrap();
+        let rules = excluding(&root, &["Movies"]);
+        let movies = root.join("Movies").to_string_lossy().into_owned();
+        let index = DirectoryIndex::open(&cache, &root, rules.clone(), false);
+        assert_eq!(index.store.excluded.get(&movies), Some(&3));
+        drop(index);
+
+        let mut index = DirectoryIndex::open(&cache, &root, rules, true);
+        assert!(index.is_filling());
+        while !index.poll_refresh() {
+            thread::yield_now();
+        }
+        assert_eq!(index.store.excluded.get(&movies), Some(&3));
     }
 }

@@ -551,6 +551,7 @@ theme color you leave out uses its default, so these files only need what you ch
 | `start_path`           | `~/Desktop`                                  | Where `ff` opens without a path (the current folder if it isn't one) |
 | `root_dir`             | your home folder                             | What root search and Copy to…/Move to… cover (the folder ff opens in if it isn't one) |
 | `ignore_directories`   | `node_modules`, `target`, `src`, `.git`, …   | Folder names the folder index skips, at any depth              |
+| `ignore_paths`         | `[]`                                         | Exact folders below `root_dir` the index skips with everything below them, e.g. `["~/Movies", "~/go"]` |
 | `theme`                | `"onedark"`                                  | Theme file in `~/.config/ff/themes/`                           |
 | `show_borders`         | `false`                                      | Boxes around the panes                                         |
 | `status_bar_style`     | `"minimal"`                                  | `"classic"` draws the status line as bordered boxes            |
@@ -604,14 +605,17 @@ cp target/release/ff /usr/local/bin/
 - Press `/` or `i` to search the current directory
 - Press `Space` + `/` to search from the root cache
 - Press `?` to confirm your active search keybindings
-- Root search finds folders under `root_dir`, leaving out hidden and gitignored folders
-  and `ignore_directories` (`src` and `target` among them by default)
+- Root search finds folders under `root_dir`, leaving out hidden and gitignored folders,
+  `ignore_directories` (`src` and `target` among them by default) and `ignore_paths`
 
 **Performance issues?**
 
 - The folder index is read in the background, so ff is usable at once; a large
   `root_dir` only makes root search wait longer for its first results
-- Add big folders you never search to `ignore_directories` so the index skips them
+- Add big folders you never search to `ignore_paths` (one folder, e.g. `"~/Movies"`) or
+  `ignore_directories` (a name, anywhere) so the index skips them. Changes apply the next
+  time ff starts: the index drops those folders at once and re-reads the rest in the
+  background
 
 ---
 
