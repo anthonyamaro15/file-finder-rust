@@ -16,6 +16,9 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Root search and the Copy to… / Move to… picker are about 3× faster on short queries
   (36,982 folders: `a` 27 → 9 ms, `fi` 20 → 8 ms per keystroke), with the same results.
   ([#160](https://github.com/anthonyamaro15/file-finder-rust/pull/160))
+- Root search shows how many folders it covers and how long each search took, in the top
+  bar: `36,982 folders` before you type, then `124 of 36,982 · 2 ms`.
+  ([#161](https://github.com/anthonyamaro15/file-finder-rust/pull/161))
 - ff no longer captures the mouse, so you can select text with it again.
   ([#158](https://github.com/anthonyamaro15/file-finder-rust/pull/158))
 - Building from source needs Rust 1.88 or newer (was 1.81).

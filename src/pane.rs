@@ -4,6 +4,7 @@
 //! file list, selection state, and search functionality.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use log::debug;
 use ratatui::widgets::ListState;
@@ -34,6 +35,8 @@ pub struct Pane {
     pub search_results: Vec<SearchResult>,
     /// Whether the search covers the folder index rather than this folder
     pub global_search_mode: bool,
+    /// How long the last search across the folder index took
+    pub search_time: Option<Duration>,
     /// Query of the search filtering this pane; empty shows the whole listing
     pub search_input: String,
     /// ListState for ratatui rendering
@@ -77,6 +80,7 @@ impl Pane {
             file_labels: Vec::new(),
             selected_index: if has_files { Some(0) } else { None },
             search_results: Vec::new(),
+            search_time: None,
             global_search_mode: false,
             search_input: String::new(),
             list_state,
@@ -219,7 +223,10 @@ impl Pane {
             return;
         }
         self.search_results = if self.global_search_mode {
-            global_search_results(store, query, max_results)
+            let started = Instant::now();
+            let results = global_search_results(store, query, max_results);
+            self.search_time = Some(started.elapsed());
+            results
         } else {
             local_search_results(&self.files, &self.file_info, query)
         };
