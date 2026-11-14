@@ -64,6 +64,8 @@ pub enum InputMode {
     Visual,
     /// The command palette (see `App::palette`).
     Palette,
+    /// Choosing which folders are indexed (see `App::index_manager`).
+    IndexManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +542,8 @@ pub struct App {
     pub info: Option<crate::info::ItemInfo>,
     /// The command palette, while `input_mode` is `Palette`.
     pub palette: Palette,
+    /// The open index manager.
+    pub index_manager: Option<crate::index_manager::IndexManager>,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(String, Instant)>,
     /// First line shown in the keybinding help, and how many fit (set when drawn).
@@ -758,6 +762,7 @@ impl App {
             folder_picker: None,
             info: None,
             palette: Palette::default(),
+            index_manager: None,
             quit_warning: None,
             help_scroll: 0,
             help_page: 0,

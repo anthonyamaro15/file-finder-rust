@@ -90,10 +90,11 @@ impl StatusBar {
             InputMode::WatchInfo => "INFO",
             InputMode::Visual => "VISUAL",
             InputMode::Palette => "PALETTE",
+            InputMode::IndexManager => "INDEX",
         };
         let color = match app.input_mode {
             InputMode::WatchKeyBinding => theme.fg,
-            InputMode::PickFolder | InputMode::Palette => theme.blue,
+            InputMode::PickFolder | InputMode::Palette | InputMode::IndexManager => theme.blue,
             InputMode::WatchInfo => theme.cyan,
             _ => app.mode_color(),
         };

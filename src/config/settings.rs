@@ -436,7 +436,7 @@ show_borders = true
             .map(|line| line.split(" = ").next().unwrap().trim_matches('"'))
             .collect();
 
-        assert_eq!(keys.len(), 34);
+        assert_eq!(keys.len(), 35);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{keys:?}");
         assert!(
             keymap.contains(r#""<leader>/" = "search.root""#),

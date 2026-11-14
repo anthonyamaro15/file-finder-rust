@@ -7,6 +7,11 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Index manager (`Space` then `i`, or "Choose which folders are indexed" in the `:`
+  palette): the folders under `root_dir` (your home by default), biggest first, with how
+  much of the index each one fills. `␣` switches a folder off or back on, `l`/`h` go in and out, `⏎` saves to
+  `ignore_paths`, and the title shows the index size before and after.
+  ([#163](https://github.com/anthonyamaro15/file-finder-rust/pull/163))
 - `ignore_paths` setting: exact folders to leave out of the folder index with everything
   below them, e.g. `ignore_paths = ["~/Movies", "~/go"]`. Unlike `ignore_directories`,
   `"~/go"` doesn't skip other folders named `go`. Renaming an excluded folder in ff keeps

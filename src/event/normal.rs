@@ -81,6 +81,7 @@ pub fn run_action(
         selected_file,
         quit_error,
         clipboard,
+        index,
         ..
     } = loop_state;
 
@@ -394,6 +395,14 @@ pub fn run_action(
         Action::Palette => {
             app.palette = Palette::default();
             app.input_mode = InputMode::Palette;
+        }
+
+        Action::IndexManage => {
+            app.index_manager = Some(crate::index_manager::IndexManager::open(
+                index,
+                index.is_filling(),
+            ));
+            app.input_mode = InputMode::IndexManager;
         }
 
         Action::CopyPath | Action::CopyName | Action::CopyParent => {

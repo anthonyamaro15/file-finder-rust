@@ -167,6 +167,13 @@ fn hints(app: &App, keymap: &KeymapRuntime, selected: Option<usize>) -> Vec<Hint
             fixed("⏎", "run"),
             fixed("Esc", "close"),
         ],
+        InputMode::IndexManager => vec![
+            fixed("␣", "on/off"),
+            fixed("l", "open"),
+            fixed("h", "back"),
+            fixed("⏎", "save"),
+            fixed("Esc", "cancel"),
+        ],
     }
 }
 

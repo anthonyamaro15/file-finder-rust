@@ -247,6 +247,7 @@ The function always runs `ff --print-path`, so `-e` has no effect through it; ru
 | `Esc`          | Stop typing (results stay to browse) |
 | `Enter`        | Root search: choose the top result. Local search: same as `Esc` |
 | `Space` + `/`  | Root search (entire cache)  |
+| `Space` + `i`  | Index manager: choose which folders are indexed |
 
 Starting a current-directory search with a space or `/` (e.g. `i` then ` foo`) also switches to root search.
 `Backspace` in an empty root search goes back to searching the current directory. Root
@@ -427,6 +428,7 @@ included, with each action's name.
 | `copy.parent`    | none                | Copy the path of the folder holding it    |
 | `search.current` | `/`, `i`            | Search current directory                  |
 | `search.root`    | `<leader>/`         | Root search                               |
+| `index.manage`   | `<leader>i`         | Choose which folders are indexed          |
 | `view.cycle`     | `p`                 | Cycle view mode                           |
 | `view.sort`      | `s`                 | Sort options menu                         |
 | `view.hidden`    | `.`                 | Toggle hidden files                       |
@@ -612,7 +614,10 @@ cp target/release/ff /usr/local/bin/
 
 - The folder index is read in the background, so ff is usable at once; a large
   `root_dir` only makes root search wait longer for its first results
-- Add big folders you never search to `ignore_paths` (one folder, e.g. `"~/Movies"`) or
+- Press `Space` + `i` to see which folders fill the index, biggest first, and switch the
+  ones you never search off (`␣` on/off, `l`/`h` in and out, `⏎` save). Saving writes
+  `ignore_paths` and drops those folders from the index at once
+- Or add big folders you never search to `ignore_paths` (one folder, e.g. `"~/Movies"`) or
   `ignore_directories` (a name, anywhere) so the index skips them. Changes apply the next
   time ff starts: the index drops those folders at once and re-reads the rest in the
   background

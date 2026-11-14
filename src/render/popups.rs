@@ -479,6 +479,7 @@ const HELP_SECTIONS: [(&str, &[(Action, &str)]); 8] = [
         &[
             (Action::SearchCurrent, "Search current directory"),
             (Action::SearchRoot, "Search from root cache"),
+            (Action::IndexManage, "Choose which folders are indexed"),
         ],
     ),
     (
@@ -1258,7 +1259,7 @@ mod tests {
         let screen = rows.join("\n");
 
         assert!(rows[2].contains("╭ Run an action ─"), "{screen}");
-        assert!(rows[3].contains("› hid") && rows[3].contains("1 of 26 actions"));
+        assert!(rows[3].contains("› hid") && rows[3].contains("1 of 27 actions"));
         assert!(rows[4].contains("────"));
         let row = &rows[5];
         assert!(row.contains("▌ Toggle hidden files"), "{row}");
@@ -1280,7 +1281,7 @@ mod tests {
 
         let (rows, ..) = palette_screen(&KeymapSettings::default(), "", (0, 0), 30);
         let screen = rows.join("\n");
-        assert!(screen.contains("26 of 26 actions"), "{screen}");
+        assert!(screen.contains("27 of 27 actions"), "{screen}");
         // Every key when they fit, the first otherwise.
         assert!(rows[5].contains("▌ Go to parent directory") && rows[5].contains(" h   ← "));
         let (rows, ..) = palette_screen(&KeymapSettings::default(), "root", (0, 0), 30);
@@ -1294,7 +1295,7 @@ mod tests {
         assert!(rows[6].contains("Copy parent folder path") && rows[6].contains("no key"));
 
         let (rows, ..) = palette_screen(&KeymapSettings::default(), "zzz", (0, 0), 30);
-        assert!(rows[3].contains("0 of 26 actions") && rows[5].contains("No action matches"));
+        assert!(rows[3].contains("0 of 27 actions") && rows[5].contains("No action matches"));
     }
 
     #[test]
@@ -1308,7 +1309,7 @@ mod tests {
 
         let (rows, _, scroll) = palette_screen(&keymap, "", (20, 0), 30);
         assert_eq!(scroll, 9);
-        assert_eq!(highlighted(&rows).as_deref(), Some("Cycle view mode (Nor"));
+        assert_eq!(highlighted(&rows).as_deref(), Some("Choose which folders"));
         assert!(rows[16].contains("▌"));
         // Moving back up inside the view doesn't scroll it.
         let (rows, _, scroll) = palette_screen(&keymap, "", (15, 9), 30);
@@ -1317,8 +1318,8 @@ mod tests {
         let (_, _, scroll) = palette_screen(&keymap, "", (3, 9), 30);
         assert_eq!(scroll, 3);
         // A short terminal shows fewer rows.
-        let (rows, _, scroll) = palette_screen(&keymap, "", (25, 0), 16);
-        assert_eq!(scroll, 20);
+        let (rows, _, scroll) = palette_screen(&keymap, "", (26, 0), 16);
+        assert_eq!(scroll, 21);
         assert!(rows.iter().any(|row| row.contains("▌ Quit")));
         assert!(rows[12].contains("⏎ run"), "{rows:#?}");
     }
