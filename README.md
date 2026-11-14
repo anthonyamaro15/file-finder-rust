@@ -14,7 +14,20 @@ search across every folder under your home.
 
 ![ff: preview a Rust file with syntax highlighting, root search narrows 161 matching folders to one nine levels deep, then a PDF there moves to another folder picked by name](assets/demo.gif)
 
-## ⚡ Quick start
+## Contents
+
+- [Quick start](#quick-start)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Index manager](#index-manager)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Quick start
 
 ```bash
 brew install anthonyamaro15/tap/ff
@@ -25,97 +38,51 @@ Run `ff`, press `Space` then `/`, type part of a folder's name, and press `Enter
 quits and your shell is in the top result. To pick another result, press `Esc` to browse
 them, then `Enter` on the folder you want.
 
----
+## Features
 
-## ✨ Features
+**Find any folder**
 
-### 🔍 **Search**
+- Root search over an index of every folder under your home, results as you type; the
+  top bar shows how many folders were searched and how long it took
+  (`124 of 33,301 · 2 ms`)
+- `Enter` quits ff and your shell `cd`s into the folder (shell integration), or opens it
+  in Neovim, VS Code or Zed
+- Fuzzy search within the current folder
+- The index refreshes in the background, and ff's own changes update it at once
 
-- Local fuzzy search in current directory
-- Root/global search across every folder under `root_dir` (your home folder by default)
-- Configurable search keybindings
-- Smart ranking & real-time filtering
+**Control what's indexed**
 
-### 📁 **File Management**
+- The index manager (`Space`, then `i`) lists the folders that fill the index, biggest
+  first, and switches any of them out of it
+- A tree view opened down to the biggest messes (app caches, build output, virtualenvs),
+  even ones buried deep inside folders you keep
+- `ignore_paths` and `ignore_directories` settings for exact folders and folder names
 
-- Vim-style navigation (`h`, `j`, `k`, `l`)
-- Create, delete, rename, and copy files/directories
-- Copy to… / Move to… any folder, picked by name like root search (`Shift+C` / `Shift+M`)
-- Move to Trash (`d`) or delete permanently (`D`), one item or a run of items picked in
-  visual mode (`V`)
-- Extract (`y`) and create (`z`) ZIP archives, open with the default app (`o`), Get Info (`I`)
-- Toggle hidden files
-- Sort by name, size, or modified date
-- Copy an item's path, name or folder path to the clipboard
-- Command palette (`:`): run any action by typing what it does
+**Manage files**
 
-### 🖼️ **View Modes**
+- Vim-style navigation (`h`, `j`, `k`, `l`), command palette (`:`) and rebindable keys
+- Create, rename, copy and delete; Copy to… and Move to… any folder picked by name
+- Move to Trash or delete permanently, one item or a range selected in visual mode
+- Extract and create ZIP archives, open with the default app, Get Info
+- Sort by name, size or date; folder sizes counted in the background
 
-- **Normal**: File list + preview pane (50/50 split)
-- **FullList**: Full-width file list (no preview)
-- **DualPane**: Side-by-side file management with independent navigation, a path
-  header over each pane (`●` marks the active one, with anything running beside it)
-- Press `p` to cycle through modes
-- `Tab` to switch active pane
-- Full navigation in both panes (`j`/`k`/`h`/`l`)
-- Bidirectional copy/move between panes (`Shift+C` / `Shift+M`)
+**Preview**
 
-### 👀 **Previews**
+- Code with syntax highlighting and line numbers, rendered Markdown
+- Images in Kitty, iTerm2, WezTerm, Ghostty and Sixel terminals
+- PDF text, archive contents, hex view for binary files
 
-- A header naming the item, with a folder's item count (and how many `.` hides) or a
-  file's type and size
-- Folder previews list what the folder's list would, following `.`
-- Syntax highlighting and line numbers for code (configurable theme)
-- Markdown rendered with styled headings, lists, code, links and tables
-- In visual mode, the selection: exactly what `d` and `D` act on
-- **Terminal image rendering** (Kitty, iTerm2, Sixel protocols)
-- **PDF text extraction**
-- **Hex view for binary files**
-- CSV and TSV files as plain text
-- Archive contents (ZIP, TAR, TAR.GZ, TGZ)
+**Views**
 
-### 📊 **File Size Visualization**
+- Normal (list and preview), full-width list, and dual pane with copy and move between
+  panes
+- A status line about the highlighted item and a hint row with the keys for the current
+  mode
+- Themes, syntax themes and Nerd Font icons
 
-- Every list (both panes, search results, folder previews) lines up each item's size and modified date at its right edge; folders show only their date, except in size order
-- Sorted by size (`s`, then `s`), folders show their real totals, counted in the background, and the biggest items rise to the top
-- Each row gets a bar against the largest item: green below 100 MB, yellow from 100 MB, red from 1 GB
-- The status line shows the folder's total and the free space on its disk
-- `≥` marks a total that's missing items ff couldn't read
-- `show_size_bars = false` hides sizes and bars; dates still show
+## Installation
 
-### 🎨 **UI & Theming**
-
-- OneDark theme (lazygit-inspired)
-- Rounded borders and polished visual hierarchy
-- A top bar with the folder, its order, hidden files and item count, and anything
-  running; a search is typed there, tinted in its color
-- A status line about the highlighted item (a folder's item count, a file's type and
-  size, when it was modified, its permissions) and where it is in the list (`12/36`)
-- The divider beside the list doubles as its scrollbar
-- A hint row at the bottom with the keys for the current mode and the highlighted item
-  (a folder's, a file's, a selection's, a prompt's), taken from your keymap, with `?`
-  for all keys at the right; `show_hints = false` hides it
-- Errors, warnings and notices show in the hint row for a few seconds, tinted by kind
-  (`✗`, `!`, `✓`); a long one wraps upward over the list's last rows instead of being
-  cut off
-- Modal dialogs for confirmations
-- Custom themes via TOML
-- Configurable syntax highlighting theme
-
-### ⚡ **Performance**
-
-- Async, non-blocking operations
-- Parallel scanning with Rayon
-- Smart caching for instant global search
-- File system watching for real-time updates
-- Lazy file metadata loading
-- Preview caching
-
----
-
-## 🛠 Installation
-
-### Homebrew (macOS/Linux)
+### Homebrew (macOS and Linux)
 
 ```bash
 brew install anthonyamaro15/tap/ff
@@ -123,16 +90,9 @@ brew install anthonyamaro15/tap/ff
 
 Builds are published for macOS (Apple Silicon and Intel) and x86_64 Linux.
 
-Then add shell integration to your `~/.zshrc` or `~/.bashrc`:
+### From source
 
-```bash
-eval "$(ff init zsh)"   # For zsh
-eval "$(ff init bash)"  # For bash
-```
-
-### From Source
-
-Prerequisites: Rust 1.88+, macOS or Linux
+Requires Rust 1.88 or newer, on macOS or Linux.
 
 ```bash
 git clone https://github.com/anthonyamaro15/file-finder-rust.git
@@ -141,266 +101,216 @@ cargo build --release
 cp target/release/ff /usr/local/bin/
 ```
 
----
+### Shell integration
 
-## 🚀 Usage
-
-### Basic
+To have your shell `cd` into the folder you pick, add one line to your shell's config and
+reload it:
 
 ```bash
-ff               # Launch in start_path (~/Desktop by default)
-ff ~/Documents   # Launch in specific directory
+eval "$(ff init zsh)"    # ~/.zshrc
+eval "$(ff init bash)"   # ~/.bashrc
 ```
 
-### CLI Options
+With it, `Enter` on a folder leaves your shell in that folder. `Enter` on a file copies
+its path to the clipboard (with `pbcopy`, `wl-copy` or `xclip`; without one it's
+printed).
+
+## Usage
 
 ```bash
+ff               # open in start_path (~/Desktop by default)
+ff ~/Documents   # open in a folder: absolute, relative, ~ or .
+```
+
+```
 ff [OPTIONS] [PATH] [COMMAND]
 ```
 
-| Option              | Short | Description                          | Example              |
-| ------------------- | ----- | ------------------------------------ | -------------------- |
-| `--start <PATH>`    | `-s`  | Starting directory path              | `ff -s ~/Documents`  |
-| `--editor <EDITOR>` | `-e`  | Open file with editor                | `ff -e nvim`         |
-| `--print-path`      |       | Print path to stdout (shell cd)      | `ff --print-path`    |
-| `--reset-config`    |       | Delete `~/.config/ff`, write defaults | `ff --reset-config` |
-| `--rebuild-cache`   |       | Rebuild the folder index of root_dir | `ff --rebuild-cache` |
-| `--help`            | `-h`  | Show help                            | `ff --help`          |
-| `--version`         | `-V`  | Show version                         | `ff --version`       |
+| Option              | Short | Description                              | Example              |
+| ------------------- | ----- | ---------------------------------------- | -------------------- |
+| `--start <PATH>`    | `-s`  | Folder to open in                        | `ff -s ~/Documents`  |
+| `--editor <EDITOR>` | `-e`  | Open the chosen item in an editor        | `ff -e nvim`         |
+| `--print-path`      |       | Print the chosen path (used by the shell integration) | `ff --print-path` |
+| `--reset-config`    |       | Delete `~/.config/ff` and write defaults | `ff --reset-config`  |
+| `--rebuild-cache`   |       | Rebuild the folder index of `root_dir`   | `ff --rebuild-cache` |
+| `--help`            | `-h`  | Show help                                | `ff --help`          |
+| `--version`         | `-V`  | Show the version                         | `ff --version`       |
 
-| Command             | Description                          | Example              |
-| ------------------- | ------------------------------------ | -------------------- |
-| `init <SHELL>`      | Generate shell integration script    | `ff init zsh`        |
+| Command        | Description                         | Example       |
+| -------------- | ----------------------------------- | ------------- |
+| `init <SHELL>` | Print the shell integration script  | `ff init zsh` |
 
-### Path Examples
-
-```bash
-ff .                # Current directory
-ff ~/Projects       # Home subdir
-ff /tmp             # Absolute path
-ff ../src           # Relative path
-```
-
-### Editor Integration
+### Opening in an editor
 
 ```bash
-# Supported editors: nvim, vscode, zed
-ff -e nvim
+ff -e nvim                      # supported: nvim, vscode, zed
 ff -e zed --start ~/Projects
-ff ~/Desktop -e vscode
 ```
 
-`Enter` quits ff and opens the highlighted item in the editor. If no editor is set, its
-path is copied to the clipboard (or printed if there's no clipboard).
+`Enter` quits ff and opens the highlighted item in the editor. Without an editor, its
+path is copied to the clipboard. The shell integration always runs `ff --print-path`, so
+`-e` has no effect through it; run `command ff -e nvim` to open items in an editor.
 
-### Shell Integration (cd on exit)
+## Keyboard shortcuts
 
-Want to `cd` directly to a selected directory? Add one line to your shell config:
+Press `?` in ff for the live list, including your own bindings. Every Normal-mode key
+can be rebound (see [Keybindings](#keybindings)).
 
-**Zsh** (`~/.zshrc`):
-```bash
-eval "$(ff init zsh)"
+### Navigation
+
+| Key           | Action                                             |
+| ------------- | -------------------------------------------------- |
+| `↑` / `k`     | Move up                                            |
+| `↓` / `j`     | Move down                                          |
+| `gg`          | Go to the first item                               |
+| `G` (Shift+G) | Go to the last item                                |
+| `←` / `h`     | Parent folder                                      |
+| `→` / `l`     | Enter folder                                       |
+| `Enter`       | Quit, opening it in the editor or copying its path |
+
+### Search
+
+| Key           | Action                                                         |
+| ------------- | -------------------------------------------------------------- |
+| `/` or `i`    | Search the current folder                                      |
+| `Space` + `/` | Root search, across every indexed folder                       |
+| `Enter`       | Root search: choose the top result. Local search: same as `Esc` |
+| `Esc`         | Stop typing; the results stay to browse                        |
+| `Space` + `i` | Index manager: choose which folders are indexed                |
+
+Root search finds folders, not files. Starting a local search with a space or `/` switches
+to root search, and `Backspace` in an empty root search goes back. To get the full
+listing back after a search, press `/` then `Esc`.
+
+### Files
+
+| Key           | Action                                                   |
+| ------------- | -------------------------------------------------------- |
+| `a`           | Create a file (end the name with `/` for a folder)       |
+| `r`           | Rename                                                   |
+| `c`           | Copy beside the item                                     |
+| `Shift+C`     | Copy to… (pick a folder)                                 |
+| `Shift+M`     | Move to… (pick a folder)                                 |
+| `d`           | Move to Trash (with confirmation)                        |
+| `D` (Shift+D) | Delete permanently (with confirmation; cannot be undone) |
+| `y`           | Extract a ZIP archive                                    |
+| `z`           | Compress to a ZIP archive beside the item                |
+| `o`           | Open with the default app and quit                       |
+| `I` (Shift+I) | Get Info: size, dates, permissions, owner                |
+| `.`           | Show or hide hidden files                                |
+
+Copy to… and Move to… open a folder picker: type to search folders as root search does,
+or type a path starting with `/` or `~`, then pick one with `↑`/`↓` and `Enter`. In dual
+pane they copy or move to the other pane instead.
+
+### Selecting several items
+
+| Key               | Action                                        |
+| ----------------- | --------------------------------------------- |
+| `V` or `v`        | Start selecting at the highlighted item       |
+| `j` `k` `gg` `G`  | Extend the selection                          |
+| `o`               | Swap the selection's ends                     |
+| `d`               | Move the selected items to Trash              |
+| `D` (Shift+D)     | Delete the selected items permanently         |
+| `Esc`, `V` or `v` | Cancel the selection                          |
+
+The selection is the run of items from where you pressed `V` to the highlighted one. Both
+`d` and `D` ask for confirmation, naming the items. They work in the background, one item
+at a time: if some fail, the rest still go, and the status bar says what failed (details
+in `~/.config/ff/ff.log`). Other keys do nothing while selecting.
+
+### Views and tools
+
+| Key            | Action                                       |
+| -------------- | -------------------------------------------- |
+| `p`            | Cycle the view: normal, full list, dual pane |
+| `Tab`          | Switch the active pane (dual pane)           |
+| `s`            | Sort menu                                    |
+| `:`            | Command palette                              |
+| `?`            | Show all keys                                |
+| `q` / `Ctrl-C` | Quit                                         |
+
+The command palette lists every action with its key. Type to filter by what an action
+does (`hid`, `copy`, `trash`), then press `Enter` to run it. Some actions have no key
+until you bind one and are reached through the palette: Copy path, Copy name and Copy
+parent folder path.
+
+After a key that starts a sequence, such as `Space` or `g`, a box at the bottom right
+lists the keys that can follow.
+
+## Index manager
+
+Root search covers every folder under `root_dir`, so folders you never search, such as
+app caches, package caches or build output, make results noisier and searches slower.
+Press `Space`, then `i` (or "Choose which folders are indexed" in the `:` palette) to see
+what fills the index and leave those folders out.
+
+```
+╭ Index · by folder │ biggest ───────────────── 33,301 → 16,326 folders (−51%) ╮
+│ ~                                                   folders   of index │
+│   ○ Movies                                       16,975  off               │
+│ ❯ ● Desktop                                      15,015  ▆▆▆▆▆▆▆▆▆    92%  │
+│   ● Downloads                                       699  ▖             4%  │
+╰ 1 unsaved change ──────────────────────────────────────────────────────────╯
 ```
 
-**Bash** (`~/.bashrc`):
-```bash
-eval "$(ff init bash)"
-```
+- **By folder** lists a folder's subfolders, biggest first, with how much of the index
+  each one holds. `l` and `h` go in and out.
+- **Biggest** (`Tab`) shows the index as a tree whose heaviest branches open by
+  themselves, down to the folders that fill them. Small folders are folded into
+  "… N smaller" lines, and `l`/`h` open and fold branches. `Tab` switches between the
+  views and keeps your place.
+- `Space` switches the highlighted folder off or back on. The title shows the index size
+  before and after your changes, and `●` (indexed), `○` (off) and `◐` (something inside
+  is off) mark each folder.
+- `Enter` saves your changes to `ignore_paths` in `settings.toml`, changing only that
+  setting, and the index drops those folders at once. Folders switched back on return
+  after a background re-read. `Esc` with unsaved changes asks before discarding them.
 
-Then reload your shell (`source ~/.zshrc` or `source ~/.bashrc`).
+Hidden folders, `~/Library` and folder names in `ignore_directories` are never indexed.
 
-Now when you press Enter on a directory, your shell automatically `cd`s there:
+## Configuration
 
-```bash
-ff              # Search for project
-# Select directory, press Enter
-pwd             # You're now in that directory!
-```
+Settings live in `~/.config/ff/settings.toml`. Any setting you leave out uses its
+default, so the file only needs what you change. Command-line options take precedence
+over the file.
 
-For files, the path is copied to your clipboard (with `pbcopy`, `wl-copy` or `xclip`;
-without one it's printed).
+| Setting                | Default                                    | What it does                                                         |
+| ---------------------- | ------------------------------------------ | -------------------------------------------------------------------- |
+| `start_path`           | `~/Desktop`                                | Where ff opens without a path (the current folder if it isn't one)  |
+| `root_dir`             | your home folder                           | What root search and Copy to…/Move to… cover                         |
+| `ignore_directories`   | `node_modules`, `target`, `src`, `.git`, … | Folder names the index skips, at any depth                           |
+| `ignore_paths`         | `[]`                                       | Exact folders below `root_dir` the index skips with everything below them, e.g. `["~/Movies", "~/go"]` |
+| `theme`                | `"onedark"`                                | Theme file in `~/.config/ff/themes/`                                 |
+| `syntax_theme`         | `"base16-ocean.dark"`                      | Theme for code previews                                              |
+| `use_nerd_fonts`       | `"auto"`                                   | `"always"`, `"never"` or `"auto"`                                    |
+| `show_size_bars`       | `true`                                     | Sizes and size bars in lists (dates still show when off)             |
+| `show_hints`           | `true`                                     | The hint row at the bottom                                           |
+| `show_borders`         | `false`                                    | Boxes around the panes                                               |
+| `status_bar_style`     | `"minimal"`                                | `"classic"` draws the status line as bordered boxes                  |
+| `[finder] max_results` | `500`                                      | Most results a root search or the Copy to…/Move to… picker keeps     |
 
-The function always runs `ff --print-path`, so `-e` has no effect through it; run
-`command ff -e nvim` to open files in an editor.
+`ff --reset-config` deletes everything in `~/.config/ff` (settings, custom themes, the
+folder index and `ff.log`) and writes fresh defaults, without opening ff.
 
----
+### Folder index
 
-## ⌨️ Keyboard Shortcuts
+The index lives in `~/.config/ff/cache_directory.json` and covers the folders under
+`root_dir`, whatever folder ff opens in. Hidden folders, gitignored folders, `~/Library`,
+`ignore_directories` and `ignore_paths` are left out.
 
-### 🧭 Navigation
-
-| Key       | Action                 |
-| --------- | ---------------------- |
-| `↑` / `k` | Move up                |
-| `↓` / `j` | Move down              |
-| `gg`      | Go to the first item   |
-| `G` (Shift+G) | Go to the last item |
-| `←` / `h` | Parent directory       |
-| `→` / `l` | Enter directory        |
-| `Enter`   | Quit, opening it in the editor or copying its path |
-
-### 🔍 Search
-
-| Key            | Action                      |
-| -------------- | --------------------------- |
-| `/` or `i`     | Search current directory    |
-| `Esc`          | Stop typing (results stay to browse) |
-| `Enter`        | Root search: choose the top result. Local search: same as `Esc` |
-| `Space` + `/`  | Root search (entire cache)  |
-| `Space` + `i`  | Index manager: choose which folders are indexed |
-
-Starting a current-directory search with a space or `/` (e.g. `i` then ` foo`) also switches to root search.
-`Backspace` in an empty root search goes back to searching the current directory. Root
-search finds folders, not files. To get the full listing back after a search, press `/`
-then `Esc`.
-
-The `?` help popup shows the live keybindings, custom ones included.
-
-### 📁 File Operations
-
-| Key       | Action                     |
-| --------- | -------------------------- |
-| `a`       | Create file (end with / for a folder) |
-| `d`       | Move to Trash (with confirmation) |
-| `D` (Shift+D) | Permanently delete (with confirmation; cannot be undone) |
-| `r`       | Rename                     |
-| `c`       | Copy beside the item       |
-| `Shift+C` | Copy to… (pick a folder)   |
-| `Shift+M` | Move to… (pick a folder)   |
-| `y`       | Extract a ZIP archive      |
-| `z`       | Compress to ZIP beside the item |
-| `o`       | Open with the system default app and quit |
-| `I` (Shift+I) | Get Info: size, dates, permissions, owner |
-| `.`       | Toggle hidden files        |
-
-### ✅ Select Several Items (Visual Mode)
-
-| Key                  | Action                                          |
-| -------------------- | ----------------------------------------------- |
-| `V` or `v`           | Start selecting at the highlighted item         |
-| `j` `k` `gg` `G`     | Move the cursor end and stretch the selection   |
-| `o`                  | Swap the selection's ends                       |
-| `d`                  | Move the selected items to Trash (with confirmation) |
-| `D` (Shift+D)        | Permanently delete the selected items (with confirmation) |
-| `Esc`, `V` or `v`    | Cancel the selection                            |
-
-The selection is the run of items from where you pressed `V` to the highlighted one,
-in the active pane's folder listing (not in search results). The prompt names the
-first few items and how many more, and acts on exactly those, one at a time, in the
-background: if some can't be moved or deleted, the rest still are and the status bar
-says what failed (all of it is logged to `~/.config/ff/ff.log`). Other keys do
-nothing while selecting, so leaving the folder can't lose the selection. If an end of
-the selection disappears, or a new item appears inside it, the selection is cancelled.
-
-### 🖼️ View Modes
-
-| Key       | Action                                           |
-| --------- | ------------------------------------------------ |
-| `p`       | Cycle view mode (Normal → Full → Dual)           |
-| `Tab`     | Switch active pane (Dual Pane mode)              |
-| `Shift+C` | Copy from active pane to other pane              |
-| `Shift+M` | Move from active pane to other pane              |
-
-In Dual Pane mode, navigation keys (`j`/`k`/`h`/`l`) work on the active pane.
-
-Outside Dual Pane mode, `Shift+C` / `Shift+M` open a folder picker: type to search
-folders as root search does, or type a path starting with `/` or `~`, then pick one
-with `↑`/`↓` and `Enter` (`Esc` cancels).
-
-### 🔧 Tools
-
-| Key            | Action            |
-| -------------- | ----------------- |
-| `s`            | Sort options menu |
-| `?`            | Show keybindings  |
-| `:`            | Command palette   |
-| `q` / `Ctrl-C` | Quit              |
-
-Every key above can be rebound; see [Keybindings](#keybindings).
-
-### 🎛️ Command Palette
-
-Press `:` to see every action with its key (the same list as the `?` help) and run one
-without remembering its key. Type to filter by what an action does, such as `hid`,
-`copy` or `trash` (setting names such as `file.trash` work too); the matched letters
-are underlined. Choose with `↑`/`↓`, press `Enter` to run the highlighted action, just
-as its key would, or `Esc` to close.
-
-Some actions have no key until you bind one, so the palette is how you reach them:
-
-| Palette entry           | Copies to the clipboard                      |
-| ----------------------- | -------------------------------------------- |
-| Copy path               | The highlighted item's full path             |
-| Copy name               | Its file or folder name                      |
-| Copy parent folder path | The path of the folder that contains it      |
-
-They act on the active pane's highlighted item, search results included, and the
-status bar says what was copied.
-
-After a key that starts a sequence, such as `Space` (the leader) or `g` (for `gg`),
-pause for a moment and a box at the bottom right lists each key that can follow and
-what it does.
-
----
-
-## 🎨 Theme & Customization
-
-- Default UI theme: **OneDark**
-- Custom themes: `~/.config/ff/themes/*.toml`, picked with `theme` in settings.toml
-  (a name without a file gets one written with the OneDark colors)
-- Syntax highlighting themes: configurable in settings (default: `base16-ocean.dark`)
-- Example:
-
-```toml
-theme = "onedark"   # loads ~/.config/ff/themes/onedark.toml
-```
-
-### Syntax Theme
-
-Configure in `~/.config/ff/settings.toml`:
-
-```toml
-syntax_theme = "base16-ocean.dark"
-```
-
-Accepted names: `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
-`base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)`, `Solarized (light)`. Any
-other name keeps the default.
-
-### Theme Colors
-
-A theme file (`~/.config/ff/themes/<name>.toml`) needs only the colors you change. Each
-mode has one color under `[statusbar]`, for its status bar badge, the cursor's `▌` mark,
-its prompt in the top bar and the hint line, and its popup:
-
-| Key           | Mode                                       | Default              |
-| ------------- | ------------------------------------------ | -------------------- |
-| `mode_normal` | Normal                                     | blue `#4fa6ed`       |
-| `mode_search` | Search this folder                         | green `#8ebd6b`      |
-| `mode_global` | Search from the root                       | yellow `#e2b86b`     |
-| `mode_visual` | Visual select (also tints the selection)   | purple `#bf68d9`     |
-| `mode_delete` | Trash and permanent delete                 | red `#e55561`        |
-| `mode_create` | Create                                     | cyan `#48b0bd`       |
-| `mode_rename` | Rename                                     | orange `#cc9057`     |
-| `mode_sort`   | Sort                                       | foreground `#a0a8b7` |
-
-Search matches are underlined in the search's color. The cursor's band and the
-selection's are tints of `[palette] bg`, toward `fg` and `mode_visual`, and so is the top
-bar while a search is typed, toward its color. In `[palette]`, `bright` colors the
-cursor's name, `muted` sizes and dates, `light_gray` the bars' details and the
-scrollbar, `gray` dotfiles and `dim` the pane separators and line numbers. `[ui] active_border` and
-`inactive_border` color pane borders (with `show_borders = true`), `[statusbar] background` the top bar
-and the status bar, `[icons]` the file-type icons, and `[markdown]` the markdown preview. Code previews use `syntax_theme` instead of `[syntax]`.
-
-Older files' `[ui] selected_bg`, `selected_fg`, `search_match_bg`, `search_match_fg` and
-`[statusbar] mode_insert`, `mode_command` are ignored.
+- **Building:** the first start, `--rebuild-cache` and a changed `root_dir` read the
+  folders in the background while you browse. Until the first read finishes, root search
+  says "Building the folder index…".
+- **Refreshing:** ff's own folder changes update the index at once, and an index older
+  than an hour is re-read in the background at startup.
+- **Rule changes:** when `ignore_paths` or `ignore_directories` change, the next start
+  drops the newly skipped folders at once and re-reads the rest in the background.
 
 ### Keybindings
 
-Every Normal-mode key can be rebound in `~/.config/ff/settings.toml` under
-`[keymap.normal]`, as `"key" = "action"`. An entry replaces only that key's default;
-every other default stays. Press `?` in ff to see the live bindings, custom ones
-included, with each action's name.
+Every Normal-mode key can be rebound under `[keymap.normal]`, as `"key" = "action"`. An
+entry replaces only that key's default.
 
 | Action           | Default keys        | What it does                              |
 | ---------------- | ------------------- | ----------------------------------------- |
@@ -440,214 +350,126 @@ included, with each action's name.
 Key syntax (names inside `<…>` are case-insensitive):
 
 - One character: `"j"`, `"D"` (uppercase means Shift+letter), `"."`, `"?"`, `"/"`.
-- Ctrl chords: `"<C-d>"`.
+- Ctrl chords: `"<C-d>"`. Alt chords aren't supported.
 - Named keys: `<Up>` `<Down>` `<Left>` `<Right>` `<Enter>` `<Tab>` `<Space>` `<Esc>`
   `<Backspace>` `<PageUp>` `<PageDown>` `<Home>` `<End>`.
-- Leader sequences: `"<leader>/"` is the leader key, then `/`. `leader` defaults to
-  Space (`" "` or `"<Space>"`). After the leader, a key without a leader binding does
-  what it does alone.
-- Two-key sequences: `"gg"` is `g`, then `g` (also `"g<Down>"`, `"<C-w>j"`). After a key
-  that starts one, ff waits for the next key; a key that doesn't finish a sequence is
-  dropped, as in Neovim. A key bound alone (or the leader) acts at once, so sequences
-  starting with it are ignored and named in the startup warning: binding `"g"` turns
-  off the default `"gg"` (add `"gg" = "none"` to silence the warning).
-- Alt chords aren't supported.
-
-Examples:
+- Leader sequences: `"<leader>/"` is the leader, then `/`. The leader defaults to Space
+  (`leader = " "` under `[keymap]`).
+- Two-key sequences: `"gg"` is `g`, then `g` (also `"g<Down>"`, `"<C-w>j"`). A key bound
+  on its own acts at once, so binding `"g"` turns off `"gg"`.
 
 ```toml
 [keymap]
 leader = " "
 
 [keymap.normal]
-"x" = "file.trash"   # x also moves to Trash
-"d" = "none"         # d does nothing
+"x" = "file.trash"          # x also moves to Trash
+"d" = "none"                # d does nothing
 "<C-d>" = "nav.down"
-"<C-u>" = "nav.up"
-"<leader>c" = "copy.path"   # Space, then c copies the highlighted item's path
+"<leader>c" = "copy.path"   # Space, then c, copies the highlighted item's path
 ```
 
-- `"none"` removes a default binding. An action can have several keys.
-- `Ctrl-C` always quits and can't be rebound. Keys inside popups (confirm prompts,
-  the sort menu, text fields, the Copy/Move to… picker, Get Info, the palette and the
-  help) and visual mode's `o` and `Esc` are fixed, so a keymap can never lock you out
-  of one; `?` lists them too. In visual mode the rebound `nav.*`, `select.visual`,
-  `file.trash` and `file.delete` keys apply.
-- Bad entries (unknown action, bad key, `<C-c>`) never stop ff from starting: they're
-  ignored, named in one warning at startup and logged to `~/.config/ff/ff.log`.
+`"none"` removes a default binding, and an action can have several keys. `Ctrl-C` always
+quits. Keys inside popups (prompts, the sort menu, text fields, the folder picker, Get
+Info, the palette, the index manager and the help) are fixed, so a keymap can never lock
+you out of one. Invalid entries never stop ff from starting: they're ignored, named in a
+warning at startup and logged to `~/.config/ff/ff.log`.
 
-### Terminal Image Support
+### Themes
 
-Image preview uses terminal graphics protocols when available:
+The default theme is OneDark. Custom themes live in `~/.config/ff/themes/<name>.toml`
+and are picked with `theme` in `settings.toml`; a name without a file gets one written
+with the OneDark colors. A theme file only needs the colors you change.
 
-| Terminal  | Protocol | Status              |
-| --------- | -------- | ------------------- |
-| Kitty     | Kitty    | Full support        |
-| iTerm2    | iTerm2   | Full support (Mac)  |
-| WezTerm   | iTerm2   | Full support        |
-| Ghostty   | Kitty    | Full support        |
-| Foot      | Sixel    | Full support        |
-| Alacritty | -        | Halfblock fallback  |
+Each mode has one color under `[statusbar]`, used for its status bar badge, the cursor
+mark, its prompt in the top bar and hint row, and its popup:
 
-### Nerd Font Icons
+| Key           | Mode                                     | Default              |
+| ------------- | ---------------------------------------- | -------------------- |
+| `mode_normal` | Normal                                   | blue `#4fa6ed`       |
+| `mode_search` | Search the current folder                | green `#8ebd6b`      |
+| `mode_global` | Root search                              | yellow `#e2b86b`     |
+| `mode_visual` | Visual select (also tints the selection) | purple `#bf68d9`     |
+| `mode_delete` | Trash and permanent delete               | red `#e55561`        |
+| `mode_create` | Create                                   | cyan `#48b0bd`       |
+| `mode_rename` | Rename                                   | orange `#cc9057`     |
+| `mode_sort`   | Sort                                     | foreground `#a0a8b7` |
 
-For the best visual experience, ff supports [Nerd Fonts](https://www.nerdfonts.com/) - patched fonts with file-type icons. Icons are colored based on file type (Rust=orange, JS=yellow, directories=blue, etc.).
+In `[palette]`, `bright` colors the highlighted name, `muted` sizes and dates,
+`light_gray` bar details and the scrollbar, `gray` dotfiles, and `dim` pane separators
+and line numbers. `[ui] active_border` and `inactive_border` color pane borders (with
+`show_borders = true`), `[statusbar] background` the top bar and status line, `[icons]`
+the file-type icons and `[markdown]` the Markdown preview. Code previews use
+`syntax_theme`, one of `base16-ocean.dark`, `base16-eighties.dark`, `base16-mocha.dark`,
+`base16-ocean.light`, `InspiredGitHub`, `Solarized (dark)` or `Solarized (light)`.
 
-**Auto-detection**: with `auto` (the default), ff turns nerd font icons on in every
-terminal. If you see boxes or question marks instead of icons, install a Nerd Font or set
-`use_nerd_fonts = "never"`.
+### Image previews
 
-**Installation**:
+| Terminal  | Protocol | Support            |
+| --------- | -------- | ------------------ |
+| Kitty     | Kitty    | Full               |
+| Ghostty   | Kitty    | Full               |
+| iTerm2    | iTerm2   | Full               |
+| WezTerm   | iTerm2   | Full               |
+| Foot      | Sixel    | Full               |
+| Alacritty | none     | Half-block preview |
 
-1. Install a Nerd Font:
+ff detects the protocol the first time it previews an image.
+
+### Nerd Font icons
+
+ff shows file-type icons from [Nerd Fonts](https://www.nerdfonts.com/), colored by file
+type. With `use_nerd_fonts = "auto"` (the default) they're on in every terminal; if you
+see boxes or question marks instead, install a Nerd Font or set
+`use_nerd_fonts = "never"` for the built-in fallback icons.
+
 ```bash
-# macOS (Homebrew)
 brew install --cask font-jetbrains-mono-nerd-font
-
-# Or other popular options:
-brew install --cask font-fira-code-nerd-font
-brew install --cask font-hack-nerd-font
 ```
 
-Or download from [nerdfonts.com](https://www.nerdfonts.com/)
+Then select the font in your terminal:
 
-2. Configure your terminal to use it:
-
-| Terminal  | Configuration |
-| --------- | ------------- |
+| Terminal  | Setting                                                                |
+| --------- | ---------------------------------------------------------------------- |
 | Ghostty   | `font-family = JetBrainsMono Nerd Font` in `~/.config/ghostty/config` |
-| iTerm2    | Preferences → Profiles → Text → Font |
-| Alacritty | `font.normal.family` in `~/.config/alacritty/alacritty.toml` |
-| Kitty     | `font_family` in `~/.config/kitty/kitty.conf` |
-| WezTerm   | `font` in `~/.wezterm.lua` |
+| iTerm2    | Settings → Profiles → Text → Font                                      |
+| Alacritty | `font.normal.family` in `~/.config/alacritty/alacritty.toml`           |
+| Kitty     | `font_family` in `~/.config/kitty/kitty.conf`                          |
+| WezTerm   | `font` in `~/.wezterm.lua`                                             |
 
-3. Restart your terminal
+## Troubleshooting
 
-**Manual override** (in `~/.config/ff/settings.toml`):
-```toml
-use_nerd_fonts = "always"  # Force nerd fonts
-use_nerd_fonts = "never"   # Force emoji fallback (📁, 📄)
-use_nerd_fonts = "auto"    # Auto-detect (default)
-```
+**`ff: command not found`.** After building from source, copy the binary somewhere on
+your `PATH`, for example `cp target/release/ff /usr/local/bin/`.
 
----
+**The editor doesn't open.** Check that it's on your `PATH` (`which nvim`, `which code`,
+`which zed`); for VS Code on macOS, run "Shell Command: Install 'code' command in PATH"
+from its command palette. With the shell integration, run `command ff -e nvim`, since the
+`ff` function hands paths to the shell instead.
 
-## ⚙️ Configuration
+**A folder is missing from root search.** Root search finds folders under `root_dir`,
+leaving out hidden and gitignored folders, `~/Library`, `ignore_directories` (which
+includes `src` and `target` by default) and `ignore_paths`. A folder created outside ff
+appears after the next background refresh, or right away with `ff --rebuild-cache`.
 
-- **Config file**: `~/.config/ff/settings.toml`
-- **Cache**: `~/.config/ff/cache_directory.json` (folders for root search and Copy
-  to…/Move to…, read from `root_dir`, your home folder by default, whatever folder ff
-  opens in; hidden and ignored folders and `~/Library` are left out). The first start,
-  `--rebuild-cache` and a changed `root_dir` read the folders in the background while
-  you browse; until the first read finishes, root search says "Building the folder
-  index…", and after a `root_dir` change the old folders stay searchable meanwhile.
-  ff's own folder changes update it at once, and a cache older than an hour is
-  refreshed in the background at startup.
-- **Themes**: `~/.config/ff/themes/`
+**Root search is slow or noisy.** Open the index manager (`Space`, then `i`) and switch
+off folders you never search; the title shows how much smaller the index gets. Folder
+names that repeat everywhere, such as `__pycache__`, are better added to
+`ignore_directories`.
 
-`ff` stores active TOML settings under `~/.config/ff/settings.toml`. Any setting or
-theme color you leave out uses its default, so these files only need what you change.
+## Contributing
 
-| Setting                | Default                                      | What it does                                                   |
-| ---------------------- | -------------------------------------------- | -------------------------------------------------------------- |
-| `start_path`           | `~/Desktop`                                  | Where `ff` opens without a path (the current folder if it isn't one) |
-| `root_dir`             | your home folder                             | What root search and Copy to…/Move to… cover (the folder ff opens in if it isn't one) |
-| `ignore_directories`   | `node_modules`, `target`, `src`, `.git`, …   | Folder names the folder index skips, at any depth              |
-| `ignore_paths`         | `[]`                                         | Exact folders below `root_dir` the index skips with everything below them, e.g. `["~/Movies", "~/go"]` |
-| `theme`                | `"onedark"`                                  | Theme file in `~/.config/ff/themes/`                           |
-| `show_borders`         | `false`                                      | Boxes around the panes                                         |
-| `status_bar_style`     | `"minimal"`                                  | `"classic"` draws the status line as bordered boxes            |
-| `[finder] max_results` | `500`                                        | Most results a root search or the Copy to…/Move to… picker shows |
+Bug reports, feature ideas and pull requests are welcome on
+[GitHub](https://github.com/anthonyamaro15/file-finder-rust/issues). Notable changes are
+listed in the [changelog](CHANGELOG.md).
 
-`syntax_theme`, `show_size_bars`, `show_hints`, `use_nerd_fonts` and `[keymap]` are
-covered above.
+## License
 
-### Precedence
+MIT; see [LICENSE](LICENSE).
 
-1. CLI arguments
-2. Config file
-3. Built-in defaults
+## Acknowledgments
 
-Example:
-
-```bash
-# Config file: start_path = "~/Documents"
-ff --start ~/Projects   # CLI wins, opens ~/Projects
-```
-
-Reset configuration:
-
-```bash
-ff --reset-config
-```
-
-This deletes everything in `~/.config/ff` (settings, custom themes, the folder index and
-`ff.log`) and writes fresh defaults, without opening ff.
-
----
-
-## 🐛 Troubleshooting
-
-**Command not found?**
-
-If installed from source, make sure the binary is in your PATH:
-```bash
-cp target/release/ff /usr/local/bin/
-```
-
-**Editor not opening?**
-
-- Ensure editor is in PATH (`which nvim`, `which code`, `which zed`)
-- For VS Code on macOS: install `code` command in PATH via Command Palette
-- With shell integration, run `command ff -e nvim`: the `ff` function hands paths to the
-  shell instead
-
-**Search not working?**
-
-- Press `/` or `i` to search the current directory
-- Press `Space` + `/` to search from the root cache
-- Press `?` to confirm your active search keybindings
-- Root search finds folders under `root_dir`, leaving out hidden and gitignored folders,
-  `ignore_directories` (`src` and `target` among them by default) and `ignore_paths`
-
-**Performance issues?**
-
-- The folder index is read in the background, so ff is usable at once; a large
-  `root_dir` only makes root search wait longer for its first results
-- Press `Space` + `i` to see which folders fill the index, biggest first, and switch the
-  ones you never search off (`␣` on/off, `l`/`h` in and out, `⏎` save). Saving writes
-  `ignore_paths` and drops those folders from the index at once. `Tab` shows the index
-  as a tree opened down to its biggest messes (caches, build output, virtualenvs), even
-  ones buried deep inside folders you keep
-- Or add big folders you never search to `ignore_paths` (one folder, e.g. `"~/Movies"`) or
-  `ignore_directories` (a name, anywhere) so the index skips them. Changes apply the next
-  time ff starts: the index drops those folders at once and re-reads the rest in the
-  background
-
----
-
-## 🤝 Contributing
-
-- Report bugs
-- Suggest features
-- Submit PRs
-- Improve docs
-
----
-
-## 📄 License
-
-MIT License — see [LICENSE](LICENSE)
-
----
-
-## 🙏 Acknowledgments
-
-- [Ratatui](https://github.com/ratatui-org/ratatui) — Terminal UI
-- [Syntect](https://github.com/trishume/syntect) — Syntax highlighting
-- Inspired by [fzf](https://github.com/junegunn/fzf) and [lazygit](https://github.com/jesseduffield/lazygit)
-
----
-
-**Happy file exploring! 🎉**  
-_Built with ❤️ in Rust_
+- [Ratatui](https://github.com/ratatui/ratatui) for the terminal UI
+- [Syntect](https://github.com/trishume/syntect) for syntax highlighting
+- Inspired by [fzf](https://github.com/junegunn/fzf) and
+  [lazygit](https://github.com/jesseduffield/lazygit)
