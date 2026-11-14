@@ -21,8 +21,9 @@ brew install anthonyamaro15/tap/ff
 echo 'eval "$(ff init zsh)"' >> ~/.zshrc && source ~/.zshrc   # bash: use ~/.bashrc and "ff init bash"
 ```
 
-Run `ff`, press `Space` then `/`, and type part of a folder's name. Press `Esc` to browse
-the results, then `Enter` on the folder you want: ff quits and your shell is in it.
+Run `ff`, press `Space` then `/`, type part of a folder's name, and press `Enter`: ff
+quits and your shell is in the top result. To pick another result, press `Esc` to browse
+them, then `Enter` on the folder you want.
 
 ---
 
@@ -244,6 +245,7 @@ The function always runs `ff --print-path`, so `-e` has no effect through it; ru
 | -------------- | --------------------------- |
 | `/` or `i`     | Search current directory    |
 | `Esc`          | Stop typing (results stay to browse) |
+| `Enter`        | Root search: choose the top result. Local search: same as `Esc` |
 | `Space` + `/`  | Root search (entire cache)  |
 
 Starting a current-directory search with a space or `/` (e.g. `i` then ` foo`) also switches to root search.

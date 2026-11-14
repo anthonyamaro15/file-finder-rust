@@ -111,7 +111,19 @@ fn hints(app: &App, keymap: &KeymapRuntime, selected: Option<usize>) -> Vec<Hint
                 fixed("Esc", "browse the results")
             };
             if global {
-                vec![esc, fixed("⌫", "in an empty box: search this folder")]
+                let mut hints = Vec::new();
+                if app.has_search_results() {
+                    // With shell integration, choosing a folder cds the shell into it.
+                    let label = if app.print_path {
+                        "go there".to_string()
+                    } else {
+                        choose_label(app)
+                    };
+                    hints.push(("⏎".to_string(), label));
+                }
+                hints.push(esc);
+                hints.push(fixed("⌫", "in an empty box: search this folder"));
+                hints
             } else {
                 vec![
                     esc,

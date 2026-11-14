@@ -439,7 +439,6 @@ pub struct App {
     pub active_pane: PanePosition,
     /// Right pane for dual-pane mode (left pane uses existing App fields)
     pub right_pane: crate::pane::Pane,
-    pub message: Vec<String>,
     pub files: Vec<String>,
     /// Each of `files`' details, read with the listing; drawing uses these, not the disk.
     pub file_info: Vec<EntryInfo>,
@@ -676,7 +675,6 @@ impl App {
             view_mode: ViewMode::default(),
             active_pane: PanePosition::default(),
             right_pane: crate::pane::Pane::default(),
-            message: Vec::new(),
             files,
             file_info,
             read_only_files: files_clone,
@@ -814,6 +812,15 @@ impl App {
 
     /// Whether the search box is filtering the right pane: a search started there is
     /// being typed. Otherwise its query and results belong to the left listing.
+    /// Whether the search being typed (left or right pane) has any results.
+    pub fn has_search_results(&self) -> bool {
+        if self.searching_right_pane() {
+            !self.right_pane.search_results.is_empty()
+        } else {
+            !self.search_results.is_empty()
+        }
+    }
+
     pub fn searching_right_pane(&self) -> bool {
         self.input_mode == InputMode::Editing
             && self.view_mode.is_dual_pane()
@@ -954,12 +961,6 @@ impl App {
         // reset error vaules
         self.is_create_edit_error = false;
         self.error_message = String::new();
-    }
-
-    pub fn submit_message(&mut self) {
-        self.message.push(self.input.clone());
-        self.input.clear();
-        self.reset_cursor();
     }
 
     // TODO: could we combine search, create, edit input field methods?

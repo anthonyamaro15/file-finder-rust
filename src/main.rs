@@ -25,6 +25,7 @@ use file_finder::{
 use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
+    config::keymap::Action,
     directory_store::DirectoryIndex,
     event::{
         handle_modifier_key, keymap::KeymapRuntime, search::handle_search_key,
@@ -380,11 +381,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         InputMode::Editing if key.kind == KeyEventKind::Press => {
-                            handle_search_key(
+                            let choose = handle_search_key(
                                 &mut loop_state.app,
                                 key.code,
                                 &loop_state.index.store,
                             );
+                            if choose {
+                                let key_label = keymap_runtime.key_for(Action::NavChoose);
+                                match normal::run_action(
+                                    Action::NavChoose,
+                                    &key_label,
+                                    &mut loop_state,
+                                    &mut terminal,
+                                    &startup_paths.refresh_fallback_path,
+                                )? {
+                                    LoopControl::Continue => {}
+                                    LoopControl::Break => break,
+                                    LoopControl::Return => {
+                                        mark_index_stale_after_interrupted_quit(&mut loop_state);
+                                        return Ok(());
+                                    }
+                                }
+                            }
                         }
                         InputMode::WatchDelete | InputMode::WatchTrash => {
                             if popups::handle_delete_key(
