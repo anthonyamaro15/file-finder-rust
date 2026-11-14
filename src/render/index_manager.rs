@@ -494,14 +494,16 @@ fn crumb(folder: &Path) -> String {
     }
 }
 
+/// Bars sit in the lower part of the cell (▆, ▖), so bars on rows next to each other
+/// stay apart in terminals that draw lines with no gap.
 /// `BAR_WIDTH` columns, filled in proportion to `percent`; a sliver for a small share.
 fn bar(percent: f64) -> String {
     let filled = ((percent / 100.0) * BAR_WIDTH as f64).round() as usize;
     let filled = filled.min(BAR_WIDTH);
     let bar = if filled == 0 {
-        "▏".to_string()
+        "▖".to_string()
     } else {
-        "█".repeat(filled)
+        "▆".repeat(filled)
     };
     format!("{bar:<BAR_WIDTH$}")
 }
@@ -671,7 +673,7 @@ mod tests {
         // Narrow: no bar, but still the count and share.
         let rows = screen(&manager, 50);
         assert!(
-            rows[6].contains("◐ Downloads") && !rows[6].contains('█'),
+            rows[6].contains("◐ Downloads") && !rows[6].contains('▆'),
             "{}",
             rows.join("\n")
         );
