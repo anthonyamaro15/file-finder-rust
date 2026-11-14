@@ -167,13 +167,12 @@ fn hints(app: &App, keymap: &KeymapRuntime, selected: Option<usize>) -> Vec<Hint
             fixed("⏎", "run"),
             fixed("Esc", "close"),
         ],
-        InputMode::IndexManager => vec![
-            fixed("␣", "on/off"),
-            fixed("l", "open"),
-            fixed("h", "back"),
-            fixed("⏎", "save"),
-            fixed("Esc", "cancel"),
-        ],
+        InputMode::IndexManager => app.index_manager.as_ref().map_or_else(Vec::new, |manager| {
+            crate::render::index_manager::view_keys(manager.view)
+                .iter()
+                .map(|(key, label)| fixed(key, label.trim()))
+                .collect()
+        }),
     }
 }
 

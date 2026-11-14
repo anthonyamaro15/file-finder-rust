@@ -332,12 +332,18 @@ pub fn draw(
             }
             InputMode::IndexManager => {
                 if let Some(manager) = app.index_manager.as_mut() {
-                    manager.scroll = crate::render::index_manager::render_index_manager(
+                    let scroll = crate::render::index_manager::render_index_manager(
                         f,
                         manager,
                         !settings.show_hints,
                         theme,
                     );
+                    match (manager.view, manager.tree.as_mut()) {
+                        (crate::index_manager::IndexView::Biggest, Some(tree)) => {
+                            tree.scroll = scroll
+                        }
+                        _ => manager.scroll = scroll,
+                    }
                 }
             }
             InputMode::Normal | InputMode::Visual => {

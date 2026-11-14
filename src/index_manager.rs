@@ -6,6 +6,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::directory_store::{below, DirectoryIndex};
+use crate::index_tree::{key, IndexTree, TreeKind};
+
+/// Which way the index manager shows the folders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexView {
+    /// One folder's subfolders at a time.
+    #[default]
+    ByFolder,
+    /// The heaviest branches as a tree (see `index_tree`).
+    Biggest,
+}
 
 /// A subfolder of the folder shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +66,10 @@ pub struct IndexManager {
     pub confirm_discard: bool,
     /// Why the last save failed.
     pub error: Option<String>,
+    /// The view shown; Tab switches.
+    pub view: IndexView,
+    /// The "biggest" view, built the first time it's shown.
+    pub tree: Option<IndexTree>,
     pending: BTreeMap<String, Pending>,
 }
 
@@ -74,7 +89,7 @@ impl IndexManager {
     /// Re-read the rows of the folder shown, e.g. after the index was refreshed,
     /// keeping the highlight on the same folder.
     pub fn reload(&mut self, index: &DirectoryIndex) {
-        let highlighted = self.highlighted().map(|row| row.path.clone());
+        let highlighted = self.rows.get(self.selected).map(|row| row.path.clone());
         self.total = index.store.directories.len();
         self.rows = rows(index, &self.folder);
         self.hidden_here = hidden_folders(&self.folder);
@@ -94,8 +109,16 @@ impl IndexManager {
             .min(self.rows.len().saturating_sub(1));
     }
 
+    /// The folder `␣` would switch: the by-folder row, or the tree line's folder.
     pub fn highlighted(&self) -> Option<&IndexRow> {
-        self.rows.get(self.selected)
+        match self.view {
+            IndexView::ByFolder => self.rows.get(self.selected),
+            IndexView::Biggest => {
+                let tree = self.tree.as_ref()?;
+                let node = tree.nodes.get(tree.cursor)?;
+                matches!(node.kind, TreeKind::Folder { .. }).then_some(&node.row)
+            }
+        }
     }
 
     /// Whether `row` will be excluded once saved.
@@ -105,9 +128,10 @@ impl IndexManager {
             .map_or(row.excluded, |pending| pending.off)
     }
 
-    /// How many changes wait to be saved.
+    /// How many changes saving would write.
     pub fn unsaved(&self) -> usize {
-        self.pending.len()
+        let (add, remove) = self.changes();
+        add.len() + remove.len()
     }
 
     /// Switch the highlighted folder in or out; switching it back undoes the change.
@@ -185,6 +209,26 @@ impl IndexManager {
         count.max(0) as usize
     }
 
+    /// What tree line `i`'s "… N smaller" folders will hold once the changes inside
+    /// them (not inside one of the big lines beside it) are saved.
+    pub fn smaller_after(&self, tree: &IndexTree, i: usize) -> usize {
+        let node = &tree.nodes[i];
+        let mut count = node.row.count.unwrap_or(0) as isize;
+        for (path, pending) in self.effective_changes() {
+            let inside = below(path, &node.row.path).is_some_and(|rest| !rest.is_empty());
+            let in_big = tree.nodes.iter().any(|other| {
+                other.parent == node.parent
+                    && matches!(other.kind, TreeKind::Folder { .. })
+                    && below(path, &other.head).is_some()
+            });
+            if inside && !in_big {
+                let changed = pending.count.unwrap_or(0) as isize;
+                count += if pending.off { -changed } else { changed };
+            }
+        }
+        count.max(0) as usize
+    }
+
     /// How many folders inside `row` will be excluded once saved.
     pub fn off_inside(&self, row: &IndexRow) -> usize {
         let mut inside: Vec<&String> = self
@@ -232,6 +276,14 @@ impl IndexManager {
         }
     }
 
+    /// Move the highlight `delta` lines in the view shown.
+    pub fn move_highlight(&mut self, delta: isize) {
+        match self.view {
+            IndexView::ByFolder => self.move_by(delta),
+            IndexView::Biggest => self.tree_move(delta),
+        }
+    }
+
     pub fn move_by(&mut self, delta: isize) {
         let last = self.rows.len().saturating_sub(1) as isize;
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
@@ -240,17 +292,278 @@ impl IndexManager {
 
     /// The saved settings' changes: folders to add to `ignore_paths`, and the folders
     /// to take out of it (spelled as the index spells them).
+    /// A folder switched off inside another one that ends up off isn't written: it
+    /// would stay excluded unseen if the outer one were switched back on later.
     pub fn changes(&self) -> (Vec<PathBuf>, Vec<String>) {
         let mut add = Vec::new();
         let mut remove = Vec::new();
         for (path, pending) in &self.pending {
             if pending.off {
-                add.push(PathBuf::from(path));
+                if !self.inside_off(path) {
+                    add.push(PathBuf::from(path));
+                }
             } else {
                 remove.push(path.clone());
             }
         }
         (add, remove)
+    }
+
+    /// The index was re-read: reload the folder shown and rebuild the tree, keeping
+    /// the highlight on a line that's still shown.
+    pub fn refresh(&mut self, index: &DirectoryIndex) {
+        self.reload(index);
+        if let Some(tree) = &self.tree {
+            self.tree = Some(IndexTree::build(index, Some(tree)));
+            self.settle_tree_cursor();
+        }
+    }
+
+    /// Move the tree's highlight up to the nearest line shown, if it's on a hidden one.
+    fn settle_tree_cursor(&mut self) {
+        let shown = self.tree_visible();
+        let Some(tree) = self.tree.as_mut() else {
+            return;
+        };
+        let mut at = tree.cursor;
+        while !shown.contains(&at) {
+            match tree.nodes.get(at).and_then(|node| node.parent) {
+                Some(parent) => at = parent,
+                None => {
+                    at = shown.first().copied().unwrap_or(0);
+                    break;
+                }
+            }
+        }
+        tree.cursor = at;
+    }
+
+    /// Whether a tree line ends up off: switched off itself, or inside a folder that
+    /// is (a joined chain's line is its deepest folder, so its head counts too).
+    pub fn tree_off(&self, row: &IndexRow) -> bool {
+        self.is_off(row) || self.inside_off(&row.path)
+    }
+
+    /// The folder that switched off a line inside it, for "… is off" messages.
+    fn off_holder(&self, path: &str) -> Option<String> {
+        self.final_off()
+            .filter(|off| *off != path && below(path, off).is_some())
+            .min_by_key(|off| off.len())
+            .map(|off| off.rsplit('/').next().unwrap_or(off).to_string())
+    }
+
+    /// `␣`: switch the highlighted folder, unless it's inside a folder that's off.
+    pub fn toggle_highlighted(&mut self) -> Result<(), String> {
+        if let Some(row) = self.highlighted() {
+            if let Some(holder) = self.off_holder(&row.path) {
+                return Err(format!(
+                    "{} is inside {holder}, which is off: turn {holder} on first",
+                    row.name
+                ));
+            }
+        }
+        self.toggle();
+        Ok(())
+    }
+
+    /// The tree's lines shown now: those not inside a folded or switched-off branch.
+    pub fn tree_visible(&self) -> Vec<usize> {
+        self.tree
+            .as_ref()
+            .map_or_else(Vec::new, |tree| tree.visible(|row| self.tree_off(row)))
+    }
+
+    /// Move the tree's highlight `delta` shown lines.
+    pub fn tree_move(&mut self, delta: isize) {
+        let shown = self.tree_visible();
+        let Some(tree) = self.tree.as_mut() else {
+            return;
+        };
+        let at = shown.iter().position(|&i| i == tree.cursor).unwrap_or(0) as isize;
+        let last = shown.len().saturating_sub(1) as isize;
+        if let Some(&i) = shown.get((at + delta).clamp(0, last) as usize) {
+            tree.cursor = i;
+        }
+        self.confirm_discard = false;
+    }
+
+    /// `l` in the tree: open a folded branch, step into an open one, or, for a folder
+    /// with nothing big inside or a "… smaller" line, show it in the by-folder view.
+    /// Returns why not, for a folder that's off.
+    pub fn tree_open(&mut self, index: &DirectoryIndex) -> Result<(), String> {
+        let shown = self.tree_visible();
+        let Some(node) = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.nodes.get(tree.cursor).cloned())
+        else {
+            return Ok(());
+        };
+        let off = self.tree_off(&node.row);
+        let Some(tree) = self.tree.as_mut() else {
+            return Ok(());
+        };
+        let i = tree.cursor;
+        match node.kind {
+            TreeKind::Folder { .. } if off => Err(format!(
+                "{} is off: turn it on (␣) to choose folders inside it",
+                node.row.name
+            )),
+            TreeKind::Folder { has_big: true, .. } if !tree.is_open(i) => {
+                tree.flip(i);
+                Ok(())
+            }
+            TreeKind::Folder { has_big: true, .. } => {
+                // Already open: step onto its first line.
+                if let Some(&next) = shown.iter().find(|&&j| tree.nodes[j].parent == Some(i)) {
+                    tree.cursor = next;
+                }
+                Ok(())
+            }
+            TreeKind::Folder { .. } => {
+                self.show_in_by_folder(index, PathBuf::from(&node.row.path), None);
+                Ok(())
+            }
+            TreeKind::Smaller { .. } => {
+                let big: Vec<String> = tree
+                    .nodes
+                    .iter()
+                    .filter(|other| {
+                        other.parent == node.parent && matches!(other.kind, TreeKind::Folder { .. })
+                    })
+                    .map(|other| other.row.path.clone())
+                    .collect();
+                self.show_in_by_folder(index, PathBuf::from(&node.row.path), Some(&big));
+                Ok(())
+            }
+        }
+    }
+
+    /// `h` in the tree: fold an open branch, otherwise go to the line it hangs from.
+    pub fn tree_fold(&mut self) {
+        let Some(node) = self
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.nodes.get(tree.cursor).cloned())
+        else {
+            return;
+        };
+        // An off line shows nothing inside, so there's nothing to fold: go up.
+        let off = self.tree_off(&node.row);
+        let Some(tree) = self.tree.as_mut() else {
+            return;
+        };
+        let i = tree.cursor;
+        if tree.is_open(i) && !off {
+            tree.flip(i);
+        } else if let Some(parent) = node.parent {
+            tree.cursor = parent;
+        }
+        self.confirm_discard = false;
+    }
+
+    /// Switch to the by-folder view showing `folder`, highlighting the first folder not
+    /// in `skip` (the ones the tree already listed), or the first.
+    fn show_in_by_folder(
+        &mut self,
+        index: &DirectoryIndex,
+        folder: PathBuf,
+        skip: Option<&[String]>,
+    ) {
+        self.view = IndexView::ByFolder;
+        self.folder = folder;
+        self.selected = 0;
+        self.scroll = 0;
+        self.reload(index);
+        // A row holding a line the tree showed (e.g. media for "media / app") counts too.
+        if let Some(skip) = skip {
+            let shown = |row: &IndexRow| skip.iter().any(|path| below(path, &row.path).is_some());
+            if let Some(i) = self.rows.iter().position(|row| !shown(row)) {
+                self.selected = i;
+            }
+        }
+        if let Some(tree) = self.tree.as_mut() {
+            tree.arrived_at = None;
+        }
+    }
+
+    /// Tab: switch views, keeping your place. To the tree: the line of the highlighted
+    /// folder, or of the nearest folder holding it. Back: the tree line's folder in its
+    /// parent, unless the tree's highlight hasn't moved, which leaves that view as it was.
+    pub fn switch_view(&mut self, index: &DirectoryIndex) {
+        self.confirm_discard = false;
+        match self.view {
+            IndexView::ByFolder => {
+                let tree = self.tree.take();
+                let mut tree = tree.unwrap_or_else(|| IndexTree::build(index, None));
+                let here = self.rows.get(self.selected).map_or_else(
+                    || self.folder.to_string_lossy().into_owned(),
+                    |row| row.path.clone(),
+                );
+                self.tree = Some(tree.clone());
+                let shown = self.tree_visible();
+                let mut at = tree
+                    .nearest(&here)
+                    .or_else(|| shown.first().copied())
+                    .unwrap_or(0);
+                // Inside a folded branch: its nearest shown line.
+                while !shown.contains(&at) {
+                    match tree.nodes.get(at).and_then(|node| node.parent) {
+                        Some(parent) => at = parent,
+                        None => {
+                            at = shown.first().copied().unwrap_or(0);
+                            break;
+                        }
+                    }
+                }
+                tree.cursor = at;
+                tree.arrived_at = tree.nodes.get(at).map(key);
+                self.tree = Some(tree);
+                self.view = IndexView::Biggest;
+            }
+            IndexView::Biggest => {
+                let Some(tree) = self.tree.as_ref() else {
+                    self.view = IndexView::ByFolder;
+                    return;
+                };
+                if tree.arrived_at.is_some()
+                    && tree.arrived_at == tree.nodes.get(tree.cursor).map(key)
+                {
+                    self.view = IndexView::ByFolder;
+                    return;
+                }
+                let Some(node) = tree.nodes.get(tree.cursor).cloned() else {
+                    self.view = IndexView::ByFolder;
+                    return;
+                };
+                match node.kind {
+                    TreeKind::Smaller { .. } => {
+                        let big: Vec<String> = tree
+                            .nodes
+                            .iter()
+                            .filter(|other| {
+                                other.parent == node.parent
+                                    && matches!(other.kind, TreeKind::Folder { .. })
+                            })
+                            .map(|other| other.row.path.clone())
+                            .collect();
+                        self.show_in_by_folder(index, PathBuf::from(&node.row.path), Some(&big));
+                    }
+                    TreeKind::Folder { .. } => {
+                        let path = PathBuf::from(&node.row.path);
+                        let parent = path
+                            .parent()
+                            .filter(|parent| parent.starts_with(&self.root))
+                            .map_or_else(|| self.root.clone(), Path::to_path_buf);
+                        self.show_in_by_folder(index, parent, None);
+                        if let Some(i) = self.rows.iter().position(|row| row.path == node.row.path)
+                        {
+                            self.selected = i;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -598,5 +911,296 @@ mod tests {
             shown(&manager),
             [row("usr", 2, false, 0), row("opt", 1, false, 0)]
         );
+    }
+
+    /// An index of /h with media/app/{cache,x} (cache holding 60), work/a (30) and
+    /// filler, so big means 50 or more.
+    fn tree_index() -> DirectoryIndex {
+        let mut dirs: Vec<String> = [
+            "media",
+            "media/app",
+            "media/app/cache",
+            "media/app/x",
+            "work",
+            "work/a",
+            "music",
+        ]
+        .iter()
+        .map(|dir| dir.to_string())
+        .collect();
+        for (parent, n) in [
+            ("media/app/cache", 60),
+            ("work/a", 30),
+            ("work", 10),
+            ("music", 5),
+        ] {
+            dirs.extend((0..n).map(|i| format!("{parent}/f{i}")));
+        }
+        let dirs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        index(Path::new("/h"), &dirs, &[])
+    }
+
+    fn tree_names(manager: &IndexManager) -> Vec<String> {
+        let tree = manager.tree.as_ref().unwrap();
+        manager
+            .tree_visible()
+            .into_iter()
+            .map(|i| format!("{}{}", tree.nodes[i].prefix, tree.nodes[i].row.name))
+            .collect()
+    }
+
+    #[test]
+    fn tab_keeps_your_place_and_tab_tab_changes_nothing() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        select(&mut manager, "media");
+        manager.switch_view(&index);
+        assert_eq!(manager.view, IndexView::Biggest);
+        assert_eq!(
+            tree_names(&manager),
+            ["media / app", "cache", "1 smaller", "2 smaller"]
+        );
+        // media itself isn't a line (it's joined into media / app): its nearest one.
+        assert_eq!(manager.highlighted().unwrap().name, "app");
+
+        // Back without moving: the by-folder view is as it was.
+        manager.switch_view(&index);
+        assert_eq!(
+            (manager.view, manager.folder.as_path()),
+            (IndexView::ByFolder, Path::new("/h"))
+        );
+        assert_eq!(manager.highlighted().unwrap().name, "media");
+
+        // Move to cache, then back: its folder, with it highlighted.
+        manager.switch_view(&index);
+        manager.move_highlight(1);
+        assert_eq!(manager.highlighted().unwrap().name, "cache");
+        manager.switch_view(&index);
+        assert_eq!(manager.folder, PathBuf::from("/h/media/app"));
+        assert_eq!(manager.highlighted().unwrap().name, "cache");
+    }
+
+    #[test]
+    fn space_in_the_tree_switches_the_tree_line_and_hides_what_is_inside() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        manager.toggle(); // media / app: switches app, the deepest of the chain
+        assert_eq!(manager.changes().0, [PathBuf::from("/h/media/app")]);
+        assert_eq!(tree_names(&manager), ["media / app", "2 smaller"]);
+        let app = manager.highlighted().unwrap().clone();
+        assert!(manager.is_off(&app));
+        let refused = manager.tree_open(&index).unwrap_err();
+        assert!(refused.starts_with("app is off"), "{refused}");
+    }
+
+    #[test]
+    fn a_folder_switched_off_inside_another_one_off_is_not_saved_twice() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        manager.move_highlight(1);
+        manager.toggle(); // cache
+        manager.move_highlight(-1);
+        manager.toggle(); // app, holding cache
+        assert_eq!(
+            manager.changes(),
+            (vec![PathBuf::from("/h/media/app")], vec![])
+        );
+        assert_eq!(manager.unsaved(), 1);
+    }
+
+    #[test]
+    fn l_shows_a_folder_with_nothing_big_inside_or_the_smaller_ones_in_by_folder() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        manager.move_highlight(1); // cache: 60 small folders inside
+        manager.tree_open(&index).unwrap();
+        assert_eq!(
+            (manager.view, manager.folder.as_path()),
+            (IndexView::ByFolder, Path::new("/h/media/app/cache"))
+        );
+
+        manager.switch_view(&index);
+        manager.move_highlight(10); // "2 smaller" at the top level: work and music
+        manager.tree_open(&index).unwrap();
+        assert_eq!(manager.folder, PathBuf::from("/h"));
+        assert_eq!(manager.highlighted().unwrap().name, "work");
+    }
+
+    #[test]
+    fn h_folds_an_open_branch_then_goes_to_its_parent() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        manager.tree_fold();
+        assert_eq!(tree_names(&manager), ["media / app", "2 smaller"]);
+        manager.tree_open(&index).unwrap();
+        manager.move_highlight(1);
+        manager.tree_fold(); // cache has nothing to fold: up to its line
+        assert_eq!(manager.highlighted().unwrap().name, "app");
+    }
+
+    #[test]
+    fn tree_counts_match_what_by_folder_counts() {
+        let index = tree_index();
+        let tree = IndexTree::build(&index, None);
+        for node in &tree.nodes {
+            if let TreeKind::Folder { .. } = node.kind {
+                assert_eq!(
+                    node.row.count,
+                    Some(folders_in(&index, &node.row.path)),
+                    "{}",
+                    node.row.path
+                );
+            }
+        }
+    }
+
+    /// An index of /h from `dirs` plus `n` filler folders under each `filler` parent.
+    fn filled(dirs: &[&str], filler: &[(&str, usize)]) -> DirectoryIndex {
+        let mut all: Vec<String> = dirs.iter().map(|dir| dir.to_string()).collect();
+        for (parent, n) in filler {
+            all.extend((0..*n).map(|i| format!("{parent}/f{i}")));
+        }
+        let all: Vec<&str> = all.iter().map(String::as_str).collect();
+        index(Path::new("/h"), &all, &[])
+    }
+
+    #[test]
+    fn a_root_of_slash_has_a_tree() {
+        let mut dirs: Vec<String> = vec!["/usr".into(), "/usr/lib".into(), "/opt".into()];
+        dirs.extend((0..60).map(|i| format!("/usr/lib/f{i}")));
+        let store = DirectoryStore {
+            directories: dirs,
+            root: Some("/".into()),
+            ..Default::default()
+        };
+        let index = DirectoryIndex::new(store, PathBuf::from("/"), IndexRules::default(), None);
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        assert_eq!(tree_names(&manager), ["usr / lib", "1 smaller"]);
+    }
+
+    #[test]
+    fn keys_on_an_empty_tree_do_nothing() {
+        let index = index(Path::new("/h"), &[], &[]);
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        assert!(manager.tree_visible().is_empty());
+        manager.tree_open(&index).unwrap();
+        manager.tree_fold();
+        manager.move_highlight(1);
+        assert!(manager.toggle_highlighted().is_ok());
+        assert_eq!(manager.unsaved(), 0);
+    }
+
+    #[test]
+    fn a_chain_whose_upper_folder_is_off_shows_off_in_the_tree() {
+        // big first, then media → app (a chain) holding cache and logs.
+        let index = filled(
+            &[
+                "big",
+                "media",
+                "media/app",
+                "media/app/cache",
+                "media/app/logs",
+            ],
+            &[
+                ("big", 230),
+                ("media/app/cache", 70),
+                ("media/app/logs", 60),
+            ],
+        );
+        let mut manager = IndexManager::open(&index, false);
+        select(&mut manager, "media");
+        manager.toggle();
+        manager.switch_view(&index);
+        // Tab lands on the chain's line (not on the first line, big).
+        assert_eq!(manager.highlighted().unwrap().name, "app");
+        let app = manager.highlighted().unwrap().clone();
+        assert!(manager.tree_off(&app));
+        assert_eq!(tree_names(&manager), ["big", "media / app"]);
+        // Nothing inside it opens, and ␣ explains what holds it.
+        assert!(manager.tree_open(&index).unwrap_err().contains("off"));
+        let refused = manager.toggle_highlighted().unwrap_err();
+        assert!(refused.contains("inside media"), "{refused}");
+        assert_eq!(manager.unsaved(), 1);
+    }
+
+    #[test]
+    fn tab_from_a_small_top_level_folder_lands_on_its_smaller_line() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        select(&mut manager, "music");
+        manager.switch_view(&index);
+        let tree = manager.tree.as_ref().unwrap();
+        let node = &tree.nodes[tree.cursor];
+        assert!(matches!(node.kind, TreeKind::Smaller { .. }) && node.parent.is_none());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_cursor_on_a_shown_line_and_tab_back_still_stays() {
+        let mut index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        manager.move_highlight(1);
+        assert_eq!(manager.highlighted().unwrap().name, "cache");
+        // cache stops being a line: the index grows elsewhere until it's small.
+        for i in 0..3000 {
+            index.store.directories.push(format!("/h/music/g{i}"));
+        }
+        manager.refresh(&index);
+        let shown = manager.tree_visible();
+        let tree = manager.tree.as_ref().unwrap();
+        assert!(shown.contains(&tree.cursor), "cursor on a hidden line");
+    }
+
+    #[test]
+    fn h_on_a_switched_off_branch_goes_up_without_folding_it() {
+        // top opens onto media / app (a chain), which opens onto x.
+        let index = filled(
+            &[
+                "top",
+                "top/media",
+                "top/media/app",
+                "top/media/app/x",
+                "top/other",
+            ],
+            &[
+                ("top/media/app/x", 100),
+                ("top/media/app", 10),
+                ("top/other", 40),
+            ],
+        );
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        assert_eq!(tree_names(&manager)[..3], ["top", "media / app", "x"]);
+        manager.move_highlight(1);
+        manager.toggle_highlighted().unwrap(); // app off: x hidden
+        assert!(!tree_names(&manager).contains(&"x".to_string()));
+        manager.tree_fold();
+        assert_eq!(manager.highlighted().unwrap().name, "top");
+        manager.move_highlight(1);
+        manager.toggle_highlighted().unwrap(); // back on: still open
+        assert!(tree_names(&manager).contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn a_smaller_line_counts_the_changes_inside_it() {
+        let index = tree_index();
+        let mut manager = IndexManager::open(&index, false);
+        select(&mut manager, "work");
+        manager.toggle(); // work: one of the top-level "2 smaller"
+        manager.switch_view(&index);
+        let tree = manager.tree.clone().unwrap();
+        let smaller = tree
+            .nodes
+            .iter()
+            .position(|node| node.parent.is_none() && matches!(node.kind, TreeKind::Smaller { .. }))
+            .unwrap();
+        assert_eq!(tree.nodes[smaller].row.count, Some(48));
+        assert_eq!(manager.smaller_after(&tree, smaller), 6);
     }
 }
