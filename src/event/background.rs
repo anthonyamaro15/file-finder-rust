@@ -720,7 +720,7 @@ pub(crate) mod tests {
         DirectoryIndex::new(
             crate::directory_store::DirectoryStore::new(),
             root.to_path_buf(),
-            Vec::new(),
+            crate::directory_store::IndexRules::default(),
             None,
         )
     }
@@ -746,7 +746,12 @@ pub(crate) mod tests {
             let root = dir.path().join("home");
             std::fs::create_dir_all(root.join("projects")).unwrap();
             let cache = dir.path().join("cache.json");
-            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            let mut index = DirectoryIndex::open(
+                &cache,
+                &root,
+                crate::directory_store::IndexRules::default(),
+                false,
+            );
             let mut app = App::new(Vec::new());
             app.index_filling = index.is_filling();
             assert!(app.index_filling);
@@ -790,7 +795,12 @@ pub(crate) mod tests {
         let cache = dir.path().join("cache.json");
         let old = build_directory_from_store(old_root.to_str().unwrap(), Vec::new());
         save_directory_to_file(&old, cache.to_str().unwrap()).unwrap();
-        let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+        let mut index = DirectoryIndex::open(
+            &cache,
+            &root,
+            crate::directory_store::IndexRules::default(),
+            false,
+        );
         let mut app = App::new(Vec::new());
         app.folder_picker = Some(FolderPicker {
             kind: TransferKind::Move,

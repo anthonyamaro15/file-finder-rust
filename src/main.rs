@@ -24,7 +24,7 @@ use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
     config::keymap::Action,
-    directory_store::DirectoryIndex,
+    directory_store::{DirectoryIndex, IndexRules},
     event::{
         handle_modifier_key, keymap::KeymapRuntime, search::handle_search_key,
         transfer::handle_folder_picker_key, LoopControl, LoopState,
@@ -175,7 +175,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = DirectoryIndex::open(
         &PathBuf::from(&settings.cache_directory),
         &effective_config.index_root,
-        settings.ignore_directories.clone(),
+        IndexRules::new(
+            &settings.ignore_directories,
+            &settings.ignore_paths,
+            &effective_config.index_root,
+        ),
         cli_args.rebuild_cache,
     );
     app.index_filling = index.is_filling();
