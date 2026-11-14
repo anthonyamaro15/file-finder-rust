@@ -192,64 +192,6 @@ pub struct SearchResult {
     pub original_index: usize,
 }
 
-fn search_result_order(a: &SearchResult, b: &SearchResult) -> std::cmp::Ordering {
-    b.score
-        .cmp(&a.score)
-        .then_with(|| {
-            a.display_name
-                .to_lowercase()
-                .cmp(&b.display_name.to_lowercase())
-        })
-        .then_with(|| a.file_path.cmp(&b.file_path))
-        .then_with(|| a.original_index.cmp(&b.original_index))
-}
-
-fn truncate_top_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
-    if max_results == 0 {
-        search_results.clear();
-        return;
-    }
-
-    search_results.sort_unstable_by(search_result_order);
-    search_results.truncate(max_results);
-}
-
-fn deduplicate_sorted_search_results(search_results: &mut Vec<SearchResult>) {
-    let mut seen_paths = HashSet::new();
-    search_results.retain(|result| seen_paths.insert(result.file_path.clone()));
-}
-
-fn truncate_top_unique_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
-    if max_results == 0 {
-        search_results.clear();
-        return;
-    }
-
-    search_results.sort_unstable_by(search_result_order);
-    deduplicate_sorted_search_results(search_results);
-    search_results.truncate(max_results);
-}
-
-fn push_bounded_search_result(
-    search_results: &mut Vec<SearchResult>,
-    result: SearchResult,
-    max_results: usize,
-) {
-    if max_results == 0 {
-        return;
-    }
-
-    search_results.push(result);
-
-    let trim_threshold = max_results
-        .saturating_mul(2)
-        .max(max_results.saturating_add(1));
-
-    if search_results.len() > trim_threshold {
-        truncate_top_search_results(search_results, max_results);
-    }
-}
-
 fn path_label_components(file_path: &str) -> Vec<String> {
     let components: Vec<String> = Path::new(file_path)
         .components()
@@ -316,29 +258,31 @@ fn apply_short_unique_display_names(search_results: &mut [SearchResult]) {
     }
 }
 
-fn global_search_result(
-    matcher: &SkimMatcherV2,
-    index: usize,
-    file_path: &str,
-    query: &str,
-) -> Option<SearchResult> {
-    let path = Path::new(file_path);
-    let file_name = path
+/// A folder's name: the last component of its path.
+fn folder_name(file_path: &str) -> &str {
+    Path::new(file_path)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(file_path);
+        .unwrap_or(file_path)
+}
 
-    let filename_score = matcher.fuzzy_match(file_name, query);
-    let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 3);
-    let score = filename_score.or(path_score)?;
+/// How well `file_path` matches `query`: its name first, else its whole path at a third.
+fn global_search_score(matcher: &SkimMatcherV2, file_path: &str, query: &str) -> Option<i64> {
+    matcher
+        .fuzzy_match(folder_name(file_path), query)
+        .or_else(|| matcher.fuzzy_match(file_path, query).map(|score| score / 3))
+}
 
-    Some(SearchResult {
-        file_path: file_path.to_string(),
-        display_name: file_name.to_string(),
-        score,
-        info: EntryInfo::default(),
-        original_index: index,
-    })
+/// Compare names case-insensitively, as `to_lowercase()` would, without allocating for
+/// the usual all-ASCII names.
+fn cmp_lowercase(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        a.bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()))
+    } else {
+        a.to_lowercase().cmp(&b.to_lowercase())
+    }
 }
 
 /// Global search over the folder index: the best `max_results` matches for `query`,
@@ -351,26 +295,67 @@ pub fn global_search_results(
     if max_results == 0 {
         return Vec::new();
     }
+    let directories = &store.directories;
 
-    let mut search_results = store
-        .directories
+    // Score every folder, but carry only (score, index): rows are built for the kept few.
+    let matches: Vec<(i64, usize)> = directories
         .par_iter()
         .enumerate()
         .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
-            global_search_result(matcher, index, file_path, query)
+            global_search_score(matcher, file_path, query).map(|score| (score, index))
         })
-        .filter_map(|result| result)
-        .fold(Vec::new, |mut search_results, result| {
-            push_bounded_search_result(&mut search_results, result, max_results);
-            search_results
-        })
-        .reduce(Vec::new, |mut left, mut right| {
-            left.append(&mut right);
-            truncate_top_search_results(&mut left, max_results);
-            left
-        });
+        .flatten()
+        .collect();
 
-    truncate_top_unique_search_results(&mut search_results, max_results);
+    // Best score first, then name (ignoring case), path and index.
+    let order = |a: &(i64, usize), b: &(i64, usize)| {
+        b.0.cmp(&a.0)
+            .then_with(|| {
+                cmp_lowercase(
+                    folder_name(&directories[a.1]),
+                    folder_name(&directories[b.1]),
+                )
+            })
+            .then_with(|| directories[a.1].cmp(&directories[b.1]))
+            .then_with(|| a.1.cmp(&b.1))
+    };
+    let best_unique = |mut candidates: Vec<(i64, usize)>| {
+        candidates.sort_unstable_by(order);
+        let mut seen = HashSet::new();
+        candidates.retain(|&(_, index)| seen.insert(directories[index].as_str()));
+        candidates.truncate(max_results);
+        candidates
+    };
+
+    // Only matches scoring at least the max_results-th best score can be kept, so sort
+    // just those. The index can repeat a path; if that leaves too few, sort them all.
+    let mut kept = if matches.len() > max_results {
+        let mut scores: Vec<i64> = matches.iter().map(|&(score, _)| score).collect();
+        let (_, &mut cutoff, _) = scores.select_nth_unstable_by(max_results - 1, |a, b| b.cmp(a));
+        best_unique(
+            matches
+                .iter()
+                .copied()
+                .filter(|&(score, _)| score >= cutoff)
+                .collect(),
+        )
+    } else {
+        Vec::new()
+    };
+    if kept.len() < max_results {
+        kept = best_unique(matches);
+    }
+
+    let mut search_results: Vec<SearchResult> = kept
+        .into_iter()
+        .map(|(score, index)| SearchResult {
+            file_path: directories[index].clone(),
+            display_name: folder_name(&directories[index]).to_string(),
+            score,
+            info: EntryInfo::default(),
+            original_index: index,
+        })
+        .collect();
     apply_short_unique_display_names(&mut search_results);
     // Only the results kept are read, once, rather than every match.
     search_results
@@ -1889,6 +1874,42 @@ impl App {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn global_search_fills_max_results_with_unique_paths() {
+        let mut store = DirectoryStore::new();
+        for path in ["/w/alpha", "/w/alpha", "/w/alps", "/w/alto"] {
+            store.insert(path);
+        }
+
+        // The repeated path is listed once and the next match takes its place.
+        let paths: Vec<String> = global_search_results(&store, "al", 3)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect();
+        assert_eq!(paths.len(), 3);
+        let unique: HashSet<&String> = paths.iter().collect();
+        assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn global_search_breaks_score_ties_by_name_ignoring_case() {
+        let mut store = DirectoryStore::new();
+        for path in ["/w/blpha", "/w/alpha", "/w/Alpha"] {
+            store.insert(path);
+        }
+        // "lph" scores all three the same: then case-insensitive name, then path.
+        let paths: Vec<String> = global_search_results(&store, "lph", 10)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect();
+        assert_eq!(paths, ["/w/Alpha", "/w/alpha", "/w/blpha"]);
+
+        // Non-ASCII names compare exactly as `to_lowercase()` does.
+        for (a, b) in [("Σ", "σ"), ("ÉCOLE", "école"), ("Ärger", "zebra")] {
+            assert_eq!(cmp_lowercase(a, b), a.to_lowercase().cmp(&b.to_lowercase()));
+        }
+    }
 
     fn local_search_app(files: &[&str], query: &str) -> App {
         let mut app = App::new(files.iter().map(|file| file.to_string()).collect());
