@@ -20,9 +20,25 @@ pub(crate) fn refresh_root_search(app: &mut App, store: &DirectoryStore) {
     }
 }
 
-pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStore) {
+/// Leave the search box; results stay on screen to browse.
+fn leave_search(app: &mut App) {
+    // The right pane keeps its query, so the box doesn't keep it for the left.
+    if app.searching_right_pane() {
+        app.input.clear();
+        app.reset_cursor();
+    }
+    app.input_mode = InputMode::Normal;
+}
+
+/// Handle a key while typing a search. Returns true when Enter in a root search with
+/// results should choose the highlighted (top) result, as `Esc` then `Enter` would.
+pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStore) -> bool {
     match key_code {
-        KeyCode::Enter => app.submit_message(),
+        KeyCode::Enter => {
+            let choose = app.search_scope == SearchScope::Root && app.has_search_results();
+            leave_search(app);
+            return choose;
+        }
         // Leading space or slash in a local search jumps to root search (pre-keymap behavior).
         KeyCode::Char(' ' | '/')
             if app.search_scope == SearchScope::CurrentDirectory && app.input.is_empty() =>
@@ -57,16 +73,10 @@ pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStor
         KeyCode::Right => {
             app.move_cursor_right();
         }
-        KeyCode::Esc => {
-            // The right pane keeps its query, so the box doesn't keep it for the left.
-            if app.searching_right_pane() {
-                app.input.clear();
-                app.reset_cursor();
-            }
-            app.input_mode = InputMode::Normal;
-        }
+        KeyCode::Esc => leave_search(app),
         _ => {}
     }
+    false
 }
 
 #[cfg(test)]
@@ -156,6 +166,43 @@ mod tests {
         assert_eq!(app.input, "");
         assert!(app.search_results.is_empty());
         assert_eq!(app.filtered_indexes, vec![0, 1]);
+    }
+
+    #[test]
+    fn enter_in_root_search_chooses_the_top_result() {
+        let mut app = App::new(Vec::new());
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::Root);
+        handle_search_key(&mut app, KeyCode::Char('s'), &store);
+
+        assert!(handle_search_key(&mut app, KeyCode::Enter, &store));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.get_selected_path(Some(0)).as_deref(),
+            Some("/workspace/project/src")
+        );
+    }
+
+    #[test]
+    fn enter_without_root_results_only_leaves_the_box() {
+        let mut app = App::new(vec!["/workspace/a.txt".to_string()]);
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        // No match: nothing to choose, so the listing's item isn't chosen instead.
+        app.enter_search(SearchScope::Root);
+        handle_search_key(&mut app, KeyCode::Char('z'), &store);
+        assert!(!handle_search_key(&mut app, KeyCode::Enter, &store));
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // A local search keeps its filter to browse, like Esc.
+        app.enter_search(SearchScope::CurrentDirectory);
+        handle_search_key(&mut app, KeyCode::Char('a'), &store);
+        assert!(!handle_search_key(&mut app, KeyCode::Enter, &store));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.input, "a");
     }
 
     #[test]
