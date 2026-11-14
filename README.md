@@ -616,7 +616,9 @@ cp target/release/ff /usr/local/bin/
   `root_dir` only makes root search wait longer for its first results
 - Press `Space` + `i` to see which folders fill the index, biggest first, and switch the
   ones you never search off (`␣` on/off, `l`/`h` in and out, `⏎` save). Saving writes
-  `ignore_paths` and drops those folders from the index at once
+  `ignore_paths` and drops those folders from the index at once. `Tab` shows the index
+  as a tree opened down to its biggest messes (caches, build output, virtualenvs), even
+  ones buried deep inside folders you keep
 - Or add big folders you never search to `ignore_paths` (one folder, e.g. `"~/Movies"`) or
   `ignore_directories` (a name, anywhere) so the index skips them. Changes apply the next
   time ff starts: the index drops those folders at once and re-reads the rest in the

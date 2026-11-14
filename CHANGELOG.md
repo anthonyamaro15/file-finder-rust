@@ -11,6 +11,11 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   palette): the folders under `root_dir` (your home by default), biggest first, with how
   much of the index each one fills. `␣` switches a folder off or back on, `l`/`h` go in and out, `⏎` saves to
   `ignore_paths`, and the title shows the index size before and after.
+- Index manager's "biggest" view (`Tab`): the index as a tree whose heaviest branches
+  are opened for you down to what fills them (caches, build output, virtualenvs,
+  plugins), with everything small folded into "… N smaller" lines. `␣` switches any
+  branch off, `l`/`h` open and fold, and `Tab` goes back to the by-folder view at the
+  same place. ([#164](https://github.com/anthonyamaro15/file-finder-rust/pull/164))
   ([#163](https://github.com/anthonyamaro15/file-finder-rust/pull/163))
 - `ignore_paths` setting: exact folders to leave out of the folder index with everything
   below them, e.g. `ignore_paths = ["~/Movies", "~/go"]`. Unlike `ignore_directories`,

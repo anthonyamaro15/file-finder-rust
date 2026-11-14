@@ -13,9 +13,10 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::ThemeColors;
-use crate::index_manager::{IndexManager, IndexRow};
+use crate::index_manager::{IndexManager, IndexRow, IndexView};
+use crate::index_tree::{TreeKind, TreeNode};
 use crate::info::plural;
-use crate::ui::{truncate, INDEX_FILLING};
+use crate::ui::{truncate, truncate_start, INDEX_FILLING};
 use crate::utils::format::{format_thousands, replace_home_with_tilde};
 
 /// Below this inner width the share bar is left out, keeping the count and percent.
@@ -39,7 +40,14 @@ pub fn render_index_manager(
     let room = usize::from(screen.height.saturating_sub(4))
         .saturating_sub(extra)
         .max(1);
-    let visible = manager.rows.len().clamp(1, room);
+    let shown = manager.tree_visible();
+    let biggest = manager.view == IndexView::Biggest && manager.tree.is_some();
+    let row_count = if biggest {
+        shown.len()
+    } else {
+        manager.rows.len()
+    };
+    let visible = row_count.clamp(1, room);
     let area = Rect {
         x: screen.x + (screen.width - width) / 2,
         y: screen.y + 2,
@@ -52,29 +60,45 @@ pub fn render_index_manager(
     let muted = Style::default().fg(theme.light_gray);
     let wide = inner >= BAR_MIN_WIDTH;
 
-    // The folder shown, and the columns' headings.
-    let folder = crumb(&manager.folder);
+    // The folder shown (or what the tree is), and the columns' headings.
+    let folder = if biggest {
+        "heaviest branches, opened down to the mess".to_string()
+    } else {
+        crumb(&manager.folder)
+    };
     let headings = if wide {
         "folders   of index "
     } else {
         "folders "
     };
-    let folder = truncate(&folder, inner.saturating_sub(headings.len() + 2));
+    // A deep folder keeps its own name: cut from the start. The tree's sentence: the end.
+    let room = inner.saturating_sub(headings.len() + 2);
+    let folder = if biggest {
+        truncate(&folder, room)
+    } else {
+        truncate_start(&folder, room)
+    };
     let gap = inner.saturating_sub(folder.width() + headings.len() + 1);
     let mut lines = vec![Line::from(vec![
-        Span::styled(format!(" {folder}"), blue),
+        Span::styled(format!(" {folder}"), if biggest { muted } else { blue }),
         Span::raw(" ".repeat(gap)),
         Span::styled(headings, muted),
     ])];
 
-    let selected = manager.selected.min(manager.rows.len().saturating_sub(1));
-    let scroll = manager
-        .scroll
+    let (selected, scroll_from) = match (&manager.tree, biggest) {
+        (Some(tree), true) => (
+            shown.iter().position(|&i| i == tree.cursor).unwrap_or(0),
+            tree.scroll,
+        ),
+        _ => (manager.selected, manager.scroll),
+    };
+    let selected = selected.min(row_count.saturating_sub(1));
+    let scroll = scroll_from
         .min(selected)
         .max((selected + 1).saturating_sub(visible))
-        .min(manager.rows.len().saturating_sub(visible));
+        .min(row_count.saturating_sub(visible));
     let (after, unknown) = manager.total_after();
-    if manager.rows.is_empty() {
+    if row_count == 0 {
         let empty = if manager.filling {
             INDEX_FILLING
         } else {
@@ -82,35 +106,56 @@ pub fn render_index_manager(
         };
         lines.push(Line::styled(format!("   {empty}"), muted));
     }
-    for (i, row) in manager.rows.iter().enumerate().skip(scroll).take(visible) {
-        lines.push(row_line(
-            manager,
-            row,
-            i == selected,
-            after,
-            inner,
-            wide,
-            theme,
-        ));
+    match (&manager.tree, biggest) {
+        (Some(tree), true) => {
+            for (at, &i) in shown.iter().enumerate().skip(scroll).take(visible) {
+                let open = tree.is_open(i);
+                lines.push(tree_line(
+                    manager,
+                    &tree.nodes[i],
+                    manager.smaller_after(tree, i),
+                    open,
+                    at == selected,
+                    after,
+                    inner,
+                    wide,
+                    theme,
+                ));
+            }
+        }
+        _ => {
+            for (i, row) in manager.rows.iter().enumerate().skip(scroll).take(visible) {
+                lines.push(row_line(
+                    manager,
+                    row,
+                    i == selected,
+                    after,
+                    inner,
+                    wide,
+                    theme,
+                ));
+            }
+        }
     }
     lines.resize(visible + 1, Line::from(""));
+    // By folder: what's never indexed here. The tree: where the highlighted line is.
+    let footer = match (&manager.tree, biggest) {
+        (Some(tree), true) => tree.nodes.get(tree.cursor).map_or(String::new(), |node| {
+            truncate_start(
+                &replace_home_with_tilde(&node.row.path),
+                inner.saturating_sub(1),
+            )
+        }),
+        _ => truncate(&never_indexed(manager), inner.saturating_sub(1)),
+    };
     lines.push(Line::styled(
-        format!(
-            " {}",
-            truncate(&never_indexed(manager), inner.saturating_sub(1))
-        ),
+        format!(" {footer}"),
         Style::default().fg(theme.gray),
     ));
     if keys {
         let key = Style::default().fg(theme.blue).add_modifier(Modifier::BOLD);
         let mut spans = vec![Span::raw(" ")];
-        for (k, label) in [
-            ("␣", " on/off  "),
-            ("l", " open  "),
-            ("h", " back  "),
-            ("⏎", " save  "),
-            ("Esc", " cancel"),
-        ] {
+        for (k, label) in view_keys(manager.view) {
             spans.push(Span::styled(k, key));
             spans.push(Span::styled(label, muted));
         }
@@ -122,15 +167,11 @@ pub fn render_index_manager(
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
         .border_style(border_style)
-        // Narrow, the totals keep their room.
-        .title(Line::from(Span::styled(
-            if inner >= 48 {
-                " Index · by folder "
-            } else {
-                " Index "
-            },
-            blue,
-        )))
+        .title(title(
+            manager.view,
+            inner.saturating_sub(totals(manager, after, unknown).width() + 2),
+            theme,
+        ))
         .title(
             Line::from(Span::styled(
                 totals(manager, after, unknown),
@@ -144,6 +185,205 @@ pub fn render_index_manager(
     f.render_widget(Clear, area);
     f.render_widget(Paragraph::new(lines).block(block), area);
     scroll
+}
+
+/// "Index · by folder │ biggest" with the active view bold; with less `room` beside
+/// the totals, only the active one, then only "Index".
+fn title(view: IndexView, room: usize, theme: &ThemeColors) -> Line<'static> {
+    let blue = Style::default().fg(theme.blue).add_modifier(Modifier::BOLD);
+    let muted = Style::default().fg(theme.light_gray);
+    let active = match view {
+        IndexView::ByFolder => "by folder",
+        IndexView::Biggest => "biggest",
+    };
+    let short = format!(" Index · {active} ");
+    if room < short.width() {
+        return Line::styled(" Index ", blue);
+    }
+    if room < " Index · by folder │ biggest ".width() {
+        return Line::styled(short, blue);
+    }
+    let style = |name: &str| if name == active { blue } else { muted };
+    Line::from(vec![
+        Span::styled(" Index · ", blue),
+        Span::styled("by folder", style("by folder")),
+        Span::styled(" │ ", Style::default().fg(theme.gray)),
+        Span::styled("biggest", style("biggest")),
+        Span::raw(" "),
+    ])
+}
+
+/// The keys of `view`, for the hint row and the in-window key line.
+pub fn view_keys(view: IndexView) -> [(&'static str, &'static str); 6] {
+    match view {
+        // Tab last: a narrow window cuts it before save and cancel.
+        IndexView::ByFolder => [
+            ("␣", " on/off  "),
+            ("l", " open  "),
+            ("h", " back  "),
+            ("⏎", " save  "),
+            ("Esc", " cancel  "),
+            ("Tab", " biggest"),
+        ],
+        IndexView::Biggest => [
+            ("␣", " on/off  "),
+            ("l", " open  "),
+            ("h", " fold  "),
+            ("⏎", " save  "),
+            ("Esc", " cancel  "),
+            ("Tab", " by folder"),
+        ],
+    }
+}
+
+/// Deepest indent drawn; deeper lines share it.
+const MAX_DEPTH: usize = 8;
+
+/// One line of the tree: indent, ▾/▸, on/off/partly, the name (a joined chain's folders
+/// above it dimmed), count, then "off" or its share; an open branch's bar is dimmed, so
+/// colour lands on the folders to act on. "… N smaller" lines are all dim.
+#[allow(clippy::too_many_arguments)]
+fn tree_line(
+    manager: &IndexManager,
+    node: &TreeNode,
+    smaller_after: usize,
+    open: bool,
+    highlighted: bool,
+    after: usize,
+    inner: usize,
+    wide: bool,
+    theme: &ThemeColors,
+) -> Line<'static> {
+    let base = if highlighted {
+        Style::default().bg(theme.selection)
+    } else {
+        Style::default()
+    };
+    let per_level = if wide { 2 } else { 1 };
+    let indent = " ".repeat(node.depth.min(MAX_DEPTH) * per_level);
+    let share_width = if wide { BAR_WIDTH + 6 } else { 5 };
+    let name_width = inner
+        .saturating_sub(3 + indent.len() + 2 + 2 + 9 + share_width)
+        .max(6);
+    let cursor = Span::styled(
+        if highlighted { " ❯ " } else { "   " },
+        base.fg(theme.blue).add_modifier(Modifier::BOLD),
+    );
+
+    if let TreeKind::Smaller { .. } = node.kind {
+        let dim = base.fg(theme.gray);
+        let label = truncate(&format!("… {}", node.row.name), name_width + 4);
+        let count = smaller_after;
+        let percent = count as f64 * 100.0 / after.max(1) as f64;
+        let mut spans = vec![
+            cursor,
+            Span::styled(indent, base),
+            Span::styled(
+                format!(
+                    "{label}{}",
+                    " ".repeat((name_width + 4).saturating_sub(label.width()))
+                ),
+                dim,
+            ),
+            Span::styled(format!("{:>7}  ", format_thousands(count as u64)), dim),
+        ];
+        if wide {
+            spans.push(Span::styled(format!("{} ", bar(percent)), dim));
+        }
+        spans.push(Span::styled(format!("{:>4}", percent_label(percent)), dim));
+        return pad(spans, inner, base);
+    }
+
+    let row = &node.row;
+    let off = manager.tree_off(row);
+    let off_inside = manager.off_inside(row);
+    let has_big = matches!(node.kind, TreeKind::Folder { has_big: true, .. });
+    let arrow = if open && !off {
+        "▾ "
+    } else if has_big {
+        "▸ "
+    } else {
+        "  "
+    };
+    let (mark, mark_color) = if off {
+        ("○ ", theme.light_gray)
+    } else if off_inside > 0 {
+        ("◐ ", theme.yellow)
+    } else {
+        ("● ", theme.green)
+    };
+    let text = if off {
+        theme.light_gray
+    } else if highlighted {
+        theme.bright
+    } else {
+        theme.fg
+    };
+    // A long chain loses its middle first, then the name its end.
+    let mut prefix = node.prefix.clone();
+    if prefix.width() + row.name.width() > name_width {
+        let parts: Vec<&str> = node.prefix.trim_end_matches(" / ").split(" / ").collect();
+        if parts.len() > 1 {
+            prefix = format!("{} / … / ", parts[0]);
+        }
+    }
+    if prefix.width() + row.name.width() > name_width {
+        prefix.clear();
+    }
+    let name = truncate(&row.name, name_width.saturating_sub(prefix.width()));
+    let used = prefix.width() + name.width();
+    let name_style = if highlighted || open {
+        base.fg(text).add_modifier(Modifier::BOLD)
+    } else {
+        base.fg(text)
+    };
+    let mut spans = vec![
+        cursor,
+        Span::styled(indent, base),
+        Span::styled(arrow, base.fg(theme.light_gray)),
+        Span::styled(mark, base.fg(mark_color)),
+        Span::styled(prefix, base.fg(theme.light_gray)),
+        Span::styled(name, name_style),
+        Span::styled(" ".repeat(name_width.saturating_sub(used)), base),
+    ];
+    // The count as it is, like the by-folder view; the share is after the changes.
+    spans.push(Span::styled(
+        format!("{:>7}  ", format_thousands(row.count.unwrap_or(0) as u64)),
+        base.fg(text),
+    ));
+    let count = manager.count_after(row);
+    if off {
+        spans.push(Span::styled(
+            "off",
+            base.fg(theme.red).add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        let percent = count as f64 * 100.0 / after.max(1) as f64;
+        let color = if open {
+            theme.gray
+        } else if percent >= 25.0 {
+            theme.red
+        } else if percent >= 5.0 {
+            theme.yellow
+        } else {
+            theme.green
+        };
+        if wide {
+            spans.push(Span::styled(format!("{} ", bar(percent)), base.fg(color)));
+        }
+        spans.push(Span::styled(
+            format!("{:>4}", percent_label(percent)),
+            base.fg(theme.light_gray),
+        ));
+    }
+    pad(spans, inner, base)
+}
+
+/// `spans` padded with `base` to `inner` columns.
+fn pad(mut spans: Vec<Span<'static>>, inner: usize, base: Style) -> Line<'static> {
+    let used: usize = spans.iter().map(|span| span.content.width()).sum();
+    spans.push(Span::styled(" ".repeat(inner.saturating_sub(used)), base));
+    Line::from(spans)
 }
 
 /// One subfolder: the cursor, on/off/partly, name, count, then "off" or its share.
@@ -469,5 +709,50 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn the_tree_view_draws_its_branches_and_the_highlighted_path() {
+        let root = Path::new("/h");
+        let mut directories: Vec<String> = [
+            "media",
+            "media/app",
+            "media/app/cache",
+            "media/app/x",
+            "music",
+        ]
+        .iter()
+        .map(|dir| format!("/h/{dir}"))
+        .collect();
+        directories.extend((0..60).map(|i| format!("/h/media/app/cache/f{i}")));
+        let store = DirectoryStore {
+            directories,
+            root: Some("/h".into()),
+            ..Default::default()
+        };
+        let index = DirectoryIndex::new(store, root.to_path_buf(), IndexRules::default(), None);
+        let mut manager = IndexManager::open(&index, false);
+        manager.switch_view(&index);
+        let rows = screen(&manager, 80);
+        let text = rows.join("\n");
+        assert!(rows[2].contains("Index · by folder │ biggest"), "{text}");
+        assert!(rows[3].contains("heaviest branches"), "{text}");
+        assert!(
+            rows[4].contains("❯ ▾ ● media / app") && rows[4].contains("63"),
+            "{text}"
+        );
+        assert!(
+            rows[5].contains("● cache") && rows[5].contains("61"),
+            "{text}"
+        );
+        assert!(text.contains("/h/media/app"), "{text}");
+
+        manager.toggle();
+        let text = screen(&manager, 80).join("\n");
+        assert!(
+            text.contains("▸ ○ media / app") && text.contains("off"),
+            "{text}"
+        );
+        assert!(!text.contains("cache"), "{text}");
     }
 }

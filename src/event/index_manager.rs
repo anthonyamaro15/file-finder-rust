@@ -9,7 +9,7 @@ use crate::{
     config::settings::{update_ignore_paths_in, Settings},
     directory_store::{DirectoryIndex, IndexRules},
     event::LoopState,
-    index_manager::IndexManager,
+    index_manager::{IndexManager, IndexView},
 };
 
 /// Move, switch folders in or out, open or leave a folder, save or cancel.
@@ -33,20 +33,32 @@ pub fn handle_index_manager_key(key: KeyEvent, loop_state: &mut LoopState) {
     }
     let mut close = false;
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => manager.move_by(1),
-        KeyCode::Up | KeyCode::Char('k') => manager.move_by(-1),
-        KeyCode::PageDown => manager.move_by(10),
-        KeyCode::PageUp => manager.move_by(-10),
+        KeyCode::Tab if !manager.filling => manager.switch_view(index),
+        KeyCode::Down | KeyCode::Char('j') => manager.move_highlight(1),
+        KeyCode::Up | KeyCode::Char('k') => manager.move_highlight(-1),
+        KeyCode::PageDown => manager.move_highlight(10),
+        KeyCode::PageUp => manager.move_highlight(-10),
         KeyCode::Char(' ') if manager.filling => {
             status_bar.show_warning("Wait until the folder index is built".to_string(), Some(3));
         }
-        KeyCode::Char(' ') => manager.toggle(),
-        KeyCode::Right | KeyCode::Char('l') => {
-            if let Err(why) = manager.open_highlighted(index) {
+        KeyCode::Char(' ') => {
+            if let Err(why) = manager.toggle_highlighted() {
                 status_bar.show_warning(why, Some(4));
             }
         }
-        KeyCode::Left | KeyCode::Char('h') => manager.back(index),
+        KeyCode::Right | KeyCode::Char('l') => {
+            let opened = match manager.view {
+                IndexView::ByFolder => manager.open_highlighted(index),
+                IndexView::Biggest => manager.tree_open(index),
+            };
+            if let Err(why) = opened {
+                status_bar.show_warning(why, Some(4));
+            }
+        }
+        KeyCode::Left | KeyCode::Char('h') => match manager.view {
+            IndexView::ByFolder => manager.back(index),
+            IndexView::Biggest => manager.tree_fold(),
+        },
         KeyCode::Enter if manager.unsaved() == 0 => close = true,
         KeyCode::Enter => {
             let saved = crate::config::get_config_dir()

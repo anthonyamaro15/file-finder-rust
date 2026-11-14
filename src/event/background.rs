@@ -675,7 +675,7 @@ pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
     if refreshed {
         if let Some(manager) = app.index_manager.as_mut() {
             manager.filling = index.is_filling();
-            manager.reload(index);
+            manager.refresh(index);
         }
     }
     if refreshed && app.index_filling {
