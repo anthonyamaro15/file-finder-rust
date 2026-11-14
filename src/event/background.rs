@@ -680,6 +680,7 @@ pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
         }
     }
     app.index_filling = index.is_filling();
+    app.index_folders = index.store.directories.len();
 }
 
 /// Apply preserved selection and clamp after all refreshes, before handling a key.

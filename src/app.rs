@@ -461,6 +461,10 @@ pub struct App {
     pub search_scope: SearchScope,
     pub global_search_mode: bool,
     pub max_search_results: usize,
+    /// How long the last root search took, shown in the top bar.
+    pub search_time: Option<Duration>,
+    /// Folders in the folder index, kept in step with it by `poll_index`.
+    pub index_folders: usize,
 
     // Copy progress tracking
     pub copy_in_progress: bool,
@@ -686,6 +690,8 @@ impl App {
 
             // Initialize search functionality
             search_results: Vec::new(),
+            search_time: None,
+            index_folders: 0,
             search_scope: SearchScope::CurrentDirectory,
             global_search_mode: false,
             max_search_results: 500,
@@ -895,7 +901,9 @@ impl App {
     /// Perform global search across directory cache
     pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
         // For global search, we don't use filtered_indexes since we're showing different files
+        let started = Instant::now();
         self.search_results = global_search_results(store, query, self.max_search_results);
+        self.search_time = Some(started.elapsed());
         self.filtered_indexes.clear();
     }
 
