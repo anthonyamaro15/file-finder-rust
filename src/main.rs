@@ -424,6 +424,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchInfo if key.kind == KeyEventKind::Press => {
                             popups::handle_info_key(key, &mut loop_state.app)
                         }
+                        InputMode::IndexManager if key.kind == KeyEventKind::Press => {
+                            file_finder::event::index_manager::handle_index_manager_key(
+                                key,
+                                &mut loop_state,
+                            )
+                        }
                         InputMode::PickFolder if key.kind == KeyEventKind::Press => {
                             handle_folder_picker_key(
                                 key,

@@ -281,7 +281,7 @@ pub fn needs_refresh(built_at: SystemTime, now: SystemTime) -> bool {
 }
 
 /// The part of `path` below `dir` ("" for `dir` itself), or `None` outside it.
-fn below<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
+pub(crate) fn below<'a>(path: &'a str, dir: &str) -> Option<&'a str> {
     let rest = path.strip_prefix(dir)?;
     (rest.is_empty() || rest.starts_with(MAIN_SEPARATOR)).then_some(rest)
 }
@@ -298,6 +298,9 @@ pub struct DirectoryIndex {
     refresh: Option<mpsc::Receiver<DirectoryStore>>,
     /// Paths ff changed while a refresh was walking, re-read once it finishes.
     changed_during_refresh: Vec<PathBuf>,
+    /// The folder the running walk reads; it differs from `root` while a new
+    /// `root_dir` is walked.
+    walking: Option<PathBuf>,
 }
 
 impl DirectoryIndex {
@@ -314,6 +317,7 @@ impl DirectoryIndex {
             cache_path,
             refresh: None,
             changed_during_refresh: Vec::new(),
+            walking: None,
         }
     }
 
@@ -427,6 +431,7 @@ impl DirectoryIndex {
             self.rules.clone(),
             threads,
         ));
+        self.walking = Some(root.to_path_buf());
         self.changed_during_refresh.clear();
     }
 
@@ -450,6 +455,7 @@ impl DirectoryIndex {
             result => result.ok(),
         };
         self.refresh = None;
+        self.walking = None;
         let changed = std::mem::take(&mut self.changed_during_refresh);
         let Some(store) = store else {
             return false;
@@ -497,8 +503,10 @@ impl DirectoryIndex {
         self.rules = rules;
         self.prune_to_rules();
         self.save();
-        if self.root.is_dir() {
-            self.walk(&self.root.clone(), REFRESH_THREADS);
+        // Keep walking a new root_dir rather than the old one.
+        let root = self.walking.clone().unwrap_or_else(|| self.root.clone());
+        if root.is_dir() {
+            self.walk(&root, REFRESH_THREADS);
         }
     }
 

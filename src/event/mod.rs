@@ -16,6 +16,7 @@ use crate::{
 
 pub mod background;
 pub mod file_actions;
+pub mod index_manager;
 pub mod keymap;
 pub mod navigation;
 pub mod normal;

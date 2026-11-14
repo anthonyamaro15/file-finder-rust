@@ -670,7 +670,15 @@ pub fn poll_sizes(app: &mut App, state: &mut ListState) {
 /// Swap in the folder index's finished walk. A search or folder pick typed while the
 /// index was empty runs again on it; others keep the rows they show.
 pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
-    if index.poll_refresh() && app.index_filling {
+    let refreshed = index.poll_refresh();
+    // An open index manager shows the new counts.
+    if refreshed {
+        if let Some(manager) = app.index_manager.as_mut() {
+            manager.filling = index.is_filling();
+            manager.reload(index);
+        }
+    }
+    if refreshed && app.index_filling {
         match app.input_mode {
             InputMode::Editing if app.search_scope == SearchScope::Root => {
                 refresh_root_search(app, &index.store)

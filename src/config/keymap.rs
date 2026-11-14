@@ -30,6 +30,8 @@ pub enum Action {
     CopyParent,
     SearchCurrent,
     SearchRoot,
+    /// Open the index manager.
+    IndexManage,
     ViewCycle,
     ViewSort,
     ViewHidden,
@@ -41,7 +43,7 @@ pub enum Action {
 
 impl Action {
     /// Every action with its name in settings.toml.
-    pub const ALL: [(Self, &'static str); 31] = [
+    pub const ALL: [(Self, &'static str); 32] = [
         (Self::NavDown, "nav.down"),
         (Self::NavUp, "nav.up"),
         (Self::NavTop, "nav.top"),
@@ -66,6 +68,7 @@ impl Action {
         (Self::CopyParent, "copy.parent"),
         (Self::SearchCurrent, "search.current"),
         (Self::SearchRoot, "search.root"),
+        (Self::IndexManage, "index.manage"),
         (Self::ViewCycle, "view.cycle"),
         (Self::ViewSort, "view.sort"),
         (Self::ViewHidden, "view.hidden"),
@@ -326,7 +329,7 @@ fn default_leader() -> String {
 
 /// Every default Normal-mode key; the README's "Keyboard Shortcuts" and keymap table
 /// list them. The `copy.*` actions have none until the user binds one.
-const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 34] = [
+const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 35] = [
     ("j", "nav.down"),
     ("<Down>", "nav.down"),
     ("k", "nav.up"),
@@ -354,6 +357,7 @@ const DEFAULT_NORMAL_KEYMAP: [(&str, &str); 34] = [
     ("/", "search.current"),
     ("i", "search.current"),
     ("<leader>/", "search.root"),
+    ("<leader>i", "index.manage"),
     ("p", "view.cycle"),
     ("s", "view.sort"),
     (".", "view.hidden"),
