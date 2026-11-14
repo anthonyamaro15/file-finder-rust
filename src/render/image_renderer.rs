@@ -8,8 +8,10 @@ const DEFAULT_FONT_SIZE: (u16, u16) = (8, 16);
 /// Image renderer that supports terminal graphics protocols (Sixel, Kitty, iTerm2)
 /// with fallback to Unicode halfblocks for unsupported terminals.
 pub struct ImageRenderer {
-    /// Terminal graphics protocol picker
-    picker: Picker,
+    /// Terminal graphics protocol picker, made on the first image: asking the terminal
+    /// which protocol it supports can take up to a second when it never answers
+    /// (e.g. detached tmux), and most sessions never preview an image.
+    picker: Option<Picker>,
     /// Current image protocol state for rendering
     pub(crate) image_state: Option<Box<dyn StatefulProtocol>>,
     /// Whether an image is currently loaded
@@ -21,15 +23,11 @@ pub struct ImageRenderer {
 }
 
 impl ImageRenderer {
-    /// Create a new ImageRenderer with terminal protocol detection
-    // No `Default`: construction queries the terminal, which `default()` shouldn't hide.
+    /// Create an ImageRenderer; the terminal is asked about graphics on the first image.
     #[allow(clippy::new_without_default)]
     pub fn new() -> ImageRenderer {
-        let mut picker = Picker::new(DEFAULT_FONT_SIZE);
-        with_stdin_state_restored(|| picker.guess_protocol());
-
         ImageRenderer {
-            picker,
+            picker: None,
             image_state: None,
             has_image: false,
             image_info: String::new(),
@@ -43,7 +41,12 @@ impl ImageRenderer {
         self.image_info = format!("{}×{}", decoded_image.width(), decoded_image.height());
 
         // Create protocol state for rendering
-        let protocol = self.picker.new_resize_protocol(decoded_image);
+        let picker = self.picker.get_or_insert_with(|| {
+            let mut picker = Picker::new(DEFAULT_FONT_SIZE);
+            with_stdin_state_restored(|| picker.guess_protocol());
+            picker
+        });
+        let protocol = picker.new_resize_protocol(decoded_image);
         self.image_state = Some(protocol);
         self.has_image = true;
         self.error_message = None;

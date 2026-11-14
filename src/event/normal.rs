@@ -8,7 +8,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{DisableMouseCapture, KeyCode, KeyEvent},
+    event::{KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
@@ -445,11 +445,7 @@ pub fn run_action(
 
                     // Restore terminal
                     disable_raw_mode()?;
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        DisableMouseCapture
-                    )?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                     terminal.show_cursor()?;
                     if let Some(error) = &quit_error {
                         eprintln!("ff: {error}");
