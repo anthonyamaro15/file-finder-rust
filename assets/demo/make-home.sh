@@ -203,4 +203,13 @@ cat > .config/ff/settings.toml <<T
 start_path = "$H/Projects"
 root_dir = "$H"
 use_nerd_fonts = "always"
+theme = "demo"
+T
+# OneDark with brighter grey text, so paths stay readable when the video is small
+mkdir -p .config/ff/themes
+cat > .config/ff/themes/demo.toml <<'T'
+[palette]
+gray = "#7a818e"
+muted = "#8b929f"
+fg = "#b6bdca"
 T
