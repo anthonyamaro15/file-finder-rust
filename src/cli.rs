@@ -82,32 +82,45 @@ impl Shell {
             Shell::Zsh | Shell::Bash => {
                 r#"# ff shell integration
 ff() {
+    # Commands that don't open ff run as they are.
+    case "${1-}" in
+        init|help) command ff "$@"; return ;;
+    esac
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help|-V|--version|--reset-config) command ff "$@"; return ;;
+        esac
+    done
+
     local tmp result
     tmp=$(mktemp "${TMPDIR:-/tmp}/ff_result.XXXXXX") || return
 
     # Run ff with print-path mode (writes selected path to $FF_RESULT_FILE)
     FF_RESULT_FILE="$tmp" command ff --print-path "$@"
+    local rc=$?
     result=$(cat "$tmp")
     rm -f "$tmp"
 
-    if [[ -n "$result" ]]; then
-        if [[ -d "$result" ]]; then
-            cd "$result"
-        else
-            # It's a file - copy to clipboard if a clipboard tool is available
-            if command -v pbcopy >/dev/null 2>&1; then
-                printf '%s' "$result" | pbcopy
-            elif command -v wl-copy >/dev/null 2>&1; then
-                printf '%s' "$result" | wl-copy
-            elif command -v xclip >/dev/null 2>&1; then
-                printf '%s' "$result" | xclip -selection clipboard
-            else
-                echo "$result"
-                return
-            fi
-            echo "Path copied: $result"
-        fi
+    # Nothing chosen (quit, or ff failed): fail, so `ff && nvim .` stops here.
+    [[ -n "$result" ]] || return $(( rc ? rc : 1 ))
+
+    if [[ -d "$result" ]]; then
+        cd "$result"
+        return
     fi
+    # It's a file - copy to clipboard if a clipboard tool is available
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf '%s' "$result" | pbcopy
+    elif command -v wl-copy >/dev/null 2>&1; then
+        printf '%s' "$result" | wl-copy
+    elif command -v xclip >/dev/null 2>&1; then
+        printf '%s' "$result" | xclip -selection clipboard
+    else
+        echo "$result"
+        return
+    fi
+    echo "Path copied: $result"
 }"#
             }
         }
@@ -392,6 +405,60 @@ mod tests {
             assert!(script.contains(r#"FF_RESULT_FILE="$tmp" command ff --print-path"#));
             assert!(script.contains(r#"rm -f "$tmp""#));
             assert!(!script.contains("/tmp/ff_result"));
+        }
+    }
+
+    /// Quitting without a choice must fail, so `ff && nvim .` stops; a chosen folder cds;
+    /// commands that don't open ff keep their own status. Runs in bash and zsh where present.
+    #[cfg(unix)]
+    #[test]
+    fn shell_function_fails_on_cancel_and_cds_on_a_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        // A stand-in ff: writes `dest` as the result only when $PICK is set, and exits
+        // with $CODE.
+        let stub = bin.join("ff");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\n[ -n \"$PICK\" ] && printf %s '{}' > \"$FF_RESULT_FILE\"\nexit ${{CODE:-0}}\n",
+                dest.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let dest = dest.canonicalize().unwrap();
+
+        for (shell, kind) in [("bash", Shell::Bash), ("zsh", Shell::Zsh)] {
+            // `set -u` too: the function must not read unset arguments.
+            let script = format!(
+                "{}\nset -u\nff && echo ran; echo \"cancel=$?\"\nCODE=3 ff; echo \"failed=$?\"\n\
+                 ff --version; echo \"version=$?\"\nPICK=1 ff; echo \"pick=$? $(pwd -P)\"\n",
+                kind.generate_script()
+            );
+            let out = match std::process::Command::new(shell)
+                .arg("-c")
+                .arg(script)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .output()
+            {
+                Ok(out) => out,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => panic!("{shell}: {e}"),
+            };
+            let out = String::from_utf8(out.stdout).unwrap();
+            let lines: Vec<&str> = out.lines().collect();
+
+            assert!(!lines.contains(&"ran"), "{shell}: {out}");
+            assert!(lines.contains(&"cancel=1"), "{shell}: {out}");
+            assert!(lines.contains(&"failed=3"), "{shell}: {out}");
+            assert!(lines.contains(&"version=0"), "{shell}: {out}");
+            let pick = format!("pick=0 {}", dest.display());
+            assert!(lines.contains(&pick.as_str()), "{shell}: {out}");
         }
     }
 

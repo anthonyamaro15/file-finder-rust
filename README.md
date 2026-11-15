@@ -279,7 +279,7 @@ over the file.
 | ---------------------- | ------------------------------------------ | -------------------------------------------------------------------- |
 | `start_path`           | `~/Desktop`                                | Where ff opens without a path (the current folder if it isn't one)  |
 | `root_dir`             | your home folder                           | What root search and Copy to…/Move to… cover                         |
-| `ignore_directories`   | `node_modules`, `target`, `src`, `.git`, … | Folder names the index skips, at any depth                           |
+| `ignore_directories`   | `node_modules`, `target`, `.git`, …        | Folder names the index skips, at any depth                           |
 | `ignore_paths`         | `[]`                                       | Exact folders below `root_dir` the index skips with everything below them, e.g. `["~/Movies", "~/go"]` |
 | `theme`                | `"onedark"`                                | Theme file in `~/.config/ff/themes/`                                 |
 | `syntax_theme`         | `"base16-ocean.dark"`                      | Theme for code previews                                              |
@@ -449,7 +449,7 @@ from its command palette. With the shell integration, run `command ff -e nvim`, 
 
 **A folder is missing from root search.** Root search finds folders under `root_dir`,
 leaving out hidden and gitignored folders, `~/Library`, `ignore_directories` (which
-includes `src` and `target` by default) and `ignore_paths`. A folder created outside ff
+includes `node_modules` and `target` by default) and `ignore_paths`. A folder created outside ff
 appears after the next background refresh, or right away with `ff --rebuild-cache`.
 
 **Root search is slow or noisy.** Open the index manager (`Space`, then `i`) and switch

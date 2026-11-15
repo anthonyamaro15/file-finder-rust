@@ -149,7 +149,6 @@ impl Default for Settings {
                 "maui".to_string(),
                 "target".to_string(),
                 ".venv".to_string(),
-                "src".to_string(),
                 "cdn".to_string(),
                 ".git".to_string(),
                 ".sauce".to_string(),
