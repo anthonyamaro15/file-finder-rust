@@ -268,11 +268,233 @@ fn folder_name(file_path: &str) -> &str {
         .unwrap_or(file_path)
 }
 
-/// How well `file_path` matches `query`: its name first, else its whole path at a third.
-fn global_search_score(matcher: &SkimMatcherV2, file_path: &str, query: &str) -> Option<i64> {
-    matcher
-        .fuzzy_match(folder_name(file_path), query)
-        .or_else(|| matcher.fuzzy_match(file_path, query).map(|score| score / 3))
+/// Whether `word`'s letters appear in `haystack` in order, ignoring ASCII case: the
+/// cheap test every fuzzy match must pass, run first to skip the matcher's work.
+fn has_letters_in_order(haystack: &str, word: &str) -> bool {
+    let mut wanted = word
+        .bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .peekable();
+    for byte in haystack.bytes() {
+        match wanted.peek() {
+            None => break,
+            Some(&want) if want == byte.to_ascii_lowercase() => {
+                wanted.next();
+            }
+            Some(_) => {}
+        }
+    }
+    wanted.peek().is_none()
+}
+
+/// Whether `haystack` contains `word`, ignoring ASCII case.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    let (haystack, word) = (haystack.as_bytes(), word.as_bytes());
+    word.len() <= haystack.len()
+        && haystack
+            .windows(word.len())
+            .any(|window| window.eq_ignore_ascii_case(word))
+}
+
+/// Where `name`'s words start: after a separator, and at a lowercase-to-uppercase
+/// step, so `file-finder-rust` and `FileFinderRust` both have three words. Non-ASCII
+/// bytes count as letters.
+fn word_starts(name: &str) -> impl Iterator<Item = usize> + '_ {
+    let letter = |byte: u8| byte.is_ascii_alphanumeric() || !byte.is_ascii();
+    let bytes = name.as_bytes();
+    (0..bytes.len()).filter(move |&at| {
+        letter(bytes[at])
+            && (at == 0
+                || !letter(bytes[at - 1])
+                || (bytes[at - 1].is_ascii_lowercase() && bytes[at].is_ascii_uppercase()))
+    })
+}
+
+/// Whether `word` is made of the beginnings of consecutive words of `name`, ignoring
+/// ASCII case: `ffr` and `finrust` for `file-finder-rust`, `mewo` for `Megan Wofford`.
+/// Words longer than 63 bytes never are.
+fn abbreviates(name: &str, word: &str) -> bool {
+    let (bytes, word) = (name.as_bytes(), word.as_bytes());
+    if word.is_empty() || word.len() > 63 {
+        return false;
+    }
+    let done = 1u64 << word.len();
+    // Bit n of `reached`: the first n bytes of `word` are covered by the words so far.
+    let mut reached = 0u64;
+    let mut starts = word_starts(name).peekable();
+    while let Some(start) = starts.next() {
+        let end = starts.peek().copied().unwrap_or(bytes.len());
+        reached |= 1; // an abbreviation may start at any word
+        let mut next = 0u64;
+        let mut from = reached;
+        while from != 0 {
+            let covered = from.trailing_zeros() as usize;
+            from &= from - 1;
+            for (taken, (have, want)) in bytes[start..end].iter().zip(&word[covered..]).enumerate()
+            {
+                if !have.eq_ignore_ascii_case(want) {
+                    break;
+                }
+                next |= 1 << (covered + taken + 1);
+            }
+        }
+        if next & done != 0 {
+            return true;
+        }
+        reached = next;
+    }
+    false
+}
+
+/// How `word` appears in `name`, best first: 3 as the initials of consecutive words
+/// (`ffr`: file-finder-rust), 2 from the starts of words (`comp`: components, `mewo`:
+/// Megan Wofford), 1 inside a word (frameworks for `mewo`), 0 only as scattered letters.
+fn typed_strength(name: &str, word: &str) -> i64 {
+    let bytes = name.as_bytes();
+    let wanted = word.as_bytes();
+    if wanted.len() > 1 {
+        // Consecutive words whose first letters spell `word`.
+        let mut run = 0;
+        for at in word_starts(name) {
+            run = if bytes[at].eq_ignore_ascii_case(&wanted[run]) {
+                run + 1
+            } else {
+                usize::from(bytes[at].eq_ignore_ascii_case(&wanted[0]))
+            };
+            if run == wanted.len() {
+                return 3;
+            }
+        }
+    }
+    if abbreviates(name, word) {
+        2
+    } else if contains_word(name, word) {
+        1
+    } else {
+        0
+    }
+}
+
+/// How one query word matched a folder.
+struct WordMatch {
+    /// How it was found as typed: see `typed_strength`.
+    as_typed: i64,
+    /// The word is the folder's whole name.
+    whole_name: bool,
+    /// Found in the folder's own name rather than a folder above it.
+    in_name: bool,
+    fuzzy: i64,
+}
+
+/// Match one word against a folder: its name at full weight, else the best folder above
+/// it (below the index root) at a third; a folder above found as typed beats letters
+/// scattered through the name. A word with `/` matches the whole path, as does a
+/// one-word query that nothing else matched.
+fn match_word(
+    matcher: &SkimMatcherV2,
+    file_path: &str,
+    name: &str,
+    above: &str,
+    word: &str,
+    only_word: bool,
+) -> Option<WordMatch> {
+    let anywhere = |fuzzy: i64, as_typed: i64| WordMatch {
+        as_typed,
+        whole_name: false,
+        in_name: false,
+        fuzzy: fuzzy / 3,
+    };
+    if word.contains('/') {
+        let fuzzy = matcher.fuzzy_match(file_path, word)?;
+        return Some(anywhere(fuzzy, i64::from(contains_word(file_path, word))));
+    }
+    // Non-ASCII words go straight to the matcher, which folds case beyond ASCII.
+    let ascii = word.is_ascii();
+    let fuzzy = |haystack: &str| {
+        if ascii && !has_letters_in_order(haystack, word) {
+            return None;
+        }
+        matcher.fuzzy_match(haystack, word)
+    };
+    let in_name = fuzzy(name).map(|fuzzy| WordMatch {
+        as_typed: typed_strength(name, word),
+        whole_name: name.eq_ignore_ascii_case(word),
+        in_name: true,
+        fuzzy,
+    });
+    if in_name.as_ref().is_some_and(|found| found.as_typed > 0) {
+        return in_name;
+    }
+    let mut best: Option<WordMatch> = None;
+    // Skip the folders above at once when they can't hold the word.
+    let could_be_above = !ascii || has_letters_in_order(above, word);
+    for folder in above
+        .split('/')
+        .filter(|folder| could_be_above && !folder.is_empty())
+    {
+        if let Some(fuzzy) = fuzzy(folder) {
+            let found = anywhere(fuzzy, typed_strength(folder, word));
+            if best
+                .as_ref()
+                .is_none_or(|best| (found.as_typed, found.fuzzy) > (best.as_typed, best.fuzzy))
+            {
+                best = Some(found);
+            }
+        }
+    }
+    if best.as_ref().is_some_and(|best| best.as_typed > 0) {
+        return best;
+    }
+    in_name.or(best).or_else(|| {
+        only_word
+            .then(|| matcher.fuzzy_match(file_path, word))
+            .flatten()
+            .map(|fuzzy| anywhere(fuzzy, 0))
+    })
+}
+
+/// How well a folder matches every word of a query, in any order; `None` if a word
+/// doesn't match. Higher is better. The score packs, most important first: how the
+/// words were found as typed (`typed_strength`), a word that is the whole name, words in
+/// the folder's own name, the fuzzy score, then shallower folders (below `root`) first.
+fn global_search_score(
+    matcher: &SkimMatcherV2,
+    file_path: &str,
+    root: &str,
+    words: &[&str],
+) -> Option<i64> {
+    let name = folder_name(file_path);
+    let below_root = file_path
+        .strip_prefix(root)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/') || root.ends_with('/'))
+        .unwrap_or(file_path);
+    let above = below_root.strip_suffix(name).unwrap_or(below_root);
+    let (mut as_typed, mut whole_name, mut in_name, mut fuzzy) = (0i64, 0i64, 0i64, 0i64);
+    for word in words {
+        let found = match_word(matcher, file_path, name, above, word, words.len() == 1)?;
+        as_typed += found.as_typed;
+        whole_name |= i64::from(found.whole_name);
+        in_name += i64::from(found.in_name);
+        fuzzy += found.fuzzy.max(0);
+    }
+    // A name with spaces, typed in full: `user data` for "User Data".
+    if words.len() > 1
+        && name.split_whitespace().count() == words.len()
+        && name
+            .split_whitespace()
+            .zip(words)
+            .all(|(part, word)| part.eq_ignore_ascii_case(word))
+    {
+        whole_name = 1;
+    }
+    let depth = below_root.matches('/').count().min(63) as i64;
+    Some(
+        (as_typed.min(63) << 36)
+            | (whole_name << 35)
+            | (in_name.min(15) << 31)
+            | (fuzzy.min((1 << 25) - 1) << 6)
+            | (63 - depth),
+    )
 }
 
 /// Compare names case-insensitively, as `to_lowercase()` would, without allocating for
@@ -287,8 +509,8 @@ fn cmp_lowercase(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// Global search over the folder index: the best `max_results` matches for `query`,
-/// with short labels that tell same-named folders apart.
+/// Global search over the folder index: the best `max_results` folders matching every
+/// word of `query`, with short labels that tell same-named folders apart.
 pub fn global_search_results(
     store: &DirectoryStore,
     query: &str,
@@ -298,13 +520,25 @@ pub fn global_search_results(
         return Vec::new();
     }
     let directories = &store.directories;
+    // Repeated words add nothing; past 15 the score can't tell more words apart.
+    let mut words: Vec<&str> = Vec::new();
+    for word in query.split_whitespace() {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words.truncate(15);
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let root = store.root.as_deref().unwrap_or("");
 
     // Score every folder, but carry only (score, index): rows are built for the kept few.
     let matches: Vec<(i64, usize)> = directories
         .par_iter()
         .enumerate()
         .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
-            global_search_score(matcher, file_path, query).map(|score| (score, index))
+            global_search_score(matcher, file_path, root, &words).map(|score| (score, index))
         })
         .flatten()
         .collect();
@@ -1922,6 +2156,130 @@ mod tests {
         for (a, b) in [("Σ", "σ"), ("ÉCOLE", "école"), ("Ärger", "zebra")] {
             assert_eq!(cmp_lowercase(a, b), a.to_lowercase().cmp(&b.to_lowercase()));
         }
+    }
+
+    fn search_paths(paths: &[&str], root: &str, query: &str) -> Vec<String> {
+        let mut store = DirectoryStore::new();
+        for path in paths {
+            store.insert(path);
+        }
+        store.root = Some(root.to_string());
+        global_search_results(&store, query, 10)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect()
+    }
+
+    #[test]
+    fn global_search_needs_every_word_in_any_order() {
+        let paths = [
+            "/home/work/geoid-ai/app/components",
+            "/home/work/other/components",
+            "/home/work/geoid-ai/app/api",
+        ];
+        for query in ["geoid comp", "comp geoid", "  geoid   comp "] {
+            assert_eq!(
+                search_paths(&paths, "/home", query),
+                ["/home/work/geoid-ai/app/components"],
+                "{query:?}"
+            );
+        }
+        // The folders above the index root don't count: every path is under "home".
+        assert!(search_paths(&paths, "/home", "home comp").is_empty());
+        assert!(search_paths(&paths, "/home", "   ").is_empty());
+    }
+
+    #[test]
+    fn global_search_ranks_words_as_typed_and_exact_names_first() {
+        // "api" as typed in the name beats "api" as scattered letters.
+        let paths = ["/h/geoid-ai-agents-spike", "/h/geoid-ai/app/api"];
+        assert_eq!(
+            search_paths(&paths, "/h", "api geoid")[0],
+            "/h/geoid-ai/app/api"
+        );
+
+        // The exact name first, deeper or not.
+        let paths = ["/h/a/configs", "/h/configuration", "/h/a/b/config"];
+        assert_eq!(search_paths(&paths, "/h", "config")[0], "/h/a/b/config");
+
+        // Initials count as typed.
+        let paths = ["/h/data/fr_FR", "/h/rust/file-finder-rust"];
+        assert_eq!(
+            search_paths(&paths, "/h", "ffr")[0],
+            "/h/rust/file-finder-rust"
+        );
+
+        // A folder named for the word comes before what's inside it, shallower first.
+        let paths = ["/h/x/rvim/deep/docs", "/h/x/rvim/docs", "/h/x/rvim"];
+        assert_eq!(
+            search_paths(&paths, "/h", "rvim"),
+            ["/h/x/rvim", "/h/x/rvim/docs", "/h/x/rvim/deep/docs"]
+        );
+    }
+
+    #[test]
+    fn global_search_handles_spaced_names_and_typed_folders_above() {
+        // A name with a space, typed in full, beats deeper folders named for one word.
+        let paths = [
+            "/h/Movies/CapCut/User Data/Cache/async/user",
+            "/h/Movies/CapCut/User Data",
+            "/h/a/User Data Backup",
+        ];
+        assert_eq!(
+            search_paths(&paths, "/h", "user data")[0],
+            "/h/Movies/CapCut/User Data"
+        );
+
+        // "app" typed as a folder above beats "app" scattered through the name.
+        let paths = ["/h/app/x/y/z/w/v/u/unrelated-api", "/h/app/api-pipeline"];
+        assert_eq!(
+            search_paths(&paths, "/h", "app api")[0],
+            "/h/app/api-pipeline"
+        );
+
+        // Repeated words count once, and a root prefix must end at a folder boundary.
+        assert_eq!(
+            search_paths(&paths, "/h", "api api app"),
+            search_paths(&paths, "/h", "api app")
+        );
+        assert!(search_paths(&["/hb/foo"], "/h", "b foo").contains(&"/hb/foo".to_string()));
+        assert_eq!(search_paths(&["/x/a/docs"], "/h", "a docs"), ["/x/a/docs"]);
+    }
+
+    #[test]
+    fn global_search_keeps_path_matching_for_slashes_and_single_words() {
+        let paths = ["/h/geoid-ai/app/components", "/h/other/components"];
+        assert_eq!(
+            search_paths(&paths, "/h", "geoid/comp"),
+            ["/h/geoid-ai/app/components"]
+        );
+        // One word spread over several folder names still matches, as before.
+        assert_eq!(
+            search_paths(&paths, "/h", "geoidcomp"),
+            ["/h/geoid-ai/app/components"]
+        );
+    }
+
+    #[test]
+    fn abbreviations_take_the_starts_of_consecutive_words() {
+        assert!(abbreviates("file-finder-rust", "ffr"));
+        assert!(abbreviates("FileFinderRust", "FF"));
+        assert!(abbreviates("file-finder-rust", "finrust"));
+        assert!(abbreviates("Megan Wofford", "mewo"));
+        assert!(abbreviates("ai-training", "ait"));
+        assert!(abbreviates("custom-plugins", "customp"));
+        // Initials outrank other word starts: "ffr" is f + FR in fr_FR.
+        assert!(abbreviates("fr_FR", "ffr"));
+        assert_eq!(typed_strength("fr_FR", "ffr"), 2);
+        assert_eq!(typed_strength("file-finder-rust", "ffr"), 3);
+        assert_eq!(typed_strength("frameworks", "mewo"), 1);
+        assert_eq!(typed_strength("Megan Wofford", "mewo"), 2);
+        assert_eq!(typed_strength("m-x-e-w-o", "mewo"), 0);
+        // Words must be consecutive.
+        assert!(!abbreviates("file-x-rust", "fr"));
+        // Accented letters belong to their word.
+        assert!(!abbreviates("naïve", "nv"));
+        assert_eq!(word_starts("naïve x").collect::<Vec<_>>(), [0, 7]);
     }
 
     fn local_search_app(files: &[&str], query: &str) -> App {

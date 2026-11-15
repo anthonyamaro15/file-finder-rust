@@ -29,6 +29,15 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Root search and the Copy to… / Move to… picker take several words, in any order:
+  `geoid comp` finds `…/geoid-ai/app/components`, where a space used to find nothing.
+  Each word must match the folder's name or a folder above it, and every word is
+  highlighted. Results are ranked by how each word was found (as initials, from the
+  starts of words, inside a word, or as scattered letters), then an exact name (spaces
+  included: `user data` finds `User Data`), then words in the folder's own name, then
+  shallower folders. So `config` lists a folder named `config` first, `ffr` finds
+  `file-finder-rust` and `customp` finds `custom-plugins`. Searches take about as long
+  as before.
 - `Enter` while typing a root search goes straight to the top result, so the flow is
   `Space` `/`, type, `Enter`. With no results it only leaves the box; in a local search
   it keeps the filter, like `Esc`. ([#157](https://github.com/anthonyamaro15/file-finder-rust/pull/157))
