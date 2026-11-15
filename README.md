@@ -47,8 +47,8 @@ them, then `Enter` on the folder you want.
   (`124 of 33,301 · 2 ms`)
 - Several words narrow it down, in any order: `geoid comp` finds
   `~/work/geoid-ai/app/components` among 77 `components` folders. Words found as typed
-  rank above scattered letters, an exact name comes first, and initials count
-  (`ffr` finds `file-finder-rust`)
+  rank above scattered letters, an exact name comes first, and initials or the starts
+  of words count (`ffr` finds `file-finder-rust`, `customp` finds `custom-plugins`)
 - `Enter` quits ff and your shell `cd`s into the folder (shell integration), or opens it
   in Neovim, VS Code or Zed
 - Fuzzy search within the current folder
