@@ -157,22 +157,59 @@ pdf "$S/statement-of-work.pdf" "Statement of Work" "Northwind Traders - Q3 2026"
 pdf "$S/master-services-agreement.pdf" "Master Services Agreement" "Northwind Traders" "" "Term: 24 months" "Payment: net 30"
 pdf "$S/nda-northwind.pdf" "Mutual Non-Disclosure Agreement" "Northwind Traders" "" "Effective: January 5, 2026"
 
+# Web projects, each with its own components folders: the many same-named folders
+# that the multi-word search narrows down
+for proj in storefront admin-panel landing-page docs-site dashboard checkout-flow \
+    design-system booking-app crm-portal support-desk recipe-box travel-planner \
+    chat-client music-player invoice-app kanban-board photo-gallery fitness-tracker; do
+  mkdir -p Projects/$proj/{src/{components,pages,hooks,utils,styles,lib,api,types},src/features/{auth,settings}/components,public/images,tests/{unit,e2e},docs}
+done
+for proj in map-viewer field-survey data-portal permits-app transit-tracker \
+    parcel-search story-maps site-planner; do
+  mkdir -p work/$proj/{app/{components,routes,hooks,lib,styles},app/features/{layers,search}/components,tests,docs}
+done
+G=work/geoid-ai
+mkdir -p $G/app/{components,routes,hooks,lib,styles} $G/{tests,docs}
+for c in MapView LayerList SearchBar Legend; do
+  printf 'export function %s() {\n  return null;\n}\n' "$c" > "$G/app/components/$c.tsx"
+done
+
+# ff itself, found by its initials
+F=Projects/file-finder-rust
+mkdir -p $F/{src/{app,config,event},tests,assets/demo}
+printf '[package]\nname = "ff"\nversion = "0.3.0"\nedition = "2021"\n' > $F/Cargo.toml
+printf '# ff\n' > $F/README.md
+
 # Everyday folders
 mkdir -p Documents/Personal/{Taxes/{2023,2024,2025}/receipts,Medical,Recipes,Travel/{Lisbon,Tokyo,Mexico-City}}
 mkdir -p Desktop/Screenshots Downloads/{installers,invoices} Music/{Playlists,Podcasts}
-for y in 2019 2020 2021 2022 2023 2024 2025 2026; do
-  for m in 01 02 03 04 05 06 07 08 09 10 11 12; do
-    mkdir -p "Pictures/Photos/$y/$m"
-  done
-done
+mkdir -p Pictures/Photos/{2016..2026}/{01..12}/{01..28}
+mkdir -p Documents/Archive/Mail/{2006..2026}/{01..12}/{01..28}
 for a in Radiohead Bjork "Daft Punk" Portishead Khruangbin; do
   for al in "Album One" "Album Two" "Live"; do mkdir -p "Music/$a/$al"; done
+done
+
+# A Go module cache: about 19,000 folders nobody searches, for the index manager to
+# switch off
+for org in {a..t}; do
+  for repo in {1..9}; do
+    mkdir -p "go/pkg/mod/github.com/org-$org/module-$repo@v1.$repo.0"/{internal,pkg,cmd,api,examples,testdata,docs,scripts,tools,v2}/{auth,cache,config,codec,encoding,errors,http,log,metrics,proto}
+  done
 done
 
 # ff settings
 mkdir -p .config/ff
 cat > .config/ff/settings.toml <<T
-start_path = "$H/$P"
+start_path = "$H/Projects"
 root_dir = "$H"
 use_nerd_fonts = "always"
+theme = "demo"
+T
+# OneDark with brighter grey text, so paths stay readable when the video is small
+mkdir -p .config/ff/themes
+cat > .config/ff/themes/demo.toml <<'T'
+[palette]
+gray = "#7a818e"
+muted = "#8b929f"
+fg = "#b6bdca"
 T
