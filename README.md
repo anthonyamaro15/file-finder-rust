@@ -12,7 +12,7 @@ search across every folder under your home.
 ![Language](https://img.shields.io/badge/Language-Rust-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-![ff: preview a Rust file with syntax highlighting, root search narrows 161 matching folders to one nine levels deep, then a PDF there moves to another folder picked by name](assets/demo.gif)
+![ff: root search over 32,096 folders, where "comp" lists dozens of components folders and "comp geoid" leaves one; Enter puts the shell in it. Then "ffr" finds file-finder-rust by its initials, and Enter lands there too](assets/demo.gif)
 
 ## Contents
 
