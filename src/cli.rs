@@ -82,10 +82,16 @@ impl Shell {
             Shell::Zsh | Shell::Bash => {
                 r#"# ff shell integration
 ff() {
-    # Commands that only print something run as they are.
-    case "$1" in
-        init|help|-h|--help|-V|--version) command ff "$@"; return ;;
+    # Commands that don't open ff run as they are.
+    case "${1-}" in
+        init|help) command ff "$@"; return ;;
     esac
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            -h|--help|-V|--version|--reset-config) command ff "$@"; return ;;
+        esac
+    done
 
     local tmp result
     tmp=$(mktemp "${TMPDIR:-/tmp}/ff_result.XXXXXX") || return
@@ -402,7 +408,8 @@ mod tests {
         }
     }
 
-    /// Quitting without a choice must fail, so `ff && nvim .` stops; a chosen folder cds.
+    /// Quitting without a choice must fail, so `ff && nvim .` stops; a chosen folder cds;
+    /// commands that don't open ff keep their own status. Runs in bash and zsh where present.
     #[cfg(unix)]
     #[test]
     fn shell_function_fails_on_cancel_and_cds_on_a_folder() {
@@ -412,34 +419,47 @@ mod tests {
         let dest = dir.path().join("dest");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&dest).unwrap();
-        // A stand-in ff: writes `dest` as the result only when $PICK is set.
+        // A stand-in ff: writes `dest` as the result only when $PICK is set, and exits
+        // with $CODE.
         let stub = bin.join("ff");
         std::fs::write(
             &stub,
             format!(
-                "#!/bin/sh\n[ -n \"$PICK\" ] && printf %s '{}' > \"$FF_RESULT_FILE\"\nexit 0\n",
+                "#!/bin/sh\n[ -n \"$PICK\" ] && printf %s '{}' > \"$FF_RESULT_FILE\"\nexit ${{CODE:-0}}\n",
                 dest.display()
             ),
         )
         .unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        let script = format!(
-            "{}\nff && echo ran; echo \"cancel=$?\"\nPICK=1 ff; echo \"pick=$? $(pwd -P)\"\n",
-            Shell::Bash.generate_script()
-        );
-        let out = std::process::Command::new("bash")
-            .arg("-c")
-            .arg(script)
-            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
-            .output()
-            .unwrap();
-        let out = String::from_utf8(out.stdout).unwrap();
-
-        assert!(!out.contains("ran"), "{out}");
-        assert!(out.contains("cancel=1"), "{out}");
         let dest = dest.canonicalize().unwrap();
-        assert!(out.contains(&format!("pick=0 {}", dest.display())), "{out}");
+
+        for (shell, kind) in [("bash", Shell::Bash), ("zsh", Shell::Zsh)] {
+            // `set -u` too: the function must not read unset arguments.
+            let script = format!(
+                "{}\nset -u\nff && echo ran; echo \"cancel=$?\"\nCODE=3 ff; echo \"failed=$?\"\n\
+                 ff --version; echo \"version=$?\"\nPICK=1 ff; echo \"pick=$? $(pwd -P)\"\n",
+                kind.generate_script()
+            );
+            let out = match std::process::Command::new(shell)
+                .arg("-c")
+                .arg(script)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .output()
+            {
+                Ok(out) => out,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => panic!("{shell}: {e}"),
+            };
+            let out = String::from_utf8(out.stdout).unwrap();
+            let lines: Vec<&str> = out.lines().collect();
+
+            assert!(!lines.contains(&"ran"), "{shell}: {out}");
+            assert!(lines.contains(&"cancel=1"), "{shell}: {out}");
+            assert!(lines.contains(&"failed=3"), "{shell}: {out}");
+            assert!(lines.contains(&"version=0"), "{shell}: {out}");
+            let pick = format!("pick=0 {}", dest.display());
+            assert!(lines.contains(&pick.as_str()), "{shell}: {out}");
+        }
     }
 
     #[test]
