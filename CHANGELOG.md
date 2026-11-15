@@ -5,6 +5,11 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The README's Homebrew steps start with `brew trust anthonyamaro15/tap`, which Homebrew 7
+  and newer require before installing or upgrading from a third-party tap.
+
 ## [0.3.0] - 2026-11-14
 
 ### Added
