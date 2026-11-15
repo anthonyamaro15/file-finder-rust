@@ -48,6 +48,12 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The `ff` shell function now fails when you quit without choosing anything, so
+  `ff && nvim .` no longer opens the editor after a cancel. `ff --version`, `ff --help`
+  and `ff init` run as before.
+- `src` folders are indexed by default: `src` is no longer in the default
+  `ignore_directories`. If your `settings.toml` lists it, remove it there to find
+  them.
 - Root search could return a few fewer results than its limit when the folder index
   listed a path twice. ([#160](https://github.com/anthonyamaro15/file-finder-rust/pull/160))
 

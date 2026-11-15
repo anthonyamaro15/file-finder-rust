@@ -82,32 +82,39 @@ impl Shell {
             Shell::Zsh | Shell::Bash => {
                 r#"# ff shell integration
 ff() {
+    # Commands that only print something run as they are.
+    case "$1" in
+        init|help|-h|--help|-V|--version) command ff "$@"; return ;;
+    esac
+
     local tmp result
     tmp=$(mktemp "${TMPDIR:-/tmp}/ff_result.XXXXXX") || return
 
     # Run ff with print-path mode (writes selected path to $FF_RESULT_FILE)
     FF_RESULT_FILE="$tmp" command ff --print-path "$@"
+    local rc=$?
     result=$(cat "$tmp")
     rm -f "$tmp"
 
-    if [[ -n "$result" ]]; then
-        if [[ -d "$result" ]]; then
-            cd "$result"
-        else
-            # It's a file - copy to clipboard if a clipboard tool is available
-            if command -v pbcopy >/dev/null 2>&1; then
-                printf '%s' "$result" | pbcopy
-            elif command -v wl-copy >/dev/null 2>&1; then
-                printf '%s' "$result" | wl-copy
-            elif command -v xclip >/dev/null 2>&1; then
-                printf '%s' "$result" | xclip -selection clipboard
-            else
-                echo "$result"
-                return
-            fi
-            echo "Path copied: $result"
-        fi
+    # Nothing chosen (quit, or ff failed): fail, so `ff && nvim .` stops here.
+    [[ -n "$result" ]] || return $(( rc ? rc : 1 ))
+
+    if [[ -d "$result" ]]; then
+        cd "$result"
+        return
     fi
+    # It's a file - copy to clipboard if a clipboard tool is available
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf '%s' "$result" | pbcopy
+    elif command -v wl-copy >/dev/null 2>&1; then
+        printf '%s' "$result" | wl-copy
+    elif command -v xclip >/dev/null 2>&1; then
+        printf '%s' "$result" | xclip -selection clipboard
+    else
+        echo "$result"
+        return
+    fi
+    echo "Path copied: $result"
 }"#
             }
         }
@@ -393,6 +400,46 @@ mod tests {
             assert!(script.contains(r#"rm -f "$tmp""#));
             assert!(!script.contains("/tmp/ff_result"));
         }
+    }
+
+    /// Quitting without a choice must fail, so `ff && nvim .` stops; a chosen folder cds.
+    #[cfg(unix)]
+    #[test]
+    fn shell_function_fails_on_cancel_and_cds_on_a_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let dest = dir.path().join("dest");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        // A stand-in ff: writes `dest` as the result only when $PICK is set.
+        let stub = bin.join("ff");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\n[ -n \"$PICK\" ] && printf %s '{}' > \"$FF_RESULT_FILE\"\nexit 0\n",
+                dest.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let script = format!(
+            "{}\nff && echo ran; echo \"cancel=$?\"\nPICK=1 ff; echo \"pick=$? $(pwd -P)\"\n",
+            Shell::Bash.generate_script()
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        let out = String::from_utf8(out.stdout).unwrap();
+
+        assert!(!out.contains("ran"), "{out}");
+        assert!(out.contains("cancel=1"), "{out}");
+        let dest = dest.canonicalize().unwrap();
+        assert!(out.contains(&format!("pick=0 {}", dest.display())), "{out}");
     }
 
     #[test]
