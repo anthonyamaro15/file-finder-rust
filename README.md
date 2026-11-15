@@ -45,6 +45,10 @@ them, then `Enter` on the folder you want.
 - Root search over an index of every folder under your home, results as you type; the
   top bar shows how many folders were searched and how long it took
   (`124 of 33,301 · 2 ms`)
+- Several words narrow it down, in any order: `geoid comp` finds
+  `~/work/geoid-ai/app/components` among 77 `components` folders. Words found as typed
+  rank above scattered letters, an exact name comes first, and initials count
+  (`ffr` finds `file-finder-rust`)
 - `Enter` quits ff and your shell `cd`s into the folder (shell integration), or opens it
   in Neovim, VS Code or Zed
 - Fuzzy search within the current folder
@@ -178,7 +182,8 @@ can be rebound (see [Keybindings](#keybindings)).
 | `Esc`         | Stop typing; the results stay to browse                        |
 | `Space` + `i` | Index manager: choose which folders are indexed                |
 
-Root search finds folders, not files. Starting a local search with a space or `/` switches
+Root search finds folders, not files. Each word you type must match the folder's name or
+a folder above it; a word with `/` matches across the whole path. Starting a local search with a space or `/` switches
 to root search, and `Backspace` in an empty root search goes back. To get the full
 listing back after a search, press `/` then `Esc`.
 
