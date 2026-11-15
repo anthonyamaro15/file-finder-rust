@@ -30,6 +30,7 @@ search across every folder under your home.
 ## Quick start
 
 ```bash
+brew trust anthonyamaro15/tap      # Homebrew 7 and newer; skip on older versions
 brew install anthonyamaro15/tap/ff
 echo 'eval "$(ff init zsh)"' >> ~/.zshrc && source ~/.zshrc   # bash: use ~/.bashrc and "ff init bash"
 ```
@@ -89,8 +90,14 @@ them, then `Enter` on the folder you want.
 ### Homebrew (macOS and Linux)
 
 ```bash
+brew trust anthonyamaro15/tap
 brew install anthonyamaro15/tap/ff
 ```
+
+Homebrew 7 and newer only load formulas from taps you've trusted; without the first line,
+`brew install` and `brew upgrade ff` stop with "Refusing to load formula … from untrusted
+tap". Older Homebrew versions don't have `brew trust` and don't need it. Upgrade with
+`brew upgrade ff`.
 
 Builds are published for macOS (Apple Silicon and Intel) and x86_64 Linux.
 
