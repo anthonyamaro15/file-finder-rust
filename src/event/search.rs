@@ -33,6 +33,9 @@ fn leave_search(app: &mut App) {
 /// Handle a key while typing a search. Returns true when Enter in a root search with
 /// results should choose the highlighted (top) result, as `Esc` then `Enter` would.
 pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStore) -> bool {
+    let query = app.input.clone();
+    // Read now: leaving the box ends the right pane's search and clears its query.
+    let right_pane = app.searching_right_pane();
     match key_code {
         KeyCode::Enter => {
             let choose = app.search_scope == SearchScope::Root && app.has_search_results();
@@ -75,6 +78,10 @@ pub fn handle_search_key(app: &mut App, key_code: KeyCode, store: &DirectoryStor
         }
         KeyCode::Esc => leave_search(app),
         _ => {}
+    }
+    // A new query shows new results: highlight the top one. The right pane does its own.
+    if app.input != query && !right_pane {
+        app.preserved_selection_index = Some(0);
     }
     false
 }
@@ -267,5 +274,74 @@ mod tests {
         assert!(app.global_search_mode);
         assert_eq!(app.input, "s");
         assert_eq!(app.search_results.len(), 1);
+    }
+
+    #[test]
+    fn typing_a_search_puts_the_cursor_on_the_top_result() {
+        use crate::{event::background::sync_selection, render::image_renderer::ImageRenderer};
+        use ratatui::widgets::ListState;
+
+        let files: Vec<String> = (0..10).map(|i| format!("/cwd/note{i}.txt")).collect();
+        let mut store = DirectoryStore::new();
+        for i in 0..10 {
+            store.insert(&format!("/workspace/src{i}"));
+        }
+        let mut content = crate::file_reader_content::FileContent::new(
+            syntect::parsing::SyntaxSet::new(),
+            syntect::highlighting::ThemeSet::new(),
+        );
+        let mut images = ImageRenderer::new();
+        for (scope, query) in [
+            (SearchScope::CurrentDirectory, "note"),
+            (SearchScope::Root, "src"),
+        ] {
+            let mut app = App::new(files.clone());
+            let mut state = ListState::default().with_selected(Some(7));
+            let mut key = |app: &mut App, state: &mut ListState, code| {
+                handle_search_key(app, code, &store);
+                // What the main loop does before it draws again.
+                sync_selection(app, state, &mut content, &mut images);
+                app.get_selected_path(state.selected())
+            };
+            let top = |app: &App| Some(app.search_results[0].file_path.clone());
+
+            app.enter_search(scope);
+            for c in query.chars() {
+                assert_eq!(
+                    key(&mut app, &mut state, KeyCode::Char(c)),
+                    top(&app),
+                    "{query}"
+                );
+                assert_eq!(state.selected(), Some(0));
+                state.select(Some(3));
+            }
+            assert_eq!(key(&mut app, &mut state, KeyCode::Backspace), top(&app));
+            assert_eq!(state.selected(), Some(0));
+
+            // Moving the cursor and leaving the box keep it where it is.
+            state.select(Some(3));
+            key(&mut app, &mut state, KeyCode::Left);
+            key(&mut app, &mut state, KeyCode::Esc);
+            assert_eq!(state.selected(), Some(3));
+        }
+    }
+
+    #[test]
+    fn typing_in_the_right_pane_leaves_the_left_cursor_alone() {
+        let mut app = App::new((0..10).map(|i| format!("/cwd/note{i}.txt")).collect());
+        app.view_mode = crate::app::ViewMode::DualPane;
+        app.init_right_pane();
+        app.toggle_active_pane();
+        let store = DirectoryStore::new();
+
+        app.enter_search(SearchScope::CurrentDirectory);
+        handle_search_key(&mut app, KeyCode::Char('n'), &store);
+
+        assert_eq!(app.right_pane.selected_index, Some(0));
+        assert_eq!(app.preserved_selection_index, None);
+
+        // Leaving the box clears the right pane's query from it; that is not a new query.
+        handle_search_key(&mut app, KeyCode::Esc, &store);
+        assert_eq!(app.preserved_selection_index, None);
     }
 }

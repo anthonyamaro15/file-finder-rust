@@ -383,6 +383,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 key.code,
                                 &loop_state.index.store,
                             );
+                            // Draw the new results with the cursor where Enter acts.
+                            background::sync_selection(
+                                &mut loop_state.app,
+                                &mut loop_state.state,
+                                &mut loop_state.file_reader_content,
+                                &mut loop_state.image_renderer,
+                            );
                             if choose {
                                 let key_label = keymap_runtime.key_for(Action::NavChoose);
                                 match normal::run_action(
