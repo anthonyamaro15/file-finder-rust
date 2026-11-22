@@ -10,6 +10,14 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The README's Homebrew steps start with `brew trust anthonyamaro15/tap`, which Homebrew 7
   and newer require before installing or upgrading from a third-party tap.
 
+### Fixed
+
+- A copy, move, extract or delete that finished while you were typing a root search
+  cleared the search but left its results in use, so the list showed the folder while
+  `⏎`, `d` and the other actions used a search result you could not see. The search and
+  its results now stay, and the list refreshes underneath.
+  ([#170](https://github.com/anthonyamaro15/file-finder-rust/pull/170))
+
 ## [0.3.0] - 2026-11-14
 
 ### Added
