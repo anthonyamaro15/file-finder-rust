@@ -25,6 +25,12 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is drawn now, up to `max_search_results`.
   ([#171](https://github.com/anthonyamaro15/file-finder-rust/pull/171))
 
+### Security
+
+- Updated anyhow, crossbeam-epoch and quick-xml to clear RustSec advisories, and removed
+  the unused indicatif dependency. CI now checks dependencies for advisories.
+  ([#172](https://github.com/anthonyamaro15/file-finder-rust/pull/172))
+
 ## [0.3.0] - 2026-11-14
 
 ### Added
