@@ -257,7 +257,6 @@ impl Ui {
             return app
                 .search_results
                 .iter()
-                .take(50) // Limit to top 50 results for performance
                 .enumerate()
                 .map(|(i, result)| rows.result(i, result, true))
                 .collect();
@@ -979,6 +978,29 @@ mod tests {
             ("p", theme.mode_global, theme.cursor_bg)
         );
         assert!(underlined(&p) && !underlined(&cell(&buffer, "photos", None, 3)));
+    }
+
+    #[test]
+    fn every_global_result_the_cursor_reaches_is_drawn_highlighted() {
+        let settings = nerd_settings();
+        let mut ui = Ui::new(Vec::new(), &settings);
+        let mut app = App::with_listing(fixture());
+        app.view_mode = ViewMode::FullList;
+        app.global_search_mode = true;
+        app.search_results = (0..60)
+            .map(|i| SearchResult {
+                file_path: format!("/w/result-{i:02}"),
+                display_name: format!("result-{i:02}"),
+                score: 50,
+                info: fixture().info[1],
+                original_index: 0,
+            })
+            .collect();
+
+        let last = app.get_list_length() - 1;
+        let buffer = draw_left(&mut ui, &app, &settings, 60, Some(last));
+        let cursor = cell(&buffer, "result-59", None, 0);
+        assert_eq!(cursor.bg, app.theme_colors.cursor_bg);
     }
 
     #[test]

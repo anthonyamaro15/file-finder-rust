@@ -17,6 +17,13 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `⏎`, `d` and the other actions used a search result you could not see. The search and
   its results now stay, and the list refreshes underneath.
   ([#170](https://github.com/anthonyamaro15/file-finder-rust/pull/170))
+- Typing a search left the cursor on the row it had in the folder, so `⏎` in a root
+  search could choose a result other than the top one. The cursor now goes to the first
+  result whenever the search text changes.
+- Root search drew only the first 50 results while the cursor could move through all of
+  them, so past row 50 the actions used a result that was not on screen. Every result
+  is drawn now, up to `max_search_results`.
+  ([#171](https://github.com/anthonyamaro15/file-finder-rust/pull/171))
 
 ## [0.3.0] - 2026-11-14
 
