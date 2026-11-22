@@ -1,0 +1,10 @@
+# Checked in CI with `cargo deny check advisories`.
+# Each ignore is an unmaintained transitive crate that no semver-compatible
+# update removes; drop the entry once the named upgrade lands.
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained) via ratatui 0.26 and rav1e (image avif encoder); ratatui 0.30 drops it, rav1e still needs it" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1 (unmaintained) via syntect 5 dump loading; no syntect release drops it yet" },
+    { id = "RUSTSEC-2024-0320", reason = "yaml-rust (unmaintained) via syntect 5 yaml-load feature; no syntect release drops it yet" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser (unmaintained) via pdf-extract 0.12 -> lopdf 0.42; needs a pdf-extract release on lopdf >= 0.45" },
+]
