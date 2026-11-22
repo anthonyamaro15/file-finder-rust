@@ -206,6 +206,52 @@ mod tests {
     }
 
     #[test]
+    fn operation_finishing_while_typing_root_search_keeps_query_and_targets() {
+        let mut app = App::new(vec!["/cwd/a.txt".to_string()]);
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(0));
+
+        app.enter_search(SearchScope::Root);
+        handle_search_key(&mut app, KeyCode::Char('s'), &store);
+        // A copy into the browsed folder finishes mid-query.
+        app.refresh_files_after_operation(
+            vec!["/cwd/a.txt".to_string(), "/cwd/b.txt".to_string()].into(),
+            &mut state,
+            Some("/cwd/b.txt".into()),
+        );
+        handle_search_key(&mut app, KeyCode::Char('r'), &store);
+
+        // The left listing draws results only in global mode; actions take them anyway.
+        assert!(app.global_search_mode);
+        assert_eq!(app.get_list_length(), 1);
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("/workspace/project/src")
+        );
+        assert_eq!(app.input, "sr");
+    }
+
+    #[test]
+    fn root_search_typed_after_its_results_were_cleared_draws_what_it_acts_on() {
+        let mut app = App::new(vec!["/cwd/a.txt".to_string()]);
+        let mut store = DirectoryStore::new();
+        store.insert("/workspace/project/src");
+
+        app.enter_search(SearchScope::Root);
+        handle_search_key(&mut app, KeyCode::Char('s'), &store);
+        app.clear_search();
+        handle_search_key(&mut app, KeyCode::Char('s'), &store);
+
+        assert!(app.global_search_mode);
+        assert_eq!(
+            app.get_selected_path(Some(0)).as_deref(),
+            Some("/workspace/project/src")
+        );
+    }
+
+    #[test]
     fn backspace_with_text_in_root_search_deletes_char() {
         let mut app = App::new(Vec::new());
         let mut store = DirectoryStore::new();

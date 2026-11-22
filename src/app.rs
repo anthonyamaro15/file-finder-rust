@@ -1144,6 +1144,8 @@ impl App {
         self.search_results = global_search_results(store, query, self.max_search_results);
         self.search_time = Some(started.elapsed());
         self.filtered_indexes.clear();
+        // The listing draws these results only in global mode, and actions take them.
+        self.global_search_mode = true;
     }
 
     pub fn byte_index(&mut self) -> usize {
@@ -1320,6 +1322,10 @@ impl App {
         state: &mut ListState,
         select_path: Option<String>,
     ) {
+        // A search being typed keeps its query; the listing refreshes underneath it.
+        if self.input_mode == InputMode::Editing {
+            return self.refresh_files_from_watcher(listing, state);
+        }
         self.curr_index = self.preserved_selection_index.take().or(state.selected());
         self.clear_search();
         self.set_listing(listing);
@@ -2414,6 +2420,8 @@ mod tests {
     #[test]
     fn operation_refresh_selects_new_path_after_sorting_and_clears_local_search() {
         let mut app = local_search_app(&["cwd/alpha.txt", "cwd/zulu.txt"], "alpha");
+        // Browsing the results after Esc; a query being typed is kept.
+        app.input_mode = InputMode::Normal;
         app.preserved_selection_index = Some(0);
         let mut state = ListState::default();
         state.select(Some(0));
@@ -2437,6 +2445,31 @@ mod tests {
         assert_eq!(app.preserved_selection_index, Some(2));
         assert!(app.search_results.is_empty());
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn operation_refresh_while_typing_keeps_the_local_search() {
+        let mut app = local_search_app(&["cwd/a_foo.rs", "cwd/b.rs"], "foo");
+        let mut state = ListState::default();
+        select_path(&app, &mut state, "cwd/a_foo.rs");
+
+        app.refresh_files_after_operation(
+            Listing::from(vec![
+                "cwd/a_foo.rs".into(),
+                "cwd/b.rs".into(),
+                "cwd/c_foo.rs".into(),
+            ]),
+            &mut state,
+            Some("cwd/c_foo.rs".into()),
+        );
+
+        assert_eq!(app.input, "foo");
+        assert_eq!(app.search_results.len(), 2);
+        assert_local_search_consistent(&app);
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("cwd/a_foo.rs")
+        );
     }
 
     #[test]
@@ -2548,6 +2581,7 @@ mod tests {
             (Vec::new(), None),
         ] {
             let mut app = local_search_app(&["elsewhere/charlie.txt"], "charlie");
+            app.input_mode = InputMode::Normal;
             app.global_search_mode = true;
             app.current_directory = "cwd".into();
             app.character_index = 7;
