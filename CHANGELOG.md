@@ -24,6 +24,9 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them, so past row 50 the actions used a result that was not on screen. Every result
   is drawn now, up to `max_search_results`.
   ([#171](https://github.com/anthonyamaro15/file-finder-rust/pull/171))
+- Building from source failed with GCC 16, which rejects the Oniguruma C code bundled in
+  onig_sys 69.8.1. onig is updated to 6.5.3, which builds.
+  ([#173](https://github.com/anthonyamaro15/file-finder-rust/pull/173))
 
 ### Security
 
