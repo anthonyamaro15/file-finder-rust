@@ -3,7 +3,7 @@
 //! path header over each pane.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ratatui::{
     prelude::*,
@@ -19,7 +19,7 @@ use crate::{
     ui::{truncate, truncate_start},
     utils::{
         files::{SortBy, SortType},
-        format::replace_home_with_tilde,
+        format::{format_thousands, replace_home_with_tilde},
     },
 };
 
@@ -223,22 +223,44 @@ fn listing(app: &App) -> [String; 3] {
     [order, hidden.to_string(), plural(items as u64, "item")]
 }
 
-/// "4 of 36" for a search of the folder, "6 folders" for one from the root.
+/// "4 of 36" for a search of the folder. From the root, "6 of 36,982 · 9 ms": the
+/// matches kept of the folders searched, and how long it took; "36,982 folders" before
+/// anything is typed.
 fn count(app: &App, query: &str, global: bool) -> String {
-    let (results, total) = if right_pane(app) {
+    let (results, total, time) = if right_pane(app) {
         (
             app.right_pane.search_results.len(),
             app.right_pane.files.len(),
+            app.right_pane.search_time,
         )
     } else {
-        (app.search_results.len(), app.files.len())
+        (app.search_results.len(), app.files.len(), app.search_time)
     };
     if global {
-        plural(results as u64, "folder")
+        let folders = app.index_folders as u64;
+        match time {
+            Some(time) if !query.is_empty() => format!(
+                "{} of {} · {}",
+                format_thousands(results as u64),
+                format_thousands(folders),
+                search_time(time)
+            ),
+            _ => plural(folders, "folder"),
+        }
     } else if query.is_empty() {
         format!("{total} of {total}")
     } else {
         format!("{results} of {total}")
+    }
+}
+
+/// "9 ms", rounded, or "<1 ms" rather than a misleading "0 ms".
+fn search_time(time: Duration) -> String {
+    let ms = (time.as_secs_f64() * 1000.0).round();
+    if ms < 1.0 {
+        "<1 ms".to_string()
+    } else {
+        format!("{ms} ms")
     }
 }
 
@@ -474,20 +496,38 @@ mod tests {
                 original_index: 0,
             })
             .collect();
+        app.index_folders = 36_982;
+        app.search_time = Some(Duration::from_micros(8_600));
 
         let buffer = draw(&app, 100);
         let bar = text(&buffer);
         assert!(bar.starts_with(" ␣/ pipe  "), "{bar}");
-        assert!(bar.ends_with("6 folders "), "{bar}");
+        assert!(bar.ends_with("6 of 36,982 · 9 ms "), "{bar}");
         let prompt = cell(&buffer, "␣/", 0);
         assert_eq!((prompt.fg, prompt.bg), (theme.mode_global, theme.global_bg));
         assert_eq!(cell(&buffer, "pipe", 4).bg, theme.mode_global);
-        assert_eq!(cell(&buffer, "6 folders", 0).fg, theme.mode_global);
+        assert_eq!(cell(&buffer, "6 of 36,982", 0).fg, theme.mode_global);
 
         app.input_mode = InputMode::Normal;
         let buffer = draw(&app, 100);
         assert!(text(&buffer).starts_with(" ␣/ pipe "));
-        assert_eq!(cell(&buffer, "6 folders", 0).fg, theme.light_gray);
+        assert_eq!(cell(&buffer, "6 of 36,982", 0).fg, theme.light_gray);
         assert_eq!(buffer.content()[0].bg, theme.statusbar_bg);
+    }
+
+    #[test]
+    fn a_search_from_the_root_shows_the_index_size_and_its_time() {
+        let mut app = projects();
+        app.input_mode = InputMode::Editing;
+        app.global_search_mode = true;
+        app.index_folders = 36_982;
+
+        // Nothing typed yet: how many folders the search covers.
+        assert!(text(&draw(&app, 100)).ends_with("36,982 folders "));
+
+        app.input = "zzz".into();
+        app.character_index = 3;
+        app.search_time = Some(Duration::from_micros(300));
+        assert!(text(&draw(&app, 100)).ends_with("0 of 36,982 · <1 ms "));
     }
 }

@@ -8,7 +8,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{DisableMouseCapture, KeyCode, KeyEvent},
+    event::{KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, LeaveAlternateScreen},
 };
@@ -81,6 +81,7 @@ pub fn run_action(
         selected_file,
         quit_error,
         clipboard,
+        index,
         ..
     } = loop_state;
 
@@ -396,6 +397,14 @@ pub fn run_action(
             app.input_mode = InputMode::Palette;
         }
 
+        Action::IndexManage => {
+            app.index_manager = Some(crate::index_manager::IndexManager::open(
+                index,
+                index.is_filling(),
+            ));
+            app.input_mode = InputMode::IndexManager;
+        }
+
         Action::CopyPath | Action::CopyName | Action::CopyParent => {
             if let Some(selected) = app.active_selected_path(state.selected()) {
                 copy_to_clipboard(action, &selected, clipboard, status_bar);
@@ -445,11 +454,7 @@ pub fn run_action(
 
                     // Restore terminal
                     disable_raw_mode()?;
-                    execute!(
-                        terminal.backend_mut(),
-                        LeaveAlternateScreen,
-                        DisableMouseCapture
-                    )?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                     terminal.show_cursor()?;
                     if let Some(error) = &quit_error {
                         eprintln!("ff: {error}");

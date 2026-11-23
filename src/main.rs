@@ -7,9 +7,7 @@ use std::{io, path::PathBuf};
 
 // External crate imports
 use crossterm::{
-    event::{
-        self as crossterm_event, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
-    },
+    event::{self as crossterm_event, Event, KeyEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -25,7 +23,8 @@ use file_finder::{
 use file_finder::{
     app::{App, InputMode},
     cli::{compute_effective_config, CliArgs},
-    directory_store::DirectoryIndex,
+    config::keymap::Action,
+    directory_store::{DirectoryIndex, IndexRules},
     event::{
         handle_modifier_key, keymap::KeymapRuntime, search::handle_search_key,
         transfer::handle_folder_picker_key, LoopControl, LoopState,
@@ -176,7 +175,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let index = DirectoryIndex::open(
         &PathBuf::from(&settings.cache_directory),
         &effective_config.index_root,
-        settings.ignore_directories.clone(),
+        IndexRules::new(
+            &settings.ignore_directories,
+            &settings.ignore_paths,
+            &effective_config.index_root,
+        ),
         cli_args.rebuild_cache,
     );
     app.index_filling = index.is_filling();
@@ -205,12 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::panic::set_hook(Box::new(move |panic_info| {
         if std::thread::current().id() == ui_thread_id {
             let _ = disable_raw_mode();
-            let _ = execute!(
-                io::stdout(),
-                LeaveAlternateScreen,
-                DisableMouseCapture,
-                crossterm::cursor::Show
-            );
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
             original_panic_hook(panic_info);
         } else {
             error!("Background thread panicked: {panic_info}");
@@ -218,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -380,11 +378,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         InputMode::Editing if key.kind == KeyEventKind::Press => {
-                            handle_search_key(
+                            let choose = handle_search_key(
                                 &mut loop_state.app,
                                 key.code,
                                 &loop_state.index.store,
                             );
+                            // Draw the new results with the cursor where Enter acts.
+                            background::sync_selection(
+                                &mut loop_state.app,
+                                &mut loop_state.state,
+                                &mut loop_state.file_reader_content,
+                                &mut loop_state.image_renderer,
+                            );
+                            if choose {
+                                let key_label = keymap_runtime.key_for(Action::NavChoose);
+                                match normal::run_action(
+                                    Action::NavChoose,
+                                    &key_label,
+                                    &mut loop_state,
+                                    &mut terminal,
+                                    &startup_paths.refresh_fallback_path,
+                                )? {
+                                    LoopControl::Continue => {}
+                                    LoopControl::Break => break,
+                                    LoopControl::Return => {
+                                        mark_index_stale_after_interrupted_quit(&mut loop_state);
+                                        return Ok(());
+                                    }
+                                }
+                            }
                         }
                         InputMode::WatchDelete | InputMode::WatchTrash => {
                             if popups::handle_delete_key(
@@ -409,6 +431,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         InputMode::WatchInfo if key.kind == KeyEventKind::Press => {
                             popups::handle_info_key(key, &mut loop_state.app)
                         }
+                        InputMode::IndexManager if key.kind == KeyEventKind::Press => {
+                            file_finder::event::index_manager::handle_index_manager_key(
+                                key,
+                                &mut loop_state,
+                            )
+                        }
                         InputMode::PickFolder if key.kind == KeyEventKind::Press => {
                             handle_folder_picker_key(
                                 key,
@@ -430,11 +458,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
     terminal.show_cursor()?;
     terminal.clear()?;

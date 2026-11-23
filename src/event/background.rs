@@ -670,7 +670,15 @@ pub fn poll_sizes(app: &mut App, state: &mut ListState) {
 /// Swap in the folder index's finished walk. A search or folder pick typed while the
 /// index was empty runs again on it; others keep the rows they show.
 pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
-    if index.poll_refresh() && app.index_filling {
+    let refreshed = index.poll_refresh();
+    // An open index manager shows the new counts.
+    if refreshed {
+        if let Some(manager) = app.index_manager.as_mut() {
+            manager.filling = index.is_filling();
+            manager.refresh(index);
+        }
+    }
+    if refreshed && app.index_filling {
         match app.input_mode {
             InputMode::Editing if app.search_scope == SearchScope::Root => {
                 refresh_root_search(app, &index.store)
@@ -680,6 +688,7 @@ pub fn poll_index(app: &mut App, index: &mut DirectoryIndex) {
         }
     }
     app.index_filling = index.is_filling();
+    app.index_folders = index.store.directories.len();
 }
 
 /// Apply preserved selection and clamp after all refreshes, before handling a key.
@@ -719,7 +728,7 @@ pub(crate) mod tests {
         DirectoryIndex::new(
             crate::directory_store::DirectoryStore::new(),
             root.to_path_buf(),
-            Vec::new(),
+            crate::directory_store::IndexRules::default(),
             None,
         )
     }
@@ -745,7 +754,12 @@ pub(crate) mod tests {
             let root = dir.path().join("home");
             std::fs::create_dir_all(root.join("projects")).unwrap();
             let cache = dir.path().join("cache.json");
-            let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+            let mut index = DirectoryIndex::open(
+                &cache,
+                &root,
+                crate::directory_store::IndexRules::default(),
+                false,
+            );
             let mut app = App::new(Vec::new());
             app.index_filling = index.is_filling();
             assert!(app.index_filling);
@@ -789,7 +803,12 @@ pub(crate) mod tests {
         let cache = dir.path().join("cache.json");
         let old = build_directory_from_store(old_root.to_str().unwrap(), Vec::new());
         save_directory_to_file(&old, cache.to_str().unwrap()).unwrap();
-        let mut index = DirectoryIndex::open(&cache, &root, Vec::new(), false);
+        let mut index = DirectoryIndex::open(
+            &cache,
+            &root,
+            crate::directory_store::IndexRules::default(),
+            false,
+        );
         let mut app = App::new(Vec::new());
         app.folder_picker = Some(FolderPicker {
             kind: TransferKind::Move,

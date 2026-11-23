@@ -72,7 +72,22 @@ pub fn handle_rename_key(
                         Ok(_) => {
                             let old_path = Path::new(&app.current_path_to_edit)
                                 .join(&app.current_name_to_edit);
-                            index.renamed(&old_path, Path::new(&new_path));
+                            let moved = index.renamed(&old_path, Path::new(&new_path));
+                            // Excluded folders keep being excluded under their new name.
+                            if !moved.is_empty() {
+                                let (old, new): (Vec<String>, Vec<PathBuf>) = moved
+                                    .into_iter()
+                                    .map(|(old, new)| (old, PathBuf::from(new)))
+                                    .unzip();
+                                if let Err(e) =
+                                    crate::config::settings::update_ignore_paths(&new, &old)
+                                {
+                                    status_bar.show_error(
+                                        format!("Couldn't update ignore_paths: {e}"),
+                                        Some(5),
+                                    );
+                                }
+                            }
                             app.forget_sizes([old_path.as_path(), Path::new(&new_path)]);
                             // Only the pane it was renamed in moves its highlight to it.
                             let from_right_pane =

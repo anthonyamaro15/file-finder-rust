@@ -194,6 +194,7 @@ mod tests {
                 "select.visual",
                 "search.current",
                 "search.root",
+                "index.manage",
                 "view.cycle",
                 "view.sort",
                 "view.hidden",

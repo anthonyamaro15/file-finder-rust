@@ -1,39 +1,47 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// Creates a Line with highlighted search terms
+/// Where `word` matches `text` at byte `start`, ignoring case: the end of the match.
+fn match_end(text: &str, start: usize, word: &str) -> Option<usize> {
+    let mut chars = text[start..].char_indices();
+    let mut end = start;
+    word.chars()
+        .all(|word_char| {
+            chars.next().is_some_and(|(offset, text_char)| {
+                end = start + offset + text_char.len_utf8();
+                text_char.to_lowercase().eq(word_char.to_lowercase())
+            })
+        })
+        .then_some(end)
+}
+
+/// Creates a Line with every word of the search term highlighted wherever it appears.
 pub fn highlight_search_term(
     text: &str,
     search_term: &str,
     normal_style: Style,
     highlight_style: Style,
 ) -> Line<'static> {
-    if search_term.is_empty() {
+    // Longest words first, so "comp" doesn't cut "components" short.
+    let mut words: Vec<&str> = search_term.split_whitespace().collect();
+    words.sort_by_key(|word| std::cmp::Reverse(word.len()));
+    if words.is_empty() {
         return Line::from(Span::styled(text.to_string(), normal_style));
     }
 
     let mut spans = Vec::new();
     let mut last_end = 0;
 
-    // Find all occurrences of the search term (case-insensitive)
     for (actual_pos, _) in text.char_indices() {
         if actual_pos < last_end {
             continue;
         }
-
-        let mut chars = text[actual_pos..].char_indices();
-        let mut match_end = actual_pos;
-        let matches = search_term.chars().all(|search_char| {
-            if let Some((offset, text_char)) = chars.next() {
-                match_end = actual_pos + offset + text_char.len_utf8();
-                text_char.to_lowercase().eq(search_char.to_lowercase())
-            } else {
-                false
-            }
-        });
-        if !matches {
+        let Some(match_end) = words
+            .iter()
+            .find_map(|word| match_end(text, actual_pos, word))
+        else {
             continue;
-        }
+        };
 
         // Add text before the match (if any)
         if actual_pos > last_end {
@@ -108,6 +116,23 @@ mod tests {
         assert_eq!(
             result.spans,
             vec![Span::styled("İ.txt", normal), Span::styled("É", highlight),]
+        );
+    }
+
+    #[test]
+    fn every_word_is_highlighted() {
+        let normal = Style::default();
+        let highlight = Style::default().fg(Color::Yellow);
+        let result = highlight_search_term("geoid-components", "comp  geoid", normal, highlight);
+
+        assert_eq!(
+            result.spans,
+            vec![
+                Span::styled("geoid", highlight),
+                Span::styled("-", normal),
+                Span::styled("comp", highlight),
+                Span::styled("onents", normal),
+            ]
         );
     }
 

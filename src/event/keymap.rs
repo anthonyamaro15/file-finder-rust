@@ -281,10 +281,12 @@ mod tests {
         }
         assert_eq!(runtime.resolve_normal(key(' ')), None);
         assert_eq!(runtime.resolve_normal(key('/')), Some(Action::SearchRoot));
+        assert_eq!(runtime.resolve_normal(key(' ')), None);
+        assert_eq!(runtime.resolve_normal(key('i')), Some(Action::IndexManage));
         assert_eq!(runtime.resolve_normal(key('g')), None);
         assert_eq!(runtime.resolve_normal(key('g')), Some(Action::NavTop));
         // Nothing else is bound, and every action but the copy actions has a key.
-        assert_eq!(runtime.normal.len(), table.len() + 2);
+        assert_eq!(runtime.normal.len(), table.len() + 3);
         let unbound: Vec<&str> = Action::ALL
             .iter()
             .filter(|(action, _)| !runtime.normal.values().any(|a| a == action))
@@ -434,7 +436,8 @@ mod tests {
                 "Space …".to_string(),
                 vec![
                     ("/".to_string(), Action::SearchRoot),
-                    ("c".to_string(), Action::CopyPath)
+                    ("c".to_string(), Action::CopyPath),
+                    ("i".to_string(), Action::IndexManage)
                 ]
             ))
         );
@@ -462,7 +465,7 @@ mod tests {
         assert_eq!(keymap.which_key(later()).unwrap().0, "g …");
 
         // With nothing bound after the leader there is nothing to list.
-        let mut keymap = runtime(&[("<leader>/", "none")]);
+        let mut keymap = runtime(&[("<leader>/", "none"), ("<leader>i", "none")]);
         assert_eq!(keymap.resolve_normal(key(' ')), None);
         assert!(keymap.is_pending());
         assert_eq!(keymap.which_key(later()), None);

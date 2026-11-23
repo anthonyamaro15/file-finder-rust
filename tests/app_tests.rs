@@ -478,35 +478,6 @@ mod state_management_tests {
         assert!(!app.is_create_edit_error);
         assert_eq!(app.error_message, "");
     }
-
-    #[test]
-    fn test_submit_message() {
-        let mut app = App::new(vec![]);
-        app.input = "test message".to_string();
-        app.character_index = 5;
-
-        app.submit_message();
-
-        assert_eq!(app.message.len(), 1);
-        assert_eq!(app.message[0], "test message");
-        assert_eq!(app.input, "");
-        assert_eq!(app.character_index, 0);
-    }
-
-    #[test]
-    fn test_submit_multiple_messages() {
-        let mut app = App::new(vec![]);
-
-        app.input = "first message".to_string();
-        app.submit_message();
-
-        app.input = "second message".to_string();
-        app.submit_message();
-
-        assert_eq!(app.message.len(), 2);
-        assert_eq!(app.message[0], "first message");
-        assert_eq!(app.message[1], "second message");
-    }
 }
 
 #[cfg(test)]

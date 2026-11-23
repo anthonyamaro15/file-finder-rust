@@ -64,6 +64,8 @@ pub enum InputMode {
     Visual,
     /// The command palette (see `App::palette`).
     Palette,
+    /// Choosing which folders are indexed (see `App::index_manager`).
+    IndexManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,64 +194,6 @@ pub struct SearchResult {
     pub original_index: usize,
 }
 
-fn search_result_order(a: &SearchResult, b: &SearchResult) -> std::cmp::Ordering {
-    b.score
-        .cmp(&a.score)
-        .then_with(|| {
-            a.display_name
-                .to_lowercase()
-                .cmp(&b.display_name.to_lowercase())
-        })
-        .then_with(|| a.file_path.cmp(&b.file_path))
-        .then_with(|| a.original_index.cmp(&b.original_index))
-}
-
-fn truncate_top_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
-    if max_results == 0 {
-        search_results.clear();
-        return;
-    }
-
-    search_results.sort_unstable_by(search_result_order);
-    search_results.truncate(max_results);
-}
-
-fn deduplicate_sorted_search_results(search_results: &mut Vec<SearchResult>) {
-    let mut seen_paths = HashSet::new();
-    search_results.retain(|result| seen_paths.insert(result.file_path.clone()));
-}
-
-fn truncate_top_unique_search_results(search_results: &mut Vec<SearchResult>, max_results: usize) {
-    if max_results == 0 {
-        search_results.clear();
-        return;
-    }
-
-    search_results.sort_unstable_by(search_result_order);
-    deduplicate_sorted_search_results(search_results);
-    search_results.truncate(max_results);
-}
-
-fn push_bounded_search_result(
-    search_results: &mut Vec<SearchResult>,
-    result: SearchResult,
-    max_results: usize,
-) {
-    if max_results == 0 {
-        return;
-    }
-
-    search_results.push(result);
-
-    let trim_threshold = max_results
-        .saturating_mul(2)
-        .max(max_results.saturating_add(1));
-
-    if search_results.len() > trim_threshold {
-        truncate_top_search_results(search_results, max_results);
-    }
-}
-
 fn path_label_components(file_path: &str) -> Vec<String> {
     let components: Vec<String> = Path::new(file_path)
         .components()
@@ -316,33 +260,257 @@ fn apply_short_unique_display_names(search_results: &mut [SearchResult]) {
     }
 }
 
-fn global_search_result(
-    matcher: &SkimMatcherV2,
-    index: usize,
-    file_path: &str,
-    query: &str,
-) -> Option<SearchResult> {
-    let path = Path::new(file_path);
-    let file_name = path
+/// A folder's name: the last component of its path.
+fn folder_name(file_path: &str) -> &str {
+    Path::new(file_path)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(file_path);
+        .unwrap_or(file_path)
+}
 
-    let filename_score = matcher.fuzzy_match(file_name, query);
-    let path_score = matcher.fuzzy_match(file_path, query).map(|score| score / 3);
-    let score = filename_score.or(path_score)?;
+/// Whether `word`'s letters appear in `haystack` in order, ignoring ASCII case: the
+/// cheap test every fuzzy match must pass, run first to skip the matcher's work.
+fn has_letters_in_order(haystack: &str, word: &str) -> bool {
+    let mut wanted = word
+        .bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .peekable();
+    for byte in haystack.bytes() {
+        match wanted.peek() {
+            None => break,
+            Some(&want) if want == byte.to_ascii_lowercase() => {
+                wanted.next();
+            }
+            Some(_) => {}
+        }
+    }
+    wanted.peek().is_none()
+}
 
-    Some(SearchResult {
-        file_path: file_path.to_string(),
-        display_name: file_name.to_string(),
-        score,
-        info: EntryInfo::default(),
-        original_index: index,
+/// Whether `haystack` contains `word`, ignoring ASCII case.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    let (haystack, word) = (haystack.as_bytes(), word.as_bytes());
+    word.len() <= haystack.len()
+        && haystack
+            .windows(word.len())
+            .any(|window| window.eq_ignore_ascii_case(word))
+}
+
+/// Where `name`'s words start: after a separator, and at a lowercase-to-uppercase
+/// step, so `file-finder-rust` and `FileFinderRust` both have three words. Non-ASCII
+/// bytes count as letters.
+fn word_starts(name: &str) -> impl Iterator<Item = usize> + '_ {
+    let letter = |byte: u8| byte.is_ascii_alphanumeric() || !byte.is_ascii();
+    let bytes = name.as_bytes();
+    (0..bytes.len()).filter(move |&at| {
+        letter(bytes[at])
+            && (at == 0
+                || !letter(bytes[at - 1])
+                || (bytes[at - 1].is_ascii_lowercase() && bytes[at].is_ascii_uppercase()))
     })
 }
 
-/// Global search over the folder index: the best `max_results` matches for `query`,
-/// with short labels that tell same-named folders apart.
+/// Whether `word` is made of the beginnings of consecutive words of `name`, ignoring
+/// ASCII case: `ffr` and `finrust` for `file-finder-rust`, `mewo` for `Megan Wofford`.
+/// Words longer than 63 bytes never are.
+fn abbreviates(name: &str, word: &str) -> bool {
+    let (bytes, word) = (name.as_bytes(), word.as_bytes());
+    if word.is_empty() || word.len() > 63 {
+        return false;
+    }
+    let done = 1u64 << word.len();
+    // Bit n of `reached`: the first n bytes of `word` are covered by the words so far.
+    let mut reached = 0u64;
+    let mut starts = word_starts(name).peekable();
+    while let Some(start) = starts.next() {
+        let end = starts.peek().copied().unwrap_or(bytes.len());
+        reached |= 1; // an abbreviation may start at any word
+        let mut next = 0u64;
+        let mut from = reached;
+        while from != 0 {
+            let covered = from.trailing_zeros() as usize;
+            from &= from - 1;
+            for (taken, (have, want)) in bytes[start..end].iter().zip(&word[covered..]).enumerate()
+            {
+                if !have.eq_ignore_ascii_case(want) {
+                    break;
+                }
+                next |= 1 << (covered + taken + 1);
+            }
+        }
+        if next & done != 0 {
+            return true;
+        }
+        reached = next;
+    }
+    false
+}
+
+/// How `word` appears in `name`, best first: 3 as the initials of consecutive words
+/// (`ffr`: file-finder-rust), 2 from the starts of words (`comp`: components, `mewo`:
+/// Megan Wofford), 1 inside a word (frameworks for `mewo`), 0 only as scattered letters.
+fn typed_strength(name: &str, word: &str) -> i64 {
+    let bytes = name.as_bytes();
+    let wanted = word.as_bytes();
+    if wanted.len() > 1 {
+        // Consecutive words whose first letters spell `word`.
+        let mut run = 0;
+        for at in word_starts(name) {
+            run = if bytes[at].eq_ignore_ascii_case(&wanted[run]) {
+                run + 1
+            } else {
+                usize::from(bytes[at].eq_ignore_ascii_case(&wanted[0]))
+            };
+            if run == wanted.len() {
+                return 3;
+            }
+        }
+    }
+    if abbreviates(name, word) {
+        2
+    } else if contains_word(name, word) {
+        1
+    } else {
+        0
+    }
+}
+
+/// How one query word matched a folder.
+struct WordMatch {
+    /// How it was found as typed: see `typed_strength`.
+    as_typed: i64,
+    /// The word is the folder's whole name.
+    whole_name: bool,
+    /// Found in the folder's own name rather than a folder above it.
+    in_name: bool,
+    fuzzy: i64,
+}
+
+/// Match one word against a folder: its name at full weight, else the best folder above
+/// it (below the index root) at a third; a folder above found as typed beats letters
+/// scattered through the name. A word with `/` matches the whole path, as does a
+/// one-word query that nothing else matched.
+fn match_word(
+    matcher: &SkimMatcherV2,
+    file_path: &str,
+    name: &str,
+    above: &str,
+    word: &str,
+    only_word: bool,
+) -> Option<WordMatch> {
+    let anywhere = |fuzzy: i64, as_typed: i64| WordMatch {
+        as_typed,
+        whole_name: false,
+        in_name: false,
+        fuzzy: fuzzy / 3,
+    };
+    if word.contains('/') {
+        let fuzzy = matcher.fuzzy_match(file_path, word)?;
+        return Some(anywhere(fuzzy, i64::from(contains_word(file_path, word))));
+    }
+    // Non-ASCII words go straight to the matcher, which folds case beyond ASCII.
+    let ascii = word.is_ascii();
+    let fuzzy = |haystack: &str| {
+        if ascii && !has_letters_in_order(haystack, word) {
+            return None;
+        }
+        matcher.fuzzy_match(haystack, word)
+    };
+    let in_name = fuzzy(name).map(|fuzzy| WordMatch {
+        as_typed: typed_strength(name, word),
+        whole_name: name.eq_ignore_ascii_case(word),
+        in_name: true,
+        fuzzy,
+    });
+    if in_name.as_ref().is_some_and(|found| found.as_typed > 0) {
+        return in_name;
+    }
+    let mut best: Option<WordMatch> = None;
+    // Skip the folders above at once when they can't hold the word.
+    let could_be_above = !ascii || has_letters_in_order(above, word);
+    for folder in above
+        .split('/')
+        .filter(|folder| could_be_above && !folder.is_empty())
+    {
+        if let Some(fuzzy) = fuzzy(folder) {
+            let found = anywhere(fuzzy, typed_strength(folder, word));
+            if best
+                .as_ref()
+                .is_none_or(|best| (found.as_typed, found.fuzzy) > (best.as_typed, best.fuzzy))
+            {
+                best = Some(found);
+            }
+        }
+    }
+    if best.as_ref().is_some_and(|best| best.as_typed > 0) {
+        return best;
+    }
+    in_name.or(best).or_else(|| {
+        only_word
+            .then(|| matcher.fuzzy_match(file_path, word))
+            .flatten()
+            .map(|fuzzy| anywhere(fuzzy, 0))
+    })
+}
+
+/// How well a folder matches every word of a query, in any order; `None` if a word
+/// doesn't match. Higher is better. The score packs, most important first: how the
+/// words were found as typed (`typed_strength`), a word that is the whole name, words in
+/// the folder's own name, the fuzzy score, then shallower folders (below `root`) first.
+fn global_search_score(
+    matcher: &SkimMatcherV2,
+    file_path: &str,
+    root: &str,
+    words: &[&str],
+) -> Option<i64> {
+    let name = folder_name(file_path);
+    let below_root = file_path
+        .strip_prefix(root)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/') || root.ends_with('/'))
+        .unwrap_or(file_path);
+    let above = below_root.strip_suffix(name).unwrap_or(below_root);
+    let (mut as_typed, mut whole_name, mut in_name, mut fuzzy) = (0i64, 0i64, 0i64, 0i64);
+    for word in words {
+        let found = match_word(matcher, file_path, name, above, word, words.len() == 1)?;
+        as_typed += found.as_typed;
+        whole_name |= i64::from(found.whole_name);
+        in_name += i64::from(found.in_name);
+        fuzzy += found.fuzzy.max(0);
+    }
+    // A name with spaces, typed in full: `user data` for "User Data".
+    if words.len() > 1
+        && name.split_whitespace().count() == words.len()
+        && name
+            .split_whitespace()
+            .zip(words)
+            .all(|(part, word)| part.eq_ignore_ascii_case(word))
+    {
+        whole_name = 1;
+    }
+    let depth = below_root.matches('/').count().min(63) as i64;
+    Some(
+        (as_typed.min(63) << 36)
+            | (whole_name << 35)
+            | (in_name.min(15) << 31)
+            | (fuzzy.min((1 << 25) - 1) << 6)
+            | (63 - depth),
+    )
+}
+
+/// Compare names case-insensitively, as `to_lowercase()` would, without allocating for
+/// the usual all-ASCII names.
+fn cmp_lowercase(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        a.bytes()
+            .map(|byte| byte.to_ascii_lowercase())
+            .cmp(b.bytes().map(|byte| byte.to_ascii_lowercase()))
+    } else {
+        a.to_lowercase().cmp(&b.to_lowercase())
+    }
+}
+
+/// Global search over the folder index: the best `max_results` folders matching every
+/// word of `query`, with short labels that tell same-named folders apart.
 pub fn global_search_results(
     store: &DirectoryStore,
     query: &str,
@@ -351,26 +519,79 @@ pub fn global_search_results(
     if max_results == 0 {
         return Vec::new();
     }
+    let directories = &store.directories;
+    // Repeated words add nothing; past 15 the score can't tell more words apart.
+    let mut words: Vec<&str> = Vec::new();
+    for word in query.split_whitespace() {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+    words.truncate(15);
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let root = store.root.as_deref().unwrap_or("");
 
-    let mut search_results = store
-        .directories
+    // Score every folder, but carry only (score, index): rows are built for the kept few.
+    let matches: Vec<(i64, usize)> = directories
         .par_iter()
         .enumerate()
         .map_init(SkimMatcherV2::default, |matcher, (index, file_path)| {
-            global_search_result(matcher, index, file_path, query)
+            global_search_score(matcher, file_path, root, &words).map(|score| (score, index))
         })
-        .filter_map(|result| result)
-        .fold(Vec::new, |mut search_results, result| {
-            push_bounded_search_result(&mut search_results, result, max_results);
-            search_results
-        })
-        .reduce(Vec::new, |mut left, mut right| {
-            left.append(&mut right);
-            truncate_top_search_results(&mut left, max_results);
-            left
-        });
+        .flatten()
+        .collect();
 
-    truncate_top_unique_search_results(&mut search_results, max_results);
+    // Best score first, then name (ignoring case), path and index.
+    let order = |a: &(i64, usize), b: &(i64, usize)| {
+        b.0.cmp(&a.0)
+            .then_with(|| {
+                cmp_lowercase(
+                    folder_name(&directories[a.1]),
+                    folder_name(&directories[b.1]),
+                )
+            })
+            .then_with(|| directories[a.1].cmp(&directories[b.1]))
+            .then_with(|| a.1.cmp(&b.1))
+    };
+    let best_unique = |mut candidates: Vec<(i64, usize)>| {
+        candidates.sort_unstable_by(order);
+        let mut seen = HashSet::new();
+        candidates.retain(|&(_, index)| seen.insert(directories[index].as_str()));
+        candidates.truncate(max_results);
+        candidates
+    };
+
+    // Only matches scoring at least the max_results-th best score can be kept, so sort
+    // just those. The index can repeat a path; if that leaves too few, sort them all.
+    let mut kept = if matches.len() > max_results {
+        let mut scores: Vec<i64> = matches.iter().map(|&(score, _)| score).collect();
+        let (_, &mut cutoff, _) = scores.select_nth_unstable_by(max_results - 1, |a, b| b.cmp(a));
+        best_unique(
+            matches
+                .iter()
+                .copied()
+                .filter(|&(score, _)| score >= cutoff)
+                .collect(),
+        )
+    } else {
+        Vec::new()
+    };
+    if kept.len() < max_results {
+        kept = best_unique(matches);
+    }
+
+    let mut search_results: Vec<SearchResult> = kept
+        .into_iter()
+        .map(|(score, index)| SearchResult {
+            file_path: directories[index].clone(),
+            display_name: folder_name(&directories[index]).to_string(),
+            score,
+            info: EntryInfo::default(),
+            original_index: index,
+        })
+        .collect();
     apply_short_unique_display_names(&mut search_results);
     // Only the results kept are read, once, rather than every match.
     search_results
@@ -439,7 +660,6 @@ pub struct App {
     pub active_pane: PanePosition,
     /// Right pane for dual-pane mode (left pane uses existing App fields)
     pub right_pane: crate::pane::Pane,
-    pub message: Vec<String>,
     pub files: Vec<String>,
     /// Each of `files`' details, read with the listing; drawing uses these, not the disk.
     pub file_info: Vec<EntryInfo>,
@@ -477,6 +697,10 @@ pub struct App {
     pub search_scope: SearchScope,
     pub global_search_mode: bool,
     pub max_search_results: usize,
+    /// How long the last root search took, shown in the top bar.
+    pub search_time: Option<Duration>,
+    /// Folders in the folder index, kept in step with it by `poll_index`.
+    pub index_folders: usize,
 
     // Copy progress tracking
     pub copy_in_progress: bool,
@@ -552,6 +776,8 @@ pub struct App {
     pub info: Option<crate::info::ItemInfo>,
     /// The command palette, while `input_mode` is `Palette`.
     pub palette: Palette,
+    /// The open index manager.
+    pub index_manager: Option<crate::index_manager::IndexManager>,
     /// Exit key and time of the last "operation in progress" quit warning.
     pub quit_warning: Option<(String, Instant)>,
     /// First line shown in the keybinding help, and how many fit (set when drawn).
@@ -676,7 +902,6 @@ impl App {
             view_mode: ViewMode::default(),
             active_pane: PanePosition::default(),
             right_pane: crate::pane::Pane::default(),
-            message: Vec::new(),
             files,
             file_info,
             read_only_files: files_clone,
@@ -703,6 +928,8 @@ impl App {
 
             // Initialize search functionality
             search_results: Vec::new(),
+            search_time: None,
+            index_folders: 0,
             search_scope: SearchScope::CurrentDirectory,
             global_search_mode: false,
             max_search_results: 500,
@@ -769,6 +996,7 @@ impl App {
             folder_picker: None,
             info: None,
             palette: Palette::default(),
+            index_manager: None,
             quit_warning: None,
             help_scroll: 0,
             help_page: 0,
@@ -814,6 +1042,15 @@ impl App {
 
     /// Whether the search box is filtering the right pane: a search started there is
     /// being typed. Otherwise its query and results belong to the left listing.
+    /// Whether the search being typed (left or right pane) has any results.
+    pub fn has_search_results(&self) -> bool {
+        if self.searching_right_pane() {
+            !self.right_pane.search_results.is_empty()
+        } else {
+            !self.search_results.is_empty()
+        }
+    }
+
     pub fn searching_right_pane(&self) -> bool {
         self.input_mode == InputMode::Editing
             && self.view_mode.is_dual_pane()
@@ -903,8 +1140,12 @@ impl App {
     /// Perform global search across directory cache
     pub fn perform_global_search(&mut self, query: &str, store: &DirectoryStore) {
         // For global search, we don't use filtered_indexes since we're showing different files
+        let started = Instant::now();
         self.search_results = global_search_results(store, query, self.max_search_results);
+        self.search_time = Some(started.elapsed());
         self.filtered_indexes.clear();
+        // The listing draws these results only in global mode, and actions take them.
+        self.global_search_mode = true;
     }
 
     pub fn byte_index(&mut self) -> usize {
@@ -954,12 +1195,6 @@ impl App {
         // reset error vaules
         self.is_create_edit_error = false;
         self.error_message = String::new();
-    }
-
-    pub fn submit_message(&mut self) {
-        self.message.push(self.input.clone());
-        self.input.clear();
-        self.reset_cursor();
     }
 
     // TODO: could we combine search, create, edit input field methods?
@@ -1087,6 +1322,10 @@ impl App {
         state: &mut ListState,
         select_path: Option<String>,
     ) {
+        // A search being typed keeps its query; the listing refreshes underneath it.
+        if self.input_mode == InputMode::Editing {
+            return self.refresh_files_from_watcher(listing, state);
+        }
         self.curr_index = self.preserved_selection_index.take().or(state.selected());
         self.clear_search();
         self.set_listing(listing);
@@ -1889,6 +2128,166 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    #[test]
+    fn global_search_fills_max_results_with_unique_paths() {
+        let mut store = DirectoryStore::new();
+        for path in ["/w/alpha", "/w/alpha", "/w/alps", "/w/alto"] {
+            store.insert(path);
+        }
+
+        // The repeated path is listed once and the next match takes its place.
+        let paths: Vec<String> = global_search_results(&store, "al", 3)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect();
+        assert_eq!(paths.len(), 3);
+        let unique: HashSet<&String> = paths.iter().collect();
+        assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn global_search_breaks_score_ties_by_name_ignoring_case() {
+        let mut store = DirectoryStore::new();
+        for path in ["/w/blpha", "/w/alpha", "/w/Alpha"] {
+            store.insert(path);
+        }
+        // "lph" scores all three the same: then case-insensitive name, then path.
+        let paths: Vec<String> = global_search_results(&store, "lph", 10)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect();
+        assert_eq!(paths, ["/w/Alpha", "/w/alpha", "/w/blpha"]);
+
+        // Non-ASCII names compare exactly as `to_lowercase()` does.
+        for (a, b) in [("Σ", "σ"), ("ÉCOLE", "école"), ("Ärger", "zebra")] {
+            assert_eq!(cmp_lowercase(a, b), a.to_lowercase().cmp(&b.to_lowercase()));
+        }
+    }
+
+    fn search_paths(paths: &[&str], root: &str, query: &str) -> Vec<String> {
+        let mut store = DirectoryStore::new();
+        for path in paths {
+            store.insert(path);
+        }
+        store.root = Some(root.to_string());
+        global_search_results(&store, query, 10)
+            .into_iter()
+            .map(|result| result.file_path)
+            .collect()
+    }
+
+    #[test]
+    fn global_search_needs_every_word_in_any_order() {
+        let paths = [
+            "/home/work/geoid-ai/app/components",
+            "/home/work/other/components",
+            "/home/work/geoid-ai/app/api",
+        ];
+        for query in ["geoid comp", "comp geoid", "  geoid   comp "] {
+            assert_eq!(
+                search_paths(&paths, "/home", query),
+                ["/home/work/geoid-ai/app/components"],
+                "{query:?}"
+            );
+        }
+        // The folders above the index root don't count: every path is under "home".
+        assert!(search_paths(&paths, "/home", "home comp").is_empty());
+        assert!(search_paths(&paths, "/home", "   ").is_empty());
+    }
+
+    #[test]
+    fn global_search_ranks_words_as_typed_and_exact_names_first() {
+        // "api" as typed in the name beats "api" as scattered letters.
+        let paths = ["/h/geoid-ai-agents-spike", "/h/geoid-ai/app/api"];
+        assert_eq!(
+            search_paths(&paths, "/h", "api geoid")[0],
+            "/h/geoid-ai/app/api"
+        );
+
+        // The exact name first, deeper or not.
+        let paths = ["/h/a/configs", "/h/configuration", "/h/a/b/config"];
+        assert_eq!(search_paths(&paths, "/h", "config")[0], "/h/a/b/config");
+
+        // Initials count as typed.
+        let paths = ["/h/data/fr_FR", "/h/rust/file-finder-rust"];
+        assert_eq!(
+            search_paths(&paths, "/h", "ffr")[0],
+            "/h/rust/file-finder-rust"
+        );
+
+        // A folder named for the word comes before what's inside it, shallower first.
+        let paths = ["/h/x/rvim/deep/docs", "/h/x/rvim/docs", "/h/x/rvim"];
+        assert_eq!(
+            search_paths(&paths, "/h", "rvim"),
+            ["/h/x/rvim", "/h/x/rvim/docs", "/h/x/rvim/deep/docs"]
+        );
+    }
+
+    #[test]
+    fn global_search_handles_spaced_names_and_typed_folders_above() {
+        // A name with a space, typed in full, beats deeper folders named for one word.
+        let paths = [
+            "/h/Movies/CapCut/User Data/Cache/async/user",
+            "/h/Movies/CapCut/User Data",
+            "/h/a/User Data Backup",
+        ];
+        assert_eq!(
+            search_paths(&paths, "/h", "user data")[0],
+            "/h/Movies/CapCut/User Data"
+        );
+
+        // "app" typed as a folder above beats "app" scattered through the name.
+        let paths = ["/h/app/x/y/z/w/v/u/unrelated-api", "/h/app/api-pipeline"];
+        assert_eq!(
+            search_paths(&paths, "/h", "app api")[0],
+            "/h/app/api-pipeline"
+        );
+
+        // Repeated words count once, and a root prefix must end at a folder boundary.
+        assert_eq!(
+            search_paths(&paths, "/h", "api api app"),
+            search_paths(&paths, "/h", "api app")
+        );
+        assert!(search_paths(&["/hb/foo"], "/h", "b foo").contains(&"/hb/foo".to_string()));
+        assert_eq!(search_paths(&["/x/a/docs"], "/h", "a docs"), ["/x/a/docs"]);
+    }
+
+    #[test]
+    fn global_search_keeps_path_matching_for_slashes_and_single_words() {
+        let paths = ["/h/geoid-ai/app/components", "/h/other/components"];
+        assert_eq!(
+            search_paths(&paths, "/h", "geoid/comp"),
+            ["/h/geoid-ai/app/components"]
+        );
+        // One word spread over several folder names still matches, as before.
+        assert_eq!(
+            search_paths(&paths, "/h", "geoidcomp"),
+            ["/h/geoid-ai/app/components"]
+        );
+    }
+
+    #[test]
+    fn abbreviations_take_the_starts_of_consecutive_words() {
+        assert!(abbreviates("file-finder-rust", "ffr"));
+        assert!(abbreviates("FileFinderRust", "FF"));
+        assert!(abbreviates("file-finder-rust", "finrust"));
+        assert!(abbreviates("Megan Wofford", "mewo"));
+        assert!(abbreviates("ai-training", "ait"));
+        assert!(abbreviates("custom-plugins", "customp"));
+        // Initials outrank other word starts: "ffr" is f + FR in fr_FR.
+        assert!(abbreviates("fr_FR", "ffr"));
+        assert_eq!(typed_strength("fr_FR", "ffr"), 2);
+        assert_eq!(typed_strength("file-finder-rust", "ffr"), 3);
+        assert_eq!(typed_strength("frameworks", "mewo"), 1);
+        assert_eq!(typed_strength("Megan Wofford", "mewo"), 2);
+        assert_eq!(typed_strength("m-x-e-w-o", "mewo"), 0);
+        // Words must be consecutive.
+        assert!(!abbreviates("file-x-rust", "fr"));
+        // Accented letters belong to their word.
+        assert!(!abbreviates("naïve", "nv"));
+        assert_eq!(word_starts("naïve x").collect::<Vec<_>>(), [0, 7]);
+    }
+
     fn local_search_app(files: &[&str], query: &str) -> App {
         let mut app = App::new(files.iter().map(|file| file.to_string()).collect());
         app.enter_search(SearchScope::CurrentDirectory);
@@ -2021,6 +2420,8 @@ mod tests {
     #[test]
     fn operation_refresh_selects_new_path_after_sorting_and_clears_local_search() {
         let mut app = local_search_app(&["cwd/alpha.txt", "cwd/zulu.txt"], "alpha");
+        // Browsing the results after Esc; a query being typed is kept.
+        app.input_mode = InputMode::Normal;
         app.preserved_selection_index = Some(0);
         let mut state = ListState::default();
         state.select(Some(0));
@@ -2044,6 +2445,31 @@ mod tests {
         assert_eq!(app.preserved_selection_index, Some(2));
         assert!(app.search_results.is_empty());
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn operation_refresh_while_typing_keeps_the_local_search() {
+        let mut app = local_search_app(&["cwd/a_foo.rs", "cwd/b.rs"], "foo");
+        let mut state = ListState::default();
+        select_path(&app, &mut state, "cwd/a_foo.rs");
+
+        app.refresh_files_after_operation(
+            Listing::from(vec![
+                "cwd/a_foo.rs".into(),
+                "cwd/b.rs".into(),
+                "cwd/c_foo.rs".into(),
+            ]),
+            &mut state,
+            Some("cwd/c_foo.rs".into()),
+        );
+
+        assert_eq!(app.input, "foo");
+        assert_eq!(app.search_results.len(), 2);
+        assert_local_search_consistent(&app);
+        assert_eq!(
+            app.get_selected_path(state.selected()).as_deref(),
+            Some("cwd/a_foo.rs")
+        );
     }
 
     #[test]
@@ -2155,6 +2581,7 @@ mod tests {
             (Vec::new(), None),
         ] {
             let mut app = local_search_app(&["elsewhere/charlie.txt"], "charlie");
+            app.input_mode = InputMode::Normal;
             app.global_search_mode = true;
             app.current_directory = "cwd".into();
             app.character_index = 7;

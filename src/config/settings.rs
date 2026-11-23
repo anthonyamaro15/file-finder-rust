@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::get_config_dir;
 use crate::config::keymap::KeymapSettings;
@@ -82,6 +82,9 @@ pub struct Settings {
     pub cache_directory: String,
     pub settings_path: String,
     pub ignore_directories: Vec<String>,
+    /// Folders left out of the folder index with everything below them, e.g.
+    /// "~/Movies". Unlike `ignore_directories`, only these exact folders.
+    pub ignore_paths: Vec<String>,
     pub theme: String,
 
     /// Show file sizes in file list
@@ -146,7 +149,6 @@ impl Default for Settings {
                 "maui".to_string(),
                 "target".to_string(),
                 ".venv".to_string(),
-                "src".to_string(),
                 "cdn".to_string(),
                 ".git".to_string(),
                 ".sauce".to_string(),
@@ -156,6 +158,7 @@ impl Default for Settings {
                 "cypress".to_string(),
                 "dist-prod".to_string(),
             ],
+            ignore_paths: Vec::new(),
             theme: "onedark".to_string(),
             show_size_bars: default_show_file_sizes(),
             syntax_theme: default_syntax_theme(),
@@ -239,6 +242,136 @@ impl Settings {
     }
 }
 
+/// Add `add` to and remove `remove` from `ignore_paths` in ff's settings.toml.
+pub fn update_ignore_paths(add: &[PathBuf], remove: &[String]) -> AppResult<()> {
+    update_ignore_paths_in(&get_config_dir()?.join("settings.toml"), add, remove)
+}
+
+/// Add the folders `add` to, and remove the entries `remove` from, `ignore_paths` in the
+/// settings file at `path`. An entry is removed when it's written exactly as given or
+/// names the same folder. Only that list in the file as it is now changes, so other
+/// settings, comments, and entries written by hand or by another ff stay. New entries
+/// under home are written "~/…". A symlinked file is written through to its target; a
+/// read-only one is refused.
+pub fn update_ignore_paths_in(path: &Path, add: &[PathBuf], remove: &[String]) -> AppResult<()> {
+    let error = |message: String| AppError::Configuration { message };
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let metadata = fs::metadata(&target)
+        .map_err(|e| error(format!("Can't read {}: {e}", target.display())))?;
+    if metadata.permissions().readonly() {
+        return Err(error(format!("{} is read-only", target.display())));
+    }
+    let text = fs::read_to_string(&target)
+        .map_err(|e| error(format!("Can't read {}: {e}", target.display())))?;
+    let crlf = text.contains("\r\n");
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| error(format!("Can't parse {}: {e}", target.display())))?;
+
+    if doc.get("ignore_paths").is_none() {
+        doc["ignore_paths"] = toml_edit::value(toml_edit::Array::new());
+    }
+    // Edited in place, so comments inside the list stay.
+    let array = doc["ignore_paths"]
+        .as_array_mut()
+        .ok_or_else(|| error("ignore_paths in settings.toml isn't a list".to_string()))?;
+    let removed = |entry: &str| {
+        remove
+            .iter()
+            .any(|gone| entry == gone || resolved(Path::new(entry)) == resolved(Path::new(gone)))
+    };
+    // A comment after an entry belongs to the next one's text, so a removed entry's
+    // comments move on to the entry after it.
+    let decor_text = |value: &toml_edit::Value| {
+        value
+            .decor()
+            .prefix()
+            .and_then(|prefix| prefix.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let mut carried = String::new();
+    let mut i = 0;
+    while i < array.len() {
+        if array
+            .get(i)
+            .and_then(|value| value.as_str())
+            .is_some_and(removed)
+        {
+            carried.push_str(decor_text(&array.remove(i)).trim_end());
+            continue;
+        }
+        if !carried.is_empty() {
+            let value = array.get_mut(i).expect("index below len");
+            let prefix = std::mem::take(&mut carried) + &decor_text(value);
+            value.decor_mut().set_prefix(prefix);
+        }
+        i += 1;
+    }
+    for path in add {
+        let present = array.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|entry| resolved(Path::new(entry)) == resolved(path))
+        });
+        if !present {
+            // One entry a line, like the default ignore_directories.
+            let mut value = toml_edit::Value::from(home_relative(path));
+            let prefix = std::mem::take(&mut carried) + "\n    ";
+            value.decor_mut().set_prefix(prefix);
+            array.push_formatted(value);
+        }
+    }
+    if !carried.is_empty() {
+        let trailing = carried + array.trailing().as_str().unwrap_or("");
+        array.set_trailing(trailing);
+    }
+    if array.is_empty() {
+        array.set_trailing("");
+        array.set_trailing_comma(false);
+    } else {
+        array.set_trailing_comma(true);
+        if !array.trailing().as_str().unwrap_or("").contains('\n') {
+            array.set_trailing("\n");
+        }
+    }
+
+    // Replace the file in one step, keeping its permissions.
+    let temp = target.with_file_name(format!(".settings.toml.{}.tmp", std::process::id()));
+    // toml_edit writes "\n"; keep a file that used "\r\n" that way.
+    let mut out = doc.to_string();
+    if crlf {
+        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    let result = fs::write(&temp, out)
+        .and_then(|()| fs::set_permissions(&temp, metadata.permissions()))
+        .and_then(|()| fs::rename(&temp, &target));
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(error(format!("Can't write {}: {e}", target.display())));
+    }
+    Ok(())
+}
+
+/// `path` with `~` expanded and links resolved when it exists, for comparing entries.
+fn resolved(path: &Path) -> PathBuf {
+    let expanded = crate::cli::path_utils::expand_home(path).unwrap_or_else(|_| path.to_path_buf());
+    fs::canonicalize(&expanded).unwrap_or(expanded)
+}
+
+/// "~/Movies" for a folder under home, otherwise the path as given.
+fn home_relative(path: &Path) -> String {
+    dirs::home_dir()
+        .and_then(|home| {
+            let home = fs::canonicalize(&home).unwrap_or(home);
+            let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            path.strip_prefix(&home)
+                .ok()
+                .map(|rest| format!("~/{}", rest.display()))
+        })
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -302,7 +435,7 @@ show_borders = true
             .map(|line| line.split(" = ").next().unwrap().trim_matches('"'))
             .collect();
 
-        assert_eq!(keys.len(), 34);
+        assert_eq!(keys.len(), 35);
         assert!(keys.windows(2).all(|pair| pair[0] < pair[1]), "{keys:?}");
         assert!(
             keymap.contains(r#""<leader>/" = "search.root""#),
@@ -310,5 +443,101 @@ show_borders = true
         );
         assert!(keymap.contains(r#"gg = "nav.top""#), "{keymap}");
         assert!(keymap.contains(r#"":" = "palette""#), "{keymap}");
+    }
+
+    #[test]
+    fn update_ignore_paths_edits_only_that_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.toml");
+        let original = "# my settings\nstart_path = \"/w\"  # where ff opens\n\n[keymap.normal]\nx = \"quit\"\n";
+        fs::write(&file, original).unwrap();
+        let home = dirs::home_dir().unwrap();
+        let movies = home.join("ff-no-such-folder/Movies");
+
+        update_ignore_paths_in(&file, &[movies.clone(), movies.clone()], &[]).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(
+            text.starts_with("# my settings\nstart_path = \"/w\"  # where ff opens\n"),
+            "{text}"
+        );
+        assert!(text.contains("x = \"quit\""), "{text}");
+        let settings: Settings = toml::from_str(&text).unwrap();
+        // Top-level, not inside [keymap.normal]; written "~/…"; added once.
+        assert_eq!(settings.ignore_paths, ["~/ff-no-such-folder/Movies"]);
+        assert_eq!(settings.start_path, "/w");
+        assert_eq!(
+            settings.keymap.normal.get("x").map(String::as_str),
+            Some("quit")
+        );
+
+        // Entries written by hand stay, and a full path removes its "~/…" spelling.
+        let text = text.replace("ignore_paths = [", "ignore_paths = [\n    \"/mine\",");
+        fs::write(&file, text).unwrap();
+        update_ignore_paths_in(&file, &[], &[movies.to_string_lossy().into_owned()]).unwrap();
+        let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(settings.ignore_paths, ["/mine"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_ignore_paths_writes_through_a_link_and_refuses_a_read_only_file() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("dotfiles-settings.toml");
+        let link = dir.path().join("settings.toml");
+        fs::write(&target, "theme = \"onedark\"\n").unwrap();
+        symlink(&target, &link).unwrap();
+
+        update_ignore_paths_in(&link, &[PathBuf::from("/data/raw")], &[]).unwrap();
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(fs::read_to_string(&target)
+            .unwrap()
+            .contains("\"/data/raw\""));
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+        let before = fs::read_to_string(&target).unwrap();
+        assert!(update_ignore_paths_in(&link, &[PathBuf::from("/data/more")], &[]).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), before);
+    }
+
+    #[test]
+    fn update_ignore_paths_keeps_comments_in_the_list_and_removes_entries_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.toml");
+        let original = "ignore_paths = [\r\n    \"/keep\", # my big drive\r\n    # \"/old\",\r\n    \"Movies\",\r\n    \"/w/Case\",\r\n] # trailing note\r\ntheme = \"onedark\"\r\n";
+        fs::write(&file, original).unwrap();
+
+        // Entries spelled relative or in another case go when named exactly as written.
+        update_ignore_paths_in(
+            &file,
+            &[PathBuf::from("/data/new")],
+            &["Movies".to_string(), "/w/Case".to_string()],
+        )
+        .unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        for kept in [
+            "# my big drive",
+            "# \"/old\",",
+            "# trailing note",
+            "\"/keep\"",
+        ] {
+            assert!(text.contains(kept), "{kept} in {text}");
+        }
+        assert!(!text.contains("Movies") && !text.contains("Case"), "{text}");
+        assert!(
+            !text.replace("\r\n", "").contains('\n'),
+            "line endings: {text:?}"
+        );
+        let settings: Settings = toml::from_str(&text).unwrap();
+        assert_eq!(settings.ignore_paths, ["/keep", "/data/new"]);
+
+        // Emptying the list leaves `[]`.
+        update_ignore_paths_in(&file, &[], &["/keep".to_string(), "/data/new".to_string()])
+            .unwrap();
+        let settings: Settings = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(settings.ignore_paths.is_empty());
     }
 }

@@ -330,6 +330,22 @@ pub fn draw(
                 app.palette.scroll =
                     render_palette(f, &app.palette, &settings.keymap, theme);
             }
+            InputMode::IndexManager => {
+                if let Some(manager) = app.index_manager.as_mut() {
+                    let scroll = crate::render::index_manager::render_index_manager(
+                        f,
+                        manager,
+                        !settings.show_hints,
+                        theme,
+                    );
+                    match (manager.view, manager.tree.as_mut()) {
+                        (crate::index_manager::IndexView::Biggest, Some(tree)) => {
+                            tree.scroll = scroll
+                        }
+                        _ => manager.scroll = scroll,
+                    }
+                }
+            }
             InputMode::Normal | InputMode::Visual => {
                 if let Some((title, keys)) = keymap_runtime.which_key(Instant::now()) {
                     render_which_key(f, &title, &keys, theme);
