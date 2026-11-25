@@ -9,13 +9,13 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Without the shell integration, `⏎` used to quit with no output after copying the path.
   ff now says what it copied and, for a folder, prints the `ff init` line that makes `⏎`
-  take your shell there.
+  take your shell there. ([#175](https://github.com/anthonyamaro15/file-finder-rust/pull/175))
 
 ### Fixed
 
 - On Linux, the path `⏎` copied could be lost as soon as ff quit, because ff held the X11
   clipboard itself. It now hands the path to `wl-copy` or `xclip`, as the shell
-  integration does, and prints it when neither works.
+  integration does, and prints it when neither works. ([#175](https://github.com/anthonyamaro15/file-finder-rust/pull/175))
 
 ## [0.3.1] - 2026-11-24
 
