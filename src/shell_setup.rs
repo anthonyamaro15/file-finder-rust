@@ -17,8 +17,14 @@ pub struct ShellConfig {
 }
 
 impl ShellConfig {
-    /// From `$SHELL`'s file name; `None` for shells `ff init` doesn't support.
-    pub fn detect(shell: Option<&str>, home: &Path, zdotdir: Option<&str>) -> Option<Self> {
+    /// From `$SHELL`'s file name; `None` for shells `ff init` doesn't support. macOS
+    /// terminals start bash as a login shell, which reads `~/.bash_profile`, not `~/.bashrc`.
+    pub fn detect(
+        shell: Option<&str>,
+        home: &Path,
+        zdotdir: Option<&str>,
+        macos: bool,
+    ) -> Option<Self> {
         match Path::new(shell?).file_name()?.to_str()? {
             "zsh" => {
                 let dir = zdotdir.filter(|dir| !dir.is_empty()).map(Path::new);
@@ -29,7 +35,7 @@ impl ShellConfig {
             }
             "bash" => Some(Self {
                 name: "bash",
-                rc: home.join(".bashrc"),
+                rc: home.join(if macos { ".bash_profile" } else { ".bashrc" }),
             }),
             _ => None,
         }
@@ -40,7 +46,12 @@ impl ShellConfig {
         let home = dirs::home_dir()?;
         let shell = std::env::var("SHELL").ok();
         let zdotdir = std::env::var("ZDOTDIR").ok();
-        Self::detect(shell.as_deref(), &home, zdotdir.as_deref())
+        Self::detect(
+            shell.as_deref(),
+            &home,
+            zdotdir.as_deref(),
+            cfg!(target_os = "macos"),
+        )
     }
 
     pub fn init_line(&self) -> String {
@@ -52,14 +63,31 @@ impl ShellConfig {
         replace_home_with_tilde(&self.rc.to_string_lossy())
     }
 
+    /// The command that loads the config file in the running shell.
+    pub fn source_command(&self) -> String {
+        let shown = self.rc_shown();
+        if shown.contains(' ') {
+            format!("source \"{}\"", self.rc.display())
+        } else {
+            format!("source {shown}")
+        }
+    }
+
+    /// The config file's text; bytes that aren't UTF-8 don't hide the `ff init` line.
+    fn read_rc(&self) -> Option<String> {
+        let bytes = fs::read(&self.rc).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// Whether the config file already runs `ff init` (an unreadable file counts as no).
     pub fn has_integration(&self) -> bool {
-        fs::read_to_string(&self.rc).is_ok_and(|text| runs_ff_init(&text))
+        self.read_rc().is_some_and(|text| runs_ff_init(&text))
     }
 
     /// Append the `ff init` line unless it's already there; true when it was added.
     pub fn add_integration(&self) -> io::Result<bool> {
-        if self.has_integration() {
+        let text = self.read_rc().unwrap_or_default();
+        if runs_ff_init(&text) {
             return Ok(false);
         }
         let mut file = fs::OpenOptions::new()
@@ -67,7 +95,11 @@ impl ShellConfig {
             .append(true)
             .open(&self.rc)?;
         // A blank line separates it from what's already there.
-        let gap = if file.metadata()?.len() > 0 { "\n" } else { "" };
+        let gap = match text.chars().last() {
+            None => "",
+            Some('\n') => "\n",
+            Some(_) => "\n\n",
+        };
         write!(
             file,
             "{gap}# ff shell integration: Enter in ff takes your shell to the folder you pick\n{}\n",
@@ -78,20 +110,30 @@ impl ShellConfig {
 
     /// What to do after the line was added: the running shell read its config before.
     fn reload_message(&self) -> String {
-        let rc = self.rc_shown();
         format!(
-            "Added the ff shell integration to {rc}.\n\
+            "Added the ff shell integration to {}.\n\
              This terminal started before that line existed, so load it first:\n  \
-             source {rc}   (or open a new terminal), then run ff."
+             {}   (or open a new terminal), then run ff.",
+            self.rc_shown(),
+            self.source_command()
         )
     }
 }
 
-/// Whether a config file's text runs `ff init` on an uncommented line.
+/// Whether a config file's text runs `ff init zsh` or `ff init bash` outside a comment.
 fn runs_ff_init(text: &str) -> bool {
-    text.lines()
-        .map(str::trim_start)
-        .any(|line| !line.starts_with('#') && line.contains("ff init"))
+    text.lines().any(|line| {
+        let code = line.split('#').next().unwrap_or_default();
+        ["ff init zsh", "ff init bash"].iter().any(|call| {
+            code.match_indices(call).any(|(at, _)| {
+                // `ff` is a command of its own, not the end of a longer word.
+                !code[..at]
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_alphanumeric() || "_-.".contains(c))
+            })
+        })
+    })
 }
 
 /// An empty answer, `y` or `yes` (any case) accepts.
@@ -185,10 +227,11 @@ pub fn run_setup() -> i32 {
             0
         }
         Ok(false) => {
-            let rc = shell.rc_shown();
             println!(
-                "{rc} already has the ff shell integration. If Enter doesn't take you to the \
-                 folder, run: source {rc}   (or open a new terminal)"
+                "{} already has the ff shell integration. If Enter doesn't take you to the \
+                 folder, run: {}   (or open a new terminal)",
+                shell.rc_shown(),
+                shell.source_command()
             );
             0
         }
@@ -217,23 +260,37 @@ mod tests {
     #[test]
     fn detect_picks_the_config_file_for_zsh_and_bash_only() {
         let home = Path::new("/home/u");
-        let zsh = ShellConfig::detect(Some("/bin/zsh"), home, None).unwrap();
-        assert_eq!((zsh.name, zsh.rc), ("zsh", home.join(".zshrc")));
-        let zdot = ShellConfig::detect(Some("/bin/zsh"), home, Some("/home/u/.config/zsh"));
-        assert_eq!(zdot.unwrap().rc, Path::new("/home/u/.config/zsh/.zshrc"));
-        let empty_zdot = ShellConfig::detect(Some("zsh"), home, Some(""));
-        assert_eq!(empty_zdot.unwrap().rc, home.join(".zshrc"));
-        let bash = ShellConfig::detect(Some("/opt/homebrew/bin/bash"), home, None).unwrap();
-        assert_eq!((bash.name, bash.rc), ("bash", home.join(".bashrc")));
-        assert_eq!(ShellConfig::detect(Some("/usr/bin/fish"), home, None), None);
-        assert_eq!(ShellConfig::detect(None, home, None), None);
+        let rc = |shell, zdotdir, macos| {
+            ShellConfig::detect(Some(shell), home, zdotdir, macos).map(|config| config.rc)
+        };
+        assert_eq!(rc("/bin/zsh", None, true), Some(home.join(".zshrc")));
+        assert_eq!(
+            rc("/bin/zsh", Some("/home/u/.config/zsh"), false),
+            Some(home.join(".config/zsh/.zshrc"))
+        );
+        assert_eq!(rc("zsh", Some(""), false), Some(home.join(".zshrc")));
+        assert_eq!(rc("/usr/bin/bash", None, false), Some(home.join(".bashrc")));
+        assert_eq!(
+            rc("/opt/homebrew/bin/bash", None, true),
+            Some(home.join(".bash_profile"))
+        );
+        assert_eq!(rc("/usr/bin/fish", None, true), None);
+        assert_eq!(ShellConfig::detect(None, home, None, true), None);
     }
 
     #[test]
     fn runs_ff_init_ignores_commented_lines() {
         assert!(runs_ff_init("export A=1\n  eval \"$(ff init zsh)\"\n"));
-        assert!(!runs_ff_init("# eval \"$(ff init zsh)\"\nexport A=1"));
-        assert!(!runs_ff_init(""));
+        assert!(runs_ff_init("eval \"$(/opt/homebrew/bin/ff init bash)\""));
+        for not_it in [
+            "# eval \"$(ff init zsh)\"",
+            "export A=1 # ff init zsh later",
+            "alias gdi=\"git diff init\"",
+            "eval \"$(tiff init zsh)\"",
+            "",
+        ] {
+            assert!(!runs_ff_init(not_it), "{not_it:?}");
+        }
     }
 
     #[test]
@@ -246,9 +303,31 @@ mod tests {
         assert!(!shell.add_integration().unwrap());
 
         let text = fs::read_to_string(&shell.rc).unwrap();
-        assert!(text.starts_with("export A=1\n"));
+        assert!(
+            text.starts_with("export A=1\n\n# ff shell integration"),
+            "{text:?}"
+        );
         assert_eq!(text.matches("ff init zsh").count(), 1);
         assert!(shell.has_integration());
+    }
+
+    #[test]
+    fn add_integration_sees_the_line_in_a_file_that_is_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = zsh_in(dir.path());
+        fs::write(&shell.rc, b"export N=caf\xe9\neval \"$(ff init zsh)\"\n").unwrap();
+
+        assert!(shell.has_integration());
+        assert!(!shell.add_integration().unwrap());
+    }
+
+    #[test]
+    fn source_command_quotes_paths_with_spaces() {
+        let shell = ShellConfig {
+            name: "zsh",
+            rc: PathBuf::from("/Volumes/My Disk/.zshrc"),
+        };
+        assert_eq!(shell.source_command(), "source \"/Volumes/My Disk/.zshrc\"");
     }
 
     #[test]

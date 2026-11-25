@@ -148,8 +148,8 @@ fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
 }
 
 /// Open the selection in the configured editor, or copy its path to the clipboard and
-/// say so on stderr, with the `ff init` line for a folder. Call after the terminal is
-/// restored; prints the path if no clipboard tool takes it.
+/// say so on stderr, with how to get Enter to cd for a folder. Call after the terminal
+/// is restored; prints the path if no clipboard tool takes it.
 pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), String> {
     if let Some(ide) = ide {
         return launch_editor(&ide, file);
@@ -161,7 +161,7 @@ pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), Stri
             .is_dir()
             .then(crate::shell_setup::ShellConfig::current)
             .flatten()
-            .map(|shell| (shell.rc_shown(), shell.has_integration()));
+            .map(|shell| (shell.source_command(), shell.has_integration()));
         eprintln!("{}", copied_message(&shown, setup));
     } else {
         warn!("No clipboard tool took the path");
@@ -215,13 +215,13 @@ fn copy_with(tools: &[&[&str]], text: &str) -> bool {
 }
 
 /// What ff prints after Enter copies `shown`. For a folder in zsh or bash, `setup` is
-/// the shell's config file and whether it runs `ff init`; the second line says how to
-/// get Enter to cd there instead.
+/// the command that loads the shell's config and whether the config runs `ff init`; the
+/// second line says how to get Enter to cd there instead.
 fn copied_message(shown: &str, setup: Option<(String, bool)>) -> String {
     let copied = format!("ff: copied {shown} to the clipboard");
     match setup {
-        Some((rc, true)) => format!(
-            "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  source {rc}"
+        Some((source, true)) => format!(
+            "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  {source}"
         ),
         Some((_, false)) => {
             format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
@@ -490,11 +490,11 @@ mod tests {
         let copied = "ff: copied ~/work/app to the clipboard";
         assert_eq!(copied_message("~/work/app", None), copied);
         assert_eq!(
-            copied_message("~/work/app", Some(("~/.zshrc".into(), false))),
+            copied_message("~/work/app", Some(("source ~/.zshrc".into(), false))),
             format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
         );
         assert_eq!(
-            copied_message("~/work/app", Some(("~/.bashrc".into(), true))),
+            copied_message("~/work/app", Some(("source ~/.bashrc".into(), true))),
             format!(
                 "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  source ~/.bashrc"
             )

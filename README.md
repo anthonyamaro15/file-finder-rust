@@ -119,15 +119,17 @@ cp target/release/ff /usr/local/bin/
 
 To have your shell `cd` into the folder you pick, run `ff setup` (or answer yes when ff
 asks at first launch), then open a new terminal or `source` the file it names. It adds
-one line to your shell's config, `~/.zshrc` (or `$ZDOTDIR/.zshrc`) or `~/.bashrc`; to
+one line to your shell's config: `~/.zshrc` (or `$ZDOTDIR/.zshrc`), or for bash
+`~/.bashrc` (`~/.bash_profile` on macOS, where terminals start bash as a login shell). To
 add it yourself instead:
 
 ```bash
 eval "$(ff init zsh)"    # ~/.zshrc
-eval "$(ff init bash)"   # ~/.bashrc
+eval "$(ff init bash)"   # ~/.bashrc, or ~/.bash_profile on macOS
 ```
 
-If you answer no, ff doesn't ask again; `ff setup` still works later.
+If you answer no, ff doesn't ask again; `ff setup` still works later. To open a folder
+named `init` or `setup` in the current folder, use `ff ./setup`.
 
 With it, `Enter` on a folder leaves your shell in that folder. `Enter` on a file copies
 its path to the clipboard (with `pbcopy`, `wl-copy` or `xclip`; without one it's
