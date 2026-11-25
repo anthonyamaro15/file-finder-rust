@@ -170,17 +170,28 @@ pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), Stri
     Ok(())
 }
 
-/// Pipe `text` to the first clipboard tool that takes it, in the shell integration's
-/// order. A separate process keeps the copy after ff exits; an X11 clipboard owned by
-/// ff itself would be gone.
+/// Clipboard tools in the shell integration's order; each is a separate process, so the
+/// copy outlives ff (an X11 clipboard owned by ff itself would be gone).
+const CLIPBOARD_TOOLS: [&[&str]; 3] = [
+    &["pbcopy"],
+    &["wl-copy"],
+    &["xclip", "-selection", "clipboard"],
+];
+
+/// Pipe `text` to the first clipboard tool that takes it.
 fn copy_with_clipboard_tool(text: &str) -> bool {
-    const TOOLS: [&[&str]; 3] = [
-        &["pbcopy"],
-        &["wl-copy"],
-        &["xclip", "-selection", "clipboard"],
-    ];
-    TOOLS.iter().any(|tool| {
-        let Ok(mut child) = Command::new(tool[0])
+    copy_with(&CLIPBOARD_TOOLS, text)
+}
+
+/// Pipe `text` to the first of `tools` that runs and exits successfully.
+fn copy_with(tools: &[&[&str]], text: &str) -> bool {
+    tools.iter().any(|tool| {
+        let mut command = Command::new(tool[0]);
+        if tool[0] == "pbcopy" {
+            // pbcopy decodes stdin by the locale; paths are UTF-8 even under LANG=C.
+            command.env("LC_CTYPE", "UTF-8");
+        }
+        let Ok(mut child) = command
             .args(&tool[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -454,6 +465,22 @@ mod tests {
 
         assert_eq!(err, "'false' failed with exit status: 1");
         assert_eq!(launch_editor("true", file), Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_with_uses_the_first_tool_that_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip.txt");
+        let out = out.to_str().unwrap();
+        let writer: &[&str] = &["sh", "-c", "cat > \"$0\"", out];
+
+        assert!(copy_with(
+            &[&["ff-no-such-tool-xyz"], &["false"], writer],
+            "~/Año/app"
+        ));
+        assert_eq!(std::fs::read_to_string(out).unwrap(), "~/Año/app");
+        assert!(!copy_with(&[&["ff-no-such-tool-xyz"], &["false"]], "x"));
     }
 
     #[test]

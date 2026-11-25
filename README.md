@@ -159,7 +159,8 @@ ff -e zed --start ~/Projects
 ```
 
 `Enter` quits ff and opens the highlighted item in the editor. Without an editor, its
-path is copied to the clipboard. The shell integration always runs `ff --print-path`, so
+path is copied to the clipboard (with `pbcopy`, `wl-copy` or `xclip`; without one it's
+printed). The shell integration always runs `ff --print-path`, so
 `-e` has no effect through it; run `command ff -e nvim` to open items in an editor.
 
 ## Keyboard shortcuts

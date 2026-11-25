@@ -13,9 +13,9 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- On Linux, the path `⏎` copied was lost as soon as ff quit, because ff held the X11
+- On Linux, the path `⏎` copied could be lost as soon as ff quit, because ff held the X11
   clipboard itself. It now hands the path to `wl-copy` or `xclip`, as the shell
-  integration does, and prints it when neither is installed.
+  integration does, and prints it when neither works.
 
 ## [0.3.1] - 2026-11-24
 
