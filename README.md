@@ -159,7 +159,8 @@ ff -e zed --start ~/Projects
 ```
 
 `Enter` quits ff and opens the highlighted item in the editor. Without an editor, its
-path is copied to the clipboard. The shell integration always runs `ff --print-path`, so
+path is copied to the clipboard (with `pbcopy`, `wl-copy` or `xclip`; without one it's
+printed). The shell integration always runs `ff --print-path`, so
 `-e` has no effect through it; run `command ff -e nvim` to open items in an editor.
 
 ## Keyboard shortcuts
@@ -453,6 +454,11 @@ Then select the font in your terminal:
 
 **`ff: command not found`.** After building from source, copy the binary somewhere on
 your `PATH`, for example `cp target/release/ff /usr/local/bin/`.
+
+**Enter doesn't change my shell's folder.** That takes the
+[shell integration](#shell-integration). Without it, ff can only copy the path, and says
+so when it quits. Add `eval "$(ff init zsh)"` to `~/.zshrc` (or the bash line to
+`~/.bashrc`) and open a new shell.
 
 **The editor doesn't open.** Check that it's on your `PATH` (`which nvim`, `which code`,
 `which zed`); for VS Code on macOS, run "Shell Command: Install 'code' command in PATH"

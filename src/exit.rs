@@ -1,7 +1,12 @@
 //! Leaving ff: quit confirmation, opening the selection with the system opener or
 //! the editor, and the shell integration's result file.
 
-use std::{io, path::Path, process::Command, sync::mpsc};
+use std::{
+    io::{self, Write},
+    path::Path,
+    process::{Command, Stdio},
+    sync::mpsc,
+};
 
 use copypasta::{ClipboardContext, ClipboardProvider};
 use log::{debug, warn};
@@ -118,7 +123,6 @@ pub(crate) fn system_opener() -> &'static str {
 /// Write the selected path to the shell integration's result file.
 /// The file must already exist (the shell function creates it with mktemp).
 pub(crate) fn write_result_file(result_file: &Path, selected: &str) -> io::Result<()> {
-    use std::io::Write;
     std::fs::OpenOptions::new()
         .write(true)
         .truncate(true)
@@ -143,22 +147,85 @@ fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the selection in the configured editor, or copy its path to the clipboard.
-/// Call after the terminal is restored; prints the path if the clipboard is unavailable.
+/// Open the selection in the configured editor, or copy its path to the clipboard and
+/// say so on stderr, with the `ff init` line for a folder. Call after the terminal is
+/// restored; prints the path if no clipboard tool takes it.
 pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), String> {
     if let Some(ide) = ide {
         return launch_editor(&ide, file);
     }
 
-    match ClipboardContext::new().and_then(|mut ctx| ctx.set_contents(file.to_owned())) {
-        Ok(()) => debug!("Copied path to clipboard: {}", file),
-        Err(e) => {
-            warn!("Clipboard unavailable: {}", e);
-            eprintln!("ff: clipboard unavailable; path printed below");
-            println!("{}", file);
-        }
+    if copy_with_clipboard_tool(file) {
+        let shell = std::env::var("SHELL").ok();
+        let shown = crate::utils::format::replace_home_with_tilde(file);
+        eprintln!(
+            "{}",
+            copied_message(&shown, Path::new(file).is_dir(), shell.as_deref())
+        );
+    } else {
+        warn!("No clipboard tool took the path");
+        eprintln!("ff: clipboard unavailable; path printed below");
+        println!("{}", file);
     }
     Ok(())
+}
+
+/// Clipboard tools in the shell integration's order; each is a separate process, so the
+/// copy outlives ff (an X11 clipboard owned by ff itself would be gone).
+const CLIPBOARD_TOOLS: [&[&str]; 3] = [
+    &["pbcopy"],
+    &["wl-copy"],
+    &["xclip", "-selection", "clipboard"],
+];
+
+/// Pipe `text` to the first clipboard tool that takes it.
+fn copy_with_clipboard_tool(text: &str) -> bool {
+    copy_with(&CLIPBOARD_TOOLS, text)
+}
+
+/// Pipe `text` to the first of `tools` that runs and exits successfully.
+fn copy_with(tools: &[&[&str]], text: &str) -> bool {
+    tools.iter().any(|tool| {
+        let mut command = Command::new(tool[0]);
+        if tool[0] == "pbcopy" {
+            // pbcopy decodes stdin by the locale; paths are UTF-8 even under LANG=C.
+            command.env("LC_CTYPE", "UTF-8");
+        }
+        let Ok(mut child) = command
+            .args(&tool[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        // Closing stdin (end of the closure) lets the tool finish before the wait.
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+        let copied = child.wait().is_ok_and(|status| status.success()) && wrote;
+        if copied {
+            debug!("Copied path to clipboard with {}: {}", tool[0], text);
+        }
+        copied
+    })
+}
+
+/// What ff prints after Enter copies `shown`. A folder also gets the `ff init` line for
+/// the shells it supports, so Enter can cd there instead.
+fn copied_message(shown: &str, is_dir: bool, shell: Option<&str>) -> String {
+    let copied = format!("ff: copied {shown} to the clipboard");
+    let shell = shell
+        .and_then(|path| Path::new(path).file_name())
+        .and_then(|name| name.to_str());
+    match shell.filter(|_| is_dir) {
+        Some(name @ ("zsh" | "bash")) => format!(
+            "{copied}\nff: to cd there on Enter instead, add to ~/.{name}rc:  eval \"$(ff init {name})\""
+        ),
+        _ => copied,
+    }
 }
 
 #[cfg(test)]
@@ -398,5 +465,45 @@ mod tests {
 
         assert_eq!(err, "'false' failed with exit status: 1");
         assert_eq!(launch_editor("true", file), Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_with_uses_the_first_tool_that_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("clip.txt");
+        let out = out.to_str().unwrap();
+        let writer: &[&str] = &["sh", "-c", "cat > \"$0\"", out];
+
+        assert!(copy_with(
+            &[&["ff-no-such-tool-xyz"], &["false"], writer],
+            "~/Año/app"
+        ));
+        assert_eq!(std::fs::read_to_string(out).unwrap(), "~/Año/app");
+        assert!(!copy_with(&[&["ff-no-such-tool-xyz"], &["false"]], "x"));
+    }
+
+    #[test]
+    fn copied_message_adds_the_init_line_for_folders_in_supported_shells() {
+        let copied = "ff: copied ~/work/app to the clipboard";
+        let hint = |name: &str| {
+            format!(
+                "{copied}\nff: to cd there on Enter instead, add to ~/.{name}rc:  eval \"$(ff init {name})\""
+            )
+        };
+        let cases = [
+            (true, Some("/bin/zsh"), hint("zsh")),
+            (true, Some("/opt/homebrew/bin/bash"), hint("bash")),
+            (true, Some("/usr/bin/fish"), copied.to_string()),
+            (true, None, copied.to_string()),
+            (false, Some("/bin/zsh"), copied.to_string()),
+        ];
+        for (is_dir, shell, expected) in cases {
+            assert_eq!(
+                copied_message("~/work/app", is_dir, shell),
+                expected,
+                "{shell:?}"
+            );
+        }
     }
 }
