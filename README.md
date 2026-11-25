@@ -32,8 +32,11 @@ search across every folder under your home.
 ```bash
 brew trust anthonyamaro15/tap      # Homebrew 7 and newer; skip on older versions
 brew install anthonyamaro15/tap/ff
-echo 'eval "$(ff init zsh)"' >> ~/.zshrc && source ~/.zshrc   # bash: use ~/.bashrc and "ff init bash"
+ff setup                           # adds the shell integration; then open a new terminal
 ```
+
+The first time you run `ff` without the shell integration, it offers to add it for you,
+so `ff setup` is optional.
 
 Run `ff`, press `Space` then `/`, type part of a folder's name, and press `Enter`: ff
 quits and your shell is in the top result. To pick another result, press `Esc` to browse
@@ -114,13 +117,19 @@ cp target/release/ff /usr/local/bin/
 
 ### Shell integration
 
-To have your shell `cd` into the folder you pick, add one line to your shell's config and
-reload it:
+To have your shell `cd` into the folder you pick, run `ff setup` (or answer yes when ff
+asks at first launch), then open a new terminal or `source` the file it names. It adds
+one line to your shell's config: `~/.zshrc` (or `$ZDOTDIR/.zshrc`), or for bash
+`~/.bashrc` (`~/.bash_profile` on macOS, where terminals start bash as a login shell). To
+add it yourself instead:
 
 ```bash
 eval "$(ff init zsh)"    # ~/.zshrc
-eval "$(ff init bash)"   # ~/.bashrc
+eval "$(ff init bash)"   # ~/.bashrc, or ~/.bash_profile on macOS
 ```
+
+If you answer no, ff doesn't ask again; `ff setup` still works later. To open a folder
+named `init` or `setup` in the current folder, use `ff ./setup`.
 
 With it, `Enter` on a folder leaves your shell in that folder. `Enter` on a file copies
 its path to the clipboard (with `pbcopy`, `wl-copy` or `xclip`; without one it's
@@ -147,9 +156,10 @@ ff [OPTIONS] [PATH] [COMMAND]
 | `--help`            | `-h`  | Show help                                | `ff --help`          |
 | `--version`         | `-V`  | Show the version                         | `ff --version`       |
 
-| Command        | Description                         | Example       |
-| -------------- | ----------------------------------- | ------------- |
-| `init <SHELL>` | Print the shell integration script  | `ff init zsh` |
+| Command        | Description                                      | Example       |
+| -------------- | ------------------------------------------------ | ------------- |
+| `init <SHELL>` | Print the shell integration script               | `ff init zsh` |
+| `setup`        | Add the shell integration to your shell's config | `ff setup`    |
 
 ### Opening in an editor
 
@@ -457,8 +467,7 @@ your `PATH`, for example `cp target/release/ff /usr/local/bin/`.
 
 **Enter doesn't change my shell's folder.** That takes the
 [shell integration](#shell-integration). Without it, ff can only copy the path, and says
-so when it quits. Add `eval "$(ff init zsh)"` to `~/.zshrc` (or the bash line to
-`~/.bashrc`) and open a new shell.
+so when it quits. Run `ff setup` and open a new terminal.
 
 **The editor doesn't open.** Check that it's on your `PATH` (`which nvim`, `which code`,
 `which zed`); for VS Code on macOS, run "Shell Command: Install 'code' command in PATH"

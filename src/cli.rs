@@ -64,6 +64,8 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: Shell,
     },
+    /// Add the shell integration to your shell's config file (zsh or bash)
+    Setup,
 }
 
 /// Supported shells for init command
@@ -84,7 +86,7 @@ impl Shell {
 ff() {
     # Commands that don't open ff run as they are.
     case "${1-}" in
-        init|help) command ff "$@"; return ;;
+        init|help|setup) command ff "$@"; return ;;
     esac
     local arg
     for arg in "$@"; do

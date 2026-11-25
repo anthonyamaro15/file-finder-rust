@@ -148,20 +148,21 @@ fn launch_editor(editor: &str, file: &str) -> Result<(), String> {
 }
 
 /// Open the selection in the configured editor, or copy its path to the clipboard and
-/// say so on stderr, with the `ff init` line for a folder. Call after the terminal is
-/// restored; prints the path if no clipboard tool takes it.
+/// say so on stderr, with how to get Enter to cd for a folder. Call after the terminal
+/// is restored; prints the path if no clipboard tool takes it.
 pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), String> {
     if let Some(ide) = ide {
         return launch_editor(&ide, file);
     }
 
     if copy_with_clipboard_tool(file) {
-        let shell = std::env::var("SHELL").ok();
         let shown = crate::utils::format::replace_home_with_tilde(file);
-        eprintln!(
-            "{}",
-            copied_message(&shown, Path::new(file).is_dir(), shell.as_deref())
-        );
+        let setup = Path::new(file)
+            .is_dir()
+            .then(crate::shell_setup::ShellConfig::current)
+            .flatten()
+            .map(|shell| (shell.source_command(), shell.has_integration()));
+        eprintln!("{}", copied_message(&shown, setup));
     } else {
         warn!("No clipboard tool took the path");
         eprintln!("ff: clipboard unavailable; path printed below");
@@ -213,18 +214,19 @@ fn copy_with(tools: &[&[&str]], text: &str) -> bool {
     })
 }
 
-/// What ff prints after Enter copies `shown`. A folder also gets the `ff init` line for
-/// the shells it supports, so Enter can cd there instead.
-fn copied_message(shown: &str, is_dir: bool, shell: Option<&str>) -> String {
+/// What ff prints after Enter copies `shown`. For a folder in zsh or bash, `setup` is
+/// the command that loads the shell's config and whether the config runs `ff init`; the
+/// second line says how to get Enter to cd there instead.
+fn copied_message(shown: &str, setup: Option<(String, bool)>) -> String {
     let copied = format!("ff: copied {shown} to the clipboard");
-    let shell = shell
-        .and_then(|path| Path::new(path).file_name())
-        .and_then(|name| name.to_str());
-    match shell.filter(|_| is_dir) {
-        Some(name @ ("zsh" | "bash")) => format!(
-            "{copied}\nff: to cd there on Enter instead, add to ~/.{name}rc:  eval \"$(ff init {name})\""
+    match setup {
+        Some((source, true)) => format!(
+            "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  {source}"
         ),
-        _ => copied,
+        Some((_, false)) => {
+            format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
+        }
+        None => copied,
     }
 }
 
@@ -484,26 +486,18 @@ mod tests {
     }
 
     #[test]
-    fn copied_message_adds_the_init_line_for_folders_in_supported_shells() {
+    fn copied_message_says_how_to_get_enter_to_cd() {
         let copied = "ff: copied ~/work/app to the clipboard";
-        let hint = |name: &str| {
+        assert_eq!(copied_message("~/work/app", None), copied);
+        assert_eq!(
+            copied_message("~/work/app", Some(("source ~/.zshrc".into(), false))),
+            format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
+        );
+        assert_eq!(
+            copied_message("~/work/app", Some(("source ~/.bashrc".into(), true))),
             format!(
-                "{copied}\nff: to cd there on Enter instead, add to ~/.{name}rc:  eval \"$(ff init {name})\""
+                "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  source ~/.bashrc"
             )
-        };
-        let cases = [
-            (true, Some("/bin/zsh"), hint("zsh")),
-            (true, Some("/opt/homebrew/bin/bash"), hint("bash")),
-            (true, Some("/usr/bin/fish"), copied.to_string()),
-            (true, None, copied.to_string()),
-            (false, Some("/bin/zsh"), copied.to_string()),
-        ];
-        for (is_dir, shell, expected) in cases {
-            assert_eq!(
-                copied_message("~/work/app", is_dir, shell),
-                expected,
-                "{shell:?}"
-            );
-        }
+        );
     }
 }
