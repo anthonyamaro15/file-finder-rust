@@ -5,6 +5,18 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Without the shell integration, `⏎` used to quit with no output after copying the path.
+  ff now says what it copied and, for a folder, prints the `ff init` line that makes `⏎`
+  take your shell there.
+
+### Fixed
+
+- On Linux, the path `⏎` copied was lost as soon as ff quit, because ff held the X11
+  clipboard itself. It now hands the path to `wl-copy` or `xclip`, as the shell
+  integration does, and prints it when neither is installed.
+
 ## [0.3.1] - 2026-11-24
 
 ### Changed

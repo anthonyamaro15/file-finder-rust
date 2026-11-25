@@ -454,6 +454,11 @@ Then select the font in your terminal:
 **`ff: command not found`.** After building from source, copy the binary somewhere on
 your `PATH`, for example `cp target/release/ff /usr/local/bin/`.
 
+**Enter doesn't change my shell's folder.** That takes the
+[shell integration](#shell-integration). Without it, ff can only copy the path, and says
+so when it quits. Add `eval "$(ff init zsh)"` to `~/.zshrc` (or the bash line to
+`~/.bashrc`) and open a new shell.
+
 **The editor doesn't open.** Check that it's on your `PATH` (`which nvim`, `which code`,
 `which zed`); for VS Code on macOS, run "Shell Command: Install 'code' command in PATH"
 from its command palette. With the shell integration, run `command ff -e nvim`, since the
