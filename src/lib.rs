@@ -14,6 +14,7 @@ pub mod info;
 pub mod operations;
 pub mod pane;
 pub mod render;
+pub mod shell_setup;
 pub mod sizes;
 pub mod status_bar;
 pub mod ui;

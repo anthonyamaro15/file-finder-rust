@@ -5,11 +5,17 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `ff setup` adds the shell integration to `~/.zshrc` (or `$ZDOTDIR/.zshrc`) or
+  `~/.bashrc`, and the first time you run `ff` without it, ff offers to add it for you.
+  Either way, open a new terminal or `source` the file afterwards so `⏎` can take your
+  shell to the folder you pick.
+
 ### Changed
 
 - Without the shell integration, `⏎` used to quit with no output after copying the path.
-  ff now says what it copied and, for a folder, prints the `ff init` line that makes `⏎`
-  take your shell there. ([#175](https://github.com/anthonyamaro15/file-finder-rust/pull/175))
+  ff now says what it copied and, for a folder, how to make `⏎` take your shell there. ([#175](https://github.com/anthonyamaro15/file-finder-rust/pull/175))
 
 ### Fixed
 

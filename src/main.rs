@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", shell.generate_script());
                 return Ok(());
             }
+            cli::Commands::Setup => std::process::exit(file_finder::shell_setup::run_setup()),
         }
     }
 
@@ -119,6 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         effective_config.theme,
         effective_config.editor
     );
+    if file_finder::shell_setup::offer_on_launch(
+        effective_config.print_path,
+        effective_config.editor.is_some(),
+    ) {
+        return Ok(());
+    }
     let startup_paths = startup_paths(&effective_config);
 
     let mut file_reader_content = FileContent::new(ps, ts);
