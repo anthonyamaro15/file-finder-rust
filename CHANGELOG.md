@@ -11,6 +11,7 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   bash, `~/.bashrc` (`~/.bash_profile` on macOS), and the first time you run `ff` without it, ff offers to add it for you.
   Either way, open a new terminal or `source` the file afterwards so `⏎` can take your
   shell to the folder you pick.
+  ([#176](https://github.com/anthonyamaro15/file-finder-rust/pull/176))
 
 ### Changed
 
