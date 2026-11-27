@@ -102,7 +102,9 @@ Homebrew 7 and newer only load formulas from taps you've trusted; without the fi
 tap". Older Homebrew versions don't have `brew trust` and don't need it. Upgrade with
 `brew upgrade ff`.
 
-Builds are published for macOS (Apple Silicon and Intel) and x86_64 Linux.
+Builds are published for macOS (Apple Silicon and Intel) and x86_64 Linux. The Linux
+build needs glibc 2.34 or newer (Ubuntu 22.04, Debian 12, Fedora 35, RHEL 9 and later);
+on older or musl-based systems such as Alpine, build from source.
 
 ### From source
 
@@ -138,7 +140,7 @@ printed).
 ## Usage
 
 ```bash
-ff               # open in start_path (~/Desktop by default)
+ff               # open in start_path (~/Desktop, or home without one)
 ff ~/Documents   # open in a folder: absolute, relative, ~ or .
 ```
 
@@ -300,7 +302,7 @@ over the file.
 
 | Setting                | Default                                    | What it does                                                         |
 | ---------------------- | ------------------------------------------ | -------------------------------------------------------------------- |
-| `start_path`           | `~/Desktop`                                | Where ff opens without a path (the current folder if it isn't one)  |
+| `start_path`           | `~/Desktop`, else your home folder         | Where ff opens without a path (the current folder if it isn't one)  |
 | `root_dir`             | your home folder                           | What root search and Copy to…/Move to… cover                         |
 | `ignore_directories`   | `node_modules`, `target`, `.git`, …        | Folder names the index skips, at any depth                           |
 | `ignore_paths`         | `[]`                                       | Exact folders below `root_dir` the index skips with everything below them, e.g. `["~/Movies", "~/go"]` |

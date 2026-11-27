@@ -155,17 +155,19 @@ pub fn handle_file_selection(file: &str, ide: Option<String>) -> Result<(), Stri
         return launch_editor(&ide, file);
     }
 
+    let setup = Path::new(file)
+        .is_dir()
+        .then(crate::shell_setup::ShellConfig::current)
+        .flatten()
+        .map(|shell| (shell.source_command(), shell.has_integration()));
     if copy_with_clipboard_tool(file) {
         let shown = crate::utils::format::replace_home_with_tilde(file);
-        let setup = Path::new(file)
-            .is_dir()
-            .then(crate::shell_setup::ShellConfig::current)
-            .flatten()
-            .map(|shell| (shell.source_command(), shell.has_integration()));
-        eprintln!("{}", copied_message(&shown, setup));
+        let copied = format!("ff: copied {shown} to the clipboard");
+        eprintln!("{}", with_setup_hint(copied, setup));
     } else {
         warn!("No clipboard tool took the path");
-        eprintln!("ff: clipboard unavailable; path printed below");
+        let unavailable = "ff: clipboard unavailable; path printed below".to_string();
+        eprintln!("{}", with_setup_hint(unavailable, setup));
         println!("{}", file);
     }
     Ok(())
@@ -214,19 +216,18 @@ fn copy_with(tools: &[&[&str]], text: &str) -> bool {
     })
 }
 
-/// What ff prints after Enter copies `shown`. For a folder in zsh or bash, `setup` is
-/// the command that loads the shell's config and whether the config runs `ff init`; the
-/// second line says how to get Enter to cd there instead.
-fn copied_message(shown: &str, setup: Option<(String, bool)>) -> String {
-    let copied = format!("ff: copied {shown} to the clipboard");
+/// What ff prints after Enter leaves with a path: `first`, then, for a folder in zsh or
+/// bash, how to get Enter to cd there instead. `setup` is the command that loads the
+/// shell's config and whether the config runs `ff init`.
+fn with_setup_hint(first: String, setup: Option<(String, bool)>) -> String {
     match setup {
         Some((source, true)) => format!(
-            "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  {source}"
+            "{first}\nff: to cd there on Enter instead, open a new terminal or run:  {source}"
         ),
         Some((_, false)) => {
-            format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
+            format!("{first}\nff: to cd there on Enter instead, run:  ff setup")
         }
-        None => copied,
+        None => first,
     }
 }
 
@@ -486,15 +487,15 @@ mod tests {
     }
 
     #[test]
-    fn copied_message_says_how_to_get_enter_to_cd() {
+    fn the_exit_message_says_how_to_get_enter_to_cd() {
         let copied = "ff: copied ~/work/app to the clipboard";
-        assert_eq!(copied_message("~/work/app", None), copied);
+        assert_eq!(with_setup_hint(copied.into(), None), copied);
         assert_eq!(
-            copied_message("~/work/app", Some(("source ~/.zshrc".into(), false))),
+            with_setup_hint(copied.into(), Some(("source ~/.zshrc".into(), false))),
             format!("{copied}\nff: to cd there on Enter instead, run:  ff setup")
         );
         assert_eq!(
-            copied_message("~/work/app", Some(("source ~/.bashrc".into(), true))),
+            with_setup_hint(copied.into(), Some(("source ~/.bashrc".into(), true))),
             format!(
                 "{copied}\nff: to cd there on Enter instead, open a new terminal or run:  source ~/.bashrc"
             )

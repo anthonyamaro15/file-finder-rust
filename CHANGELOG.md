@@ -5,6 +5,27 @@ the format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Without a `~/Desktop` folder (common on Linux), ff now opens in your home folder
+  instead of warning on every launch, including with a `settings.toml` written by an
+  earlier version. New installs use the system's Desktop folder, localized names
+  included, or home. ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+- The README states the Linux build's minimum: glibc 2.34 (Ubuntu 22.04, Debian 12,
+  Fedora 35, RHEL 9 and later). ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+
+### Fixed
+
+- The shell integration said "Path copied" for a file even when the copy failed, for
+  example on X11 with `wl-copy` installed. It now tries `pbcopy`, `wl-copy` and `xclip`
+  in turn, says "Path copied" only when one worked, and prints the path otherwise. It
+  also no longer hangs when its output is piped or captured, as in `ff | cat`. ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+- When no clipboard tool works, `⏎` on a folder now also says how to make `⏎` take your
+  shell there. ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+- Items moved to the Trash on Linux now record when they were deleted, so file managers
+  can sort and empty the Trash by date. ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+- `ff --help` no longer suggests `cd $(ff --print-path)`, which cannot work. ([#177](https://github.com/anthonyamaro15/file-finder-rust/pull/177))
+
 ## [0.3.2] - 2026-11-25
 
 ### Added

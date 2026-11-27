@@ -41,8 +41,8 @@ pub struct CliArgs {
     #[arg(long, short = 'l', value_enum)]
     pub layout: Option<LayoutArg>,
 
-    /// Print selected path to stdout instead of copying to clipboard.
-    /// Useful for shell integration (e.g., `cd $(ff --print-path)`)
+    /// Hand the chosen path to the shell integration from `ff init` (through
+    /// $FF_RESULT_FILE, or stdout without it) instead of copying it
     #[arg(long)]
     pub print_path: bool,
 
@@ -111,18 +111,18 @@ ff() {
         cd "$result"
         return
     fi
-    # It's a file - copy to clipboard if a clipboard tool is available
-    if command -v pbcopy >/dev/null 2>&1; then
-        printf '%s' "$result" | pbcopy
-    elif command -v wl-copy >/dev/null 2>&1; then
-        printf '%s' "$result" | wl-copy
-    elif command -v xclip >/dev/null 2>&1; then
-        printf '%s' "$result" | xclip -selection clipboard
+    # A file: copy it with the first clipboard tool that works, or print it.
+    # The tools stay running to serve the copy, so they must not hold the caller's output.
+    if { command -v pbcopy >/dev/null 2>&1 &&
+        printf '%s' "$result" | LC_CTYPE=UTF-8 pbcopy >/dev/null 2>&1; } ||
+        { command -v wl-copy >/dev/null 2>&1 &&
+            printf '%s' "$result" | wl-copy >/dev/null 2>&1; } ||
+        { command -v xclip >/dev/null 2>&1 &&
+            printf '%s' "$result" | xclip -selection clipboard >/dev/null 2>&1; }; then
+        echo "Path copied: $result"
     else
         echo "$result"
-        return
     fi
-    echo "Path copied: $result"
 }"#
             }
         }
@@ -345,6 +345,12 @@ pub fn compute_effective_config(
     };
     let settings_path = path_utils::normalize_path(&PathBuf::from(&settings.start_path))
         .unwrap_or_else(|_| PathBuf::from(&settings.start_path));
+    // Settings from 0.3.2 and earlier hold ~/Desktop even where there is none; open home
+    // quietly there, as a new install's default does.
+    let settings_path = match dirs::home_dir() {
+        Some(home) if settings_path == home.join("Desktop") && !settings_path.exists() => home,
+        _ => settings_path,
+    };
     let fallback = env::current_dir()
         .ok()
         .filter(|dir| dir.is_dir())
@@ -462,6 +468,77 @@ mod tests {
             let pick = format!("pick=0 {}", dest.display());
             assert!(lines.contains(&pick.as_str()), "{shell}: {out}");
         }
+    }
+
+    /// A chosen file goes to the first clipboard tool that works: a failing wl-copy (X11
+    /// with wl-clipboard installed) falls through to xclip, and "Path copied" only shows
+    /// when a tool took the path.
+    #[cfg(unix)]
+    #[test]
+    fn shell_function_copies_a_file_with_the_first_tool_that_works() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let file = dir.path().join("notes.md");
+        let clip = dir.path().join("clip");
+        let stub = |name: &str, body: String| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        stub(
+            "ff",
+            format!("printf %s '{}' > \"$FF_RESULT_FILE\"\n", file.display()),
+        );
+        stub("wl-copy", "echo 'no Wayland' >&2\nexit 1\n".into());
+        stub(
+            "xclip",
+            format!("[ -z \"$XCLIP_FAIL\" ] && cat > '{}'\n", clip.display()),
+        );
+        // Found on this machine's PATH; the function runs with only the stubs and these.
+        let which = |tool: &str| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|dir| dir.join(tool))
+                .find(|path| path.is_file())
+        };
+        for tool in ["mktemp", "cat", "rm"] {
+            std::os::unix::fs::symlink(which(tool).unwrap(), bin.join(tool)).unwrap();
+        }
+
+        let mut ran = 0;
+        for (shell, kind, flags) in [
+            ("bash", Shell::Bash, &["-c"][..]),
+            ("zsh", Shell::Zsh, &["-f", "-c"][..]),
+        ] {
+            let Some(shell_path) = which(shell) else {
+                continue;
+            };
+            ran += 1;
+            let _ = std::fs::remove_file(&clip);
+            let script = format!(
+                "{}\nff; echo \"rc=$?\"\nexport XCLIP_FAIL=1\nff; echo \"rc=$?\"\n",
+                kind.generate_script()
+            );
+            let out = std::process::Command::new(shell_path)
+                .args(flags)
+                .arg(script)
+                .env("PATH", &bin)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8(out.stdout).unwrap();
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            let file = file.display().to_string();
+            let copied = format!("Path copied: {file}");
+            assert_eq!(
+                stdout.lines().collect::<Vec<_>>(),
+                [copied.as_str(), "rc=0", file.as_str(), "rc=0"],
+                "{shell}: {stdout}{stderr}"
+            );
+            assert_eq!(std::fs::read_to_string(&clip).unwrap(), file, "{shell}");
+            assert_eq!(stderr, "", "{shell}");
+        }
+        assert!(ran > 0, "no bash or zsh to run the function in");
     }
 
     #[test]
