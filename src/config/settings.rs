@@ -138,9 +138,11 @@ impl Default for Settings {
         let config_dir = home_dir.join(".config").join("ff");
 
         Self {
-            // The Desktop where there is one (localized on Linux), else home.
+            // The Desktop where there is one (the XDG one may be localized), else home.
             start_path: dirs::desktop_dir()
-                .filter(|desktop| desktop.is_dir())
+                .into_iter()
+                .chain([home_dir.join("Desktop")])
+                .find(|desktop| desktop.is_dir())
                 .unwrap_or_else(|| home_dir.clone())
                 .display()
                 .to_string(),

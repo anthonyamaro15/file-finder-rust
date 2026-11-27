@@ -112,9 +112,13 @@ ff() {
         return
     fi
     # A file: copy it with the first clipboard tool that works, or print it.
-    if { printf '%s' "$result" | LC_CTYPE=UTF-8 pbcopy; } 2>/dev/null ||
-        { printf '%s' "$result" | wl-copy; } 2>/dev/null ||
-        { printf '%s' "$result" | xclip -selection clipboard; } 2>/dev/null; then
+    # The tools stay running to serve the copy, so they must not hold the caller's output.
+    if { command -v pbcopy >/dev/null 2>&1 &&
+        printf '%s' "$result" | LC_CTYPE=UTF-8 pbcopy >/dev/null 2>&1; } ||
+        { command -v wl-copy >/dev/null 2>&1 &&
+            printf '%s' "$result" | wl-copy >/dev/null 2>&1; } ||
+        { command -v xclip >/dev/null 2>&1 &&
+            printf '%s' "$result" | xclip -selection clipboard >/dev/null 2>&1; }; then
         echo "Path copied: $result"
     else
         echo "$result"
@@ -341,6 +345,12 @@ pub fn compute_effective_config(
     };
     let settings_path = path_utils::normalize_path(&PathBuf::from(&settings.start_path))
         .unwrap_or_else(|_| PathBuf::from(&settings.start_path));
+    // Settings from 0.3.2 and earlier hold ~/Desktop even where there is none; open home
+    // quietly there, as a new install's default does.
+    let settings_path = match dirs::home_dir() {
+        Some(home) if settings_path == home.join("Desktop") && !settings_path.exists() => home,
+        _ => settings_path,
+    };
     let fallback = env::current_dir()
         .ok()
         .filter(|dir| dir.is_dir())
@@ -486,32 +496,36 @@ mod tests {
             "xclip",
             format!("[ -z \"$XCLIP_FAIL\" ] && cat > '{}'\n", clip.display()),
         );
-        // Only the stubs and what the function needs, so a real pbcopy can't take it.
+        // Found on this machine's PATH; the function runs with only the stubs and these.
+        let which = |tool: &str| {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|dir| dir.join(tool))
+                .find(|path| path.is_file())
+        };
         for tool in ["mktemp", "cat", "rm"] {
-            let real = ["/usr/bin", "/bin"]
-                .iter()
-                .map(|dir| Path::new(dir).join(tool))
-                .find(|path| path.exists())
-                .unwrap();
-            std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
+            std::os::unix::fs::symlink(which(tool).unwrap(), bin.join(tool)).unwrap();
         }
 
-        for (shell, kind) in [("bash", Shell::Bash), ("zsh", Shell::Zsh)] {
+        let mut ran = 0;
+        for (shell, kind, flags) in [
+            ("bash", Shell::Bash, &["-c"][..]),
+            ("zsh", Shell::Zsh, &["-f", "-c"][..]),
+        ] {
+            let Some(shell_path) = which(shell) else {
+                continue;
+            };
+            ran += 1;
             let _ = std::fs::remove_file(&clip);
             let script = format!(
                 "{}\nff; echo \"rc=$?\"\nexport XCLIP_FAIL=1\nff; echo \"rc=$?\"\n",
                 kind.generate_script()
             );
-            let out = match std::process::Command::new(shell)
-                .arg("-c")
+            let out = std::process::Command::new(shell_path)
+                .args(flags)
                 .arg(script)
                 .env("PATH", &bin)
                 .output()
-            {
-                Ok(out) => out,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => panic!("{shell}: {e}"),
-            };
+                .unwrap();
             let stdout = String::from_utf8(out.stdout).unwrap();
             let stderr = String::from_utf8(out.stderr).unwrap();
             let file = file.display().to_string();
@@ -522,8 +536,9 @@ mod tests {
                 "{shell}: {stdout}{stderr}"
             );
             assert_eq!(std::fs::read_to_string(&clip).unwrap(), file, "{shell}");
-            assert!(!stderr.contains("Wayland"), "{shell}: {stderr}");
+            assert_eq!(stderr, "", "{shell}");
         }
+        assert!(ran > 0, "no bash or zsh to run the function in");
     }
 
     #[test]
