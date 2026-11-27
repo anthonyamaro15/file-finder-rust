@@ -60,7 +60,7 @@ pretty-hex = "0.4"
 unicode-width = "0.1"
 # Later releases follow root symlinks in their Linux cross-device copy fallback.
 # Keep rename-only trashing until that path preserves links.
-trash = { version = "=5.2.3", default-features = false }
+trash = { version = "=5.2.3", default-features = false, features = ["chrono"] }
 
 [dev-dependencies]
 tempfile = "3.8"

@@ -41,8 +41,8 @@ pub struct CliArgs {
     #[arg(long, short = 'l', value_enum)]
     pub layout: Option<LayoutArg>,
 
-    /// Print selected path to stdout instead of copying to clipboard.
-    /// Useful for shell integration (e.g., `cd $(ff --print-path)`)
+    /// Hand the chosen path to the shell integration from `ff init` (through
+    /// $FF_RESULT_FILE, or stdout without it) instead of copying it
     #[arg(long)]
     pub print_path: bool,
 
@@ -111,18 +111,14 @@ ff() {
         cd "$result"
         return
     fi
-    # It's a file - copy to clipboard if a clipboard tool is available
-    if command -v pbcopy >/dev/null 2>&1; then
-        printf '%s' "$result" | pbcopy
-    elif command -v wl-copy >/dev/null 2>&1; then
-        printf '%s' "$result" | wl-copy
-    elif command -v xclip >/dev/null 2>&1; then
-        printf '%s' "$result" | xclip -selection clipboard
+    # A file: copy it with the first clipboard tool that works, or print it.
+    if { printf '%s' "$result" | LC_CTYPE=UTF-8 pbcopy; } 2>/dev/null ||
+        { printf '%s' "$result" | wl-copy; } 2>/dev/null ||
+        { printf '%s' "$result" | xclip -selection clipboard; } 2>/dev/null; then
+        echo "Path copied: $result"
     else
         echo "$result"
-        return
     fi
-    echo "Path copied: $result"
 }"#
             }
         }
@@ -461,6 +457,72 @@ mod tests {
             assert!(lines.contains(&"version=0"), "{shell}: {out}");
             let pick = format!("pick=0 {}", dest.display());
             assert!(lines.contains(&pick.as_str()), "{shell}: {out}");
+        }
+    }
+
+    /// A chosen file goes to the first clipboard tool that works: a failing wl-copy (X11
+    /// with wl-clipboard installed) falls through to xclip, and "Path copied" only shows
+    /// when a tool took the path.
+    #[cfg(unix)]
+    #[test]
+    fn shell_function_copies_a_file_with_the_first_tool_that_works() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let file = dir.path().join("notes.md");
+        let clip = dir.path().join("clip");
+        let stub = |name: &str, body: String| {
+            let path = bin.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        stub(
+            "ff",
+            format!("printf %s '{}' > \"$FF_RESULT_FILE\"\n", file.display()),
+        );
+        stub("wl-copy", "echo 'no Wayland' >&2\nexit 1\n".into());
+        stub(
+            "xclip",
+            format!("[ -z \"$XCLIP_FAIL\" ] && cat > '{}'\n", clip.display()),
+        );
+        // Only the stubs and what the function needs, so a real pbcopy can't take it.
+        for tool in ["mktemp", "cat", "rm"] {
+            let real = ["/usr/bin", "/bin"]
+                .iter()
+                .map(|dir| Path::new(dir).join(tool))
+                .find(|path| path.exists())
+                .unwrap();
+            std::os::unix::fs::symlink(real, bin.join(tool)).unwrap();
+        }
+
+        for (shell, kind) in [("bash", Shell::Bash), ("zsh", Shell::Zsh)] {
+            let _ = std::fs::remove_file(&clip);
+            let script = format!(
+                "{}\nff; echo \"rc=$?\"\nexport XCLIP_FAIL=1\nff; echo \"rc=$?\"\n",
+                kind.generate_script()
+            );
+            let out = match std::process::Command::new(shell)
+                .arg("-c")
+                .arg(script)
+                .env("PATH", &bin)
+                .output()
+            {
+                Ok(out) => out,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => panic!("{shell}: {e}"),
+            };
+            let stdout = String::from_utf8(out.stdout).unwrap();
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            let file = file.display().to_string();
+            let copied = format!("Path copied: {file}");
+            assert_eq!(
+                stdout.lines().collect::<Vec<_>>(),
+                [copied.as_str(), "rc=0", file.as_str(), "rc=0"],
+                "{shell}: {stdout}{stderr}"
+            );
+            assert_eq!(std::fs::read_to_string(&clip).unwrap(), file, "{shell}");
+            assert!(!stderr.contains("Wayland"), "{shell}: {stderr}");
         }
     }
 
